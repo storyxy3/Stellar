@@ -1,0 +1,582 @@
+using System.Collections;
+using System.Collections.Specialized;
+using System.Text.Json.Nodes;
+using AssetStudio;
+using PjskBundle2Parts.Models;
+using Object = AssetStudio.Object;
+
+namespace PjskBundle2Parts.Services;
+
+public sealed class SpringBoneExporter
+{
+    private const string SekaiUnityVersion = "2022.3.21f1";
+    private static readonly HashSet<string> SpringScriptNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "SpringManager",
+        "SpringBone",
+        "SpringSphereCollider",
+        "SpringCapsuleCollider",
+        "SpringPanelCollider",
+        "ExtraBone",
+        "SekaiCharacterHair",
+        "SekaiCharacterEye",
+    };
+
+    public SpringBoneExport Export(ResolvedBundleInput input)
+    {
+        using var readableBundle = new SekaiBundleDecryptor().PrepareReadableBundle(input.ResolvedBundlePath);
+        var manager = new AssetsManager
+        {
+            MeshLazyLoad = false,
+        };
+        manager.Options.CustomUnityVersion = new UnityVersion(SekaiUnityVersion);
+        manager.SetAssetFilter(ClassIDType.MonoBehaviour);
+        manager.LoadFilesAndFolders(readableBundle.Path);
+
+        var objects = manager.AssetsFileList
+            .SelectMany(file => file.Objects)
+            .ToList();
+        var objectRefsByPathId = BuildObjectRefIndex(objects);
+        var allMonoBehaviours = objects
+            .OfType<MonoBehaviour>()
+            .Select(mono => new SpringMonoRaw(
+                Mono: mono,
+                ScriptName: ResolveScriptName(mono),
+                Raw: ConvertToJsonObject(mono.ToType()) ?? new JsonObject()
+            ))
+            .ToList();
+        var managerReferencedBonePathIds = allMonoBehaviours
+            .Where(entry => string.Equals(entry.ScriptName, "SpringManager", StringComparison.OrdinalIgnoreCase))
+            .SelectMany(entry => ReadObjectArray(entry.Raw, "springBones"))
+            .Select(value => ResolveObjectRef(value, objectRefsByPathId)?.PathId)
+            .Where(pathId => pathId is not null)
+            .Select(pathId => pathId!.Value)
+            .ToHashSet();
+        var monoBehaviours = allMonoBehaviours
+            .Where(entry => SpringScriptNames.Contains(entry.ScriptName))
+            .ToList();
+        var monoByPathId = allMonoBehaviours.ToDictionary(entry => entry.Mono.m_PathID);
+        var warnings = new List<string>();
+
+        foreach (var entry in monoBehaviours)
+        {
+            if (entry.Raw.Count == 0)
+            {
+                warnings.Add(
+                    $"MonoBehaviour {entry.ScriptName}:{entry.Mono.m_PathID} has no readable typetree payload."
+                );
+            }
+        }
+
+        var managers = monoBehaviours
+            .Where(entry => string.Equals(entry.ScriptName, "SpringManager", StringComparison.OrdinalIgnoreCase))
+            .Select(entry => new SpringMonoBehaviourEntry(
+                PathId: entry.Mono.m_PathID,
+                ScriptName: entry.ScriptName,
+                GameObject: ResolveGameObject(entry.Mono.m_GameObject),
+                Raw: entry.Raw
+            ))
+            .ToList();
+        var bones = managerReferencedBonePathIds
+            .Select(pathId => monoByPathId.TryGetValue(pathId, out var entry) ? entry : null)
+            .Where(entry => entry is not null)
+            .Cast<SpringMonoRaw>()
+            .Select(entry => BuildSpringBoneEntry(entry, objectRefsByPathId))
+            .ToList();
+        var missingSpringBonePathIds = managerReferencedBonePathIds
+            .Where(pathId => !monoByPathId.ContainsKey(pathId))
+            .ToList();
+        var sphereColliders = monoBehaviours
+            .Where(entry => string.Equals(entry.ScriptName, "SpringSphereCollider", StringComparison.OrdinalIgnoreCase))
+            .Select(entry => BuildSpringColliderEntry(entry))
+            .ToList();
+        var capsuleColliders = monoBehaviours
+            .Where(entry => string.Equals(entry.ScriptName, "SpringCapsuleCollider", StringComparison.OrdinalIgnoreCase))
+            .Select(entry => BuildSpringColliderEntry(entry))
+            .ToList();
+        var panelColliders = monoBehaviours
+            .Where(entry => string.Equals(entry.ScriptName, "SpringPanelCollider", StringComparison.OrdinalIgnoreCase))
+            .Select(entry => BuildSpringColliderEntry(entry))
+            .ToList();
+        var extraBones = monoBehaviours
+            .Where(entry => string.Equals(entry.ScriptName, "ExtraBone", StringComparison.OrdinalIgnoreCase))
+            .Select(entry => BuildExtraBoneEntry(entry, objectRefsByPathId))
+            .ToList();
+        var characterHair = monoBehaviours
+            .Where(entry => string.Equals(entry.ScriptName, "SekaiCharacterHair", StringComparison.OrdinalIgnoreCase))
+            .Select(entry => BuildCharacterHairEntry(entry, objectRefsByPathId))
+            .FirstOrDefault();
+        var characterEye = monoBehaviours
+            .Where(entry => string.Equals(entry.ScriptName, "SekaiCharacterEye", StringComparison.OrdinalIgnoreCase))
+            .Select(BuildCharacterEyeEntry)
+            .FirstOrDefault();
+
+        if (monoBehaviours.Count == 0)
+        {
+            warnings.Add("No SpringManager/SpringBone/Spring*Collider MonoBehaviours found.");
+        }
+        if (managers.Count == 0 && bones.Count > 0)
+        {
+            warnings.Add("SpringBone entries were found, but SpringManager was not found.");
+        }
+        foreach (var missingPathId in missingSpringBonePathIds)
+        {
+            warnings.Add($"SpringManager referenced missing spring bone MonoBehaviour PathID {missingPathId}.");
+        }
+
+        return new SpringBoneExport(
+            Version: 1,
+            BundlePath: input.ResolvedBundlePath,
+            PartKind: input.PartKind.ToString(),
+            Managers: managers,
+            Bones: bones,
+            SphereColliders: sphereColliders,
+            CapsuleColliders: capsuleColliders,
+            PanelColliders: panelColliders,
+            ExtraBones: extraBones,
+            CharacterHair: characterHair,
+            CharacterEye: characterEye,
+            Warnings: warnings
+        );
+    }
+
+    private static SpringBoneEntry BuildSpringBoneEntry(
+        SpringMonoRaw entry,
+        IReadOnlyDictionary<long, SpringObjectRef> objectRefsByPathId
+    )
+    {
+        return new SpringBoneEntry(
+            PathId: entry.Mono.m_PathID,
+            ScriptName: entry.ScriptName,
+            GameObject: ResolveGameObject(entry.Mono.m_GameObject),
+            PivotNode: ResolveObjectRef(ReadObject(entry.Raw, "pivotNode"), objectRefsByPathId),
+            Radius: ReadFloat(entry.Raw, "radius"),
+            StiffnessForce: ReadFloat(entry.Raw, "stiffnessForce"),
+            DragForce: ReadFloat(entry.Raw, "dragForce"),
+            SpringForce: ReadVector3(entry.Raw, "springForce"),
+            Colliders: ReadColliderRefs(entry.Raw, objectRefsByPathId),
+            Raw: entry.Raw
+        );
+    }
+
+    private static IReadOnlyList<SpringObjectRef> ReadColliderRefs(
+        JsonObject raw,
+        IReadOnlyDictionary<long, SpringObjectRef> objectRefsByPathId
+    )
+    {
+        return new[]
+            {
+                "colliders",
+                "sphereColliders",
+                "capsuleColliders",
+                "panelColliders",
+            }
+            .SelectMany(key => ReadObjectArray(raw, key))
+            .Select(value => ResolveObjectRef(value, objectRefsByPathId))
+            .Where(reference => reference is not null)
+            .Cast<SpringObjectRef>()
+            .GroupBy(reference => reference.PathId)
+            .Select(group => group.First())
+            .ToList();
+    }
+
+    private static SpringColliderEntry BuildSpringColliderEntry(
+        SpringMonoRaw entry
+    )
+    {
+        return new SpringColliderEntry(
+            PathId: entry.Mono.m_PathID,
+            ScriptName: entry.ScriptName,
+            GameObject: ResolveGameObject(entry.Mono.m_GameObject),
+            Radius: ReadFloat(entry.Raw, "radius"),
+            Height: ReadFloat(entry.Raw, "height") ?? ReadFloat(entry.Raw, "length"),
+            Center: ReadVector3(entry.Raw, "center") ?? ReadVector3(entry.Raw, "offset"),
+            Direction: ReadVector3(entry.Raw, "direction"),
+            Raw: entry.Raw
+        );
+    }
+
+    private static SpringExtraBoneEntry BuildExtraBoneEntry(
+        SpringMonoRaw entry,
+        IReadOnlyDictionary<long, SpringObjectRef> objectRefsByPathId
+    )
+    {
+        return new SpringExtraBoneEntry(
+            PathId: entry.Mono.m_PathID,
+            ScriptName: entry.ScriptName,
+            GameObject: ResolveGameObject(entry.Mono.m_GameObject),
+            ReferenceBone: ResolveObjectRef(ReadObject(entry.Raw, "referenceBone"), objectRefsByPathId),
+            RotationOrder: ReadInt(entry.Raw, "rotationOrder"),
+            Coefficient: ReadFloat(entry.Raw, "coefficient"),
+            DefaultEulerAngles: ReadVector3(entry.Raw, "defaultEulerAngles"),
+            AxisX: ReadInt(entry.Raw, "axisX"),
+            AxisY: ReadInt(entry.Raw, "axisY"),
+            AxisZ: ReadInt(entry.Raw, "axisZ"),
+            Raw: entry.Raw
+        );
+    }
+
+    private static SpringCharacterHairEntry BuildCharacterHairEntry(
+        SpringMonoRaw entry,
+        IReadOnlyDictionary<long, SpringObjectRef> objectRefsByPathId
+    )
+    {
+        return new SpringCharacterHairEntry(
+            PathId: entry.Mono.m_PathID,
+            ScriptName: entry.ScriptName,
+            GameObject: ResolveGameObject(entry.Mono.m_GameObject),
+            HeadTransform: ResolveObjectRef(ReadObject(entry.Raw, "headTransform"), objectRefsByPathId),
+            Offset: ReadVector3(entry.Raw, "offset"),
+            Raw: entry.Raw
+        );
+    }
+
+    private static SpringCharacterEyeEntry BuildCharacterEyeEntry(SpringMonoRaw entry)
+    {
+        return new SpringCharacterEyeEntry(
+            PathId: entry.Mono.m_PathID,
+            ScriptName: entry.ScriptName,
+            GameObject: ResolveGameObject(entry.Mono.m_GameObject),
+            LightInfluence: ReadFloat(entry.Raw, "lightInfluence"),
+            LightInfluenceForEyeHighlight: ReadFloat(entry.Raw, "lightInfluenceForEyeHighlight"),
+            TintColor: ReadColor(entry.Raw, "tintColor"),
+            EmissionColor: ReadColor(entry.Raw, "emissionColor"),
+            BaseTiling: ReadTextureTiling(entry.Raw, "baseTiling"),
+            HighlightTiling: ReadTextureTiling(entry.Raw, "highlightTiling"),
+            LeftEyeCloseBlendShapeValue: ReadFloat(entry.Raw, "leftEyeCloseBlendShapeValue"),
+            RightEyeCloseBlendShapeValue: ReadFloat(entry.Raw, "rightEyeCloseBlendShapeValue"),
+            Raw: entry.Raw
+        );
+    }
+
+    private static string ResolveScriptName(MonoBehaviour mono)
+    {
+        return mono.m_Script.TryGet(out MonoScript script)
+            ? script.m_Name
+            : $"missing-script:{mono.m_Script.m_PathID}";
+    }
+
+    private static SpringObjectRef? ResolveGameObject(PPtr<GameObject> pointer)
+    {
+        if (!pointer.TryGet(out GameObject gameObject))
+        {
+            return pointer.m_PathID == 0
+                ? null
+                : new SpringObjectRef(pointer.m_FileID, pointer.m_PathID, null, null);
+        }
+        return new SpringObjectRef(
+            FileId: pointer.m_FileID,
+            PathId: pointer.m_PathID,
+            Name: gameObject.m_Name,
+            TransformPath: gameObject.m_Transform is null
+                ? null
+                : BuildTransformPath(gameObject.m_Transform)
+        );
+    }
+
+    private static SpringObjectRef? ResolveObjectRef(
+        JsonNode? node,
+        IReadOnlyDictionary<long, SpringObjectRef> objectRefsByPathId
+    )
+    {
+        if (node is not JsonObject obj)
+        {
+            return null;
+        }
+        var fileId = ReadInt(obj, "m_FileID") ?? 0;
+        var pathId = ReadLong(obj, "m_PathID") ?? 0;
+        return ResolveObjectRef(fileId, pathId, objectRefsByPathId);
+    }
+
+    private static SpringObjectRef? ResolveObjectRef(
+        int fileId,
+        long pathId,
+        IReadOnlyDictionary<long, SpringObjectRef> objectRefsByPathId
+    )
+    {
+        if (pathId == 0)
+        {
+            return null;
+        }
+        if (!objectRefsByPathId.TryGetValue(pathId, out var reference))
+        {
+            return new SpringObjectRef(fileId, pathId, null, null);
+        }
+        return reference with
+        {
+            FileId = fileId,
+            PathId = pathId,
+        };
+    }
+
+    private static JsonNode? ReadObject(JsonObject obj, string key)
+    {
+        return TryGetProperty(obj, key, out var value) ? value : null;
+    }
+
+    private static IEnumerable<JsonNode?> ReadObjectArray(JsonObject obj, string key)
+    {
+        if (!TryGetProperty(obj, key, out var value) || value is not JsonArray array)
+        {
+            return Array.Empty<JsonNode?>();
+        }
+        return array;
+    }
+
+    private static float? ReadFloat(JsonObject obj, string key)
+    {
+        if (!TryGetProperty(obj, key, out var value))
+        {
+            return null;
+        }
+        return ReadFloat(value);
+    }
+
+    private static float? ReadFloat(JsonNode? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+        if (value.GetValueKind() == System.Text.Json.JsonValueKind.Number &&
+            value.AsValue().TryGetValue<float>(out var result))
+        {
+            return result;
+        }
+        return null;
+    }
+
+    private static int? ReadInt(JsonObject obj, string key)
+    {
+        if (!TryGetProperty(obj, key, out var value) || value is null)
+        {
+            return null;
+        }
+        if (value.GetValueKind() != System.Text.Json.JsonValueKind.Number)
+        {
+            return null;
+        }
+        if (value.AsValue().TryGetValue<int>(out var result))
+        {
+            return result;
+        }
+        if (value.AsValue().TryGetValue<long>(out var longResult))
+        {
+            return longResult is >= int.MinValue and <= int.MaxValue
+                ? (int)longResult
+                : null;
+        }
+        if (value.AsValue().TryGetValue<double>(out var doubleResult))
+        {
+            return doubleResult >= int.MinValue && doubleResult <= int.MaxValue
+                ? (int)doubleResult
+                : null;
+        }
+        return null;
+    }
+
+    private static long? ReadLong(JsonObject obj, string key)
+    {
+        if (!TryGetProperty(obj, key, out var value) || value is null)
+        {
+            return null;
+        }
+        return value.GetValueKind() == System.Text.Json.JsonValueKind.Number &&
+            value.AsValue().TryGetValue<long>(out var result)
+                ? result
+                : null;
+    }
+
+    private static SpringVector3? ReadVector3(JsonObject obj, string key)
+    {
+        if (!TryGetProperty(obj, key, out var value) || value is not JsonObject vector)
+        {
+            return null;
+        }
+        var x = ReadFloat(vector, "x") ?? ReadFloat(vector, "X");
+        var y = ReadFloat(vector, "y") ?? ReadFloat(vector, "Y");
+        var z = ReadFloat(vector, "z") ?? ReadFloat(vector, "Z");
+        return x.HasValue && y.HasValue && z.HasValue
+            ? new SpringVector3(x.Value, y.Value, z.Value)
+            : null;
+    }
+
+    private static SpringColor? ReadColor(JsonObject obj, string key)
+    {
+        if (!TryGetProperty(obj, key, out var value) || value is not JsonObject color)
+        {
+            return null;
+        }
+        var r = ReadFloat(color, "r") ?? ReadFloat(color, "R");
+        var g = ReadFloat(color, "g") ?? ReadFloat(color, "G");
+        var b = ReadFloat(color, "b") ?? ReadFloat(color, "B");
+        var a = ReadFloat(color, "a") ?? ReadFloat(color, "A");
+        return r.HasValue && g.HasValue && b.HasValue && a.HasValue
+            ? new SpringColor(r.Value, g.Value, b.Value, a.Value)
+            : null;
+    }
+
+    private static SpringTextureTiling? ReadTextureTiling(JsonObject obj, string key)
+    {
+        if (!TryGetProperty(obj, key, out var value) || value is not JsonObject tiling)
+        {
+            return null;
+        }
+        var tileX = ReadInt(tiling, "TileX");
+        var tileY = ReadInt(tiling, "TileY");
+        var sample = ReadInt(tiling, "Sample");
+        return tileX.HasValue && tileY.HasValue && sample.HasValue
+            ? new SpringTextureTiling(tileX.Value, tileY.Value, sample.Value)
+            : null;
+    }
+
+    private static bool TryGetProperty(JsonObject obj, string key, out JsonNode? value)
+    {
+        if (obj.TryGetPropertyValue(key, out value))
+        {
+            return true;
+        }
+        var pair = obj.FirstOrDefault(entry =>
+            string.Equals(entry.Key, key, StringComparison.OrdinalIgnoreCase));
+        if (!string.IsNullOrWhiteSpace(pair.Key))
+        {
+            value = pair.Value;
+            return true;
+        }
+        value = null;
+        return false;
+    }
+
+    private static JsonObject? ConvertToJsonObject(object? value)
+    {
+        return ConvertToJsonNode(value) as JsonObject;
+    }
+
+    private static JsonNode? ConvertToJsonNode(object? value)
+    {
+        switch (value)
+        {
+            case null:
+                return null;
+            case JsonNode node:
+                return node.DeepClone();
+            case OrderedDictionary ordered:
+            {
+                var obj = new JsonObject();
+                foreach (DictionaryEntry entry in ordered)
+                {
+                    if (entry.Key is string key)
+                    {
+                        obj[key] = ConvertToJsonNode(entry.Value);
+                    }
+                }
+                return obj;
+            }
+            case IDictionary dictionary:
+            {
+                var obj = new JsonObject();
+                foreach (DictionaryEntry entry in dictionary)
+                {
+                    obj[StringifyDictionaryKey(entry.Key)] = ConvertToJsonNode(entry.Value);
+                }
+                return obj;
+            }
+            case IEnumerable enumerable when value is not string:
+            {
+                var array = new JsonArray();
+                foreach (var item in enumerable)
+                {
+                    array.Add(ConvertToJsonNode(item));
+                }
+                return array;
+            }
+            case string text:
+                return JsonValue.Create(text);
+            case bool boolean:
+                return JsonValue.Create(boolean);
+            case sbyte or byte or short or ushort or int or uint or long or ulong:
+                return JsonValue.Create(Convert.ToInt64(value));
+            case float single:
+                return JsonValue.Create(single);
+            case double number:
+                return JsonValue.Create(number);
+            case decimal number:
+                return JsonValue.Create(number);
+            default:
+                return JsonValue.Create(value.ToString());
+        }
+    }
+
+    private static string StringifyDictionaryKey(object? key)
+    {
+        return key switch
+        {
+            null => "null",
+            string text => text,
+            _ => key.ToString() ?? "unknown",
+        };
+    }
+
+    private static string BuildTransformPath(Transform transform)
+    {
+        if (!transform.m_GameObject.TryGet(out GameObject gameObject))
+        {
+            return $"transform:{transform.m_PathID}";
+        }
+
+        if (!transform.m_Father.TryGet(out Transform father))
+        {
+            return gameObject.m_Name;
+        }
+
+        return $"{BuildTransformPath(father)}/{gameObject.m_Name}";
+    }
+
+    private static IReadOnlyDictionary<long, SpringObjectRef> BuildObjectRefIndex(
+        IReadOnlyList<Object> objects
+    )
+    {
+        var refs = new Dictionary<long, SpringObjectRef>();
+
+        foreach (var gameObject in objects.OfType<GameObject>())
+        {
+            var transformPath = gameObject.m_Transform is null
+                ? null
+                : BuildTransformPath(gameObject.m_Transform);
+            refs[gameObject.m_PathID] = new SpringObjectRef(
+                FileId: 0,
+                PathId: gameObject.m_PathID,
+                Name: gameObject.m_Name,
+                TransformPath: transformPath
+            );
+            if (gameObject.m_Transform is not null)
+            {
+                refs[gameObject.m_Transform.m_PathID] = new SpringObjectRef(
+                    FileId: 0,
+                    PathId: gameObject.m_Transform.m_PathID,
+                    Name: gameObject.m_Name,
+                    TransformPath: transformPath
+                );
+            }
+        }
+
+        foreach (var mono in objects.OfType<MonoBehaviour>())
+        {
+            var gameObject = ResolveGameObject(mono.m_GameObject);
+            refs[mono.m_PathID] = new SpringObjectRef(
+                FileId: 0,
+                PathId: mono.m_PathID,
+                Name: gameObject?.Name ?? ResolveScriptName(mono),
+                TransformPath: gameObject?.TransformPath
+            );
+        }
+
+        return refs;
+    }
+
+    private sealed record SpringMonoRaw(
+        MonoBehaviour Mono,
+        string ScriptName,
+        JsonObject Raw
+    );
+}

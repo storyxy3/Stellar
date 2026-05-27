@@ -1,0 +1,11 @@
+# Node/Vite
+pjsk-webgl-viewer/node_modules/
+pjsk-webgl-viewer/dist/
+
+# .NET
+PjskBundle2Parts/bin/
+PjskBundle2Parts/obj/
+
+# Local/editor
+.DS_Store
+*.log
