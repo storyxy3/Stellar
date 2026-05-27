@@ -185,12 +185,20 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
         float hAlpha = valueSample.a;
 
         float halfNdl = clamp(ndl * 0.5 + 0.5, 0.0, 1.0);
+        float hShadowOffset = (uUseValueTex > 0.5) ? valueSample.b * 2.0 - 1.0 : 0.0;
+        float shadowLuma = clamp(halfNdl + hShadowOffset, 0.0, 1.0);
         float materialShadowThreshold = clamp(uShadowThreshold, 0.0, 1.0);
-        float litBand = smoothstep(0.0, max(uShadowWidth, 0.001), halfNdl - materialShadowThreshold);
+        float shadowWidth = max(uShadowWidth, 0.001);
+        float litBand = smoothstep(
+          materialShadowThreshold - shadowWidth,
+          materialShadowThreshold + shadowWidth,
+          shadowLuma
+        );
         float shadowBand = clamp((1.0 - litBand) * uShadowWeight, 0.0, 1.0);
 
-        // PJSK character shader semantics: C is the lit color; S only owns the toon-shadow band.
-        vec3 shadowColor = shadowValue * uShadowColor;
+        // PJSK character shader semantics: C is the lit color; S already owns the toon-shadow target color.
+        vec3 fallbackShadowColor = mainColor * uShadowColor;
+        vec3 shadowColor = (uUseShadowTex > 0.5) ? shadowValue : fallbackShadowColor;
         vec3 color = mix(mainColor, shadowColor, shadowBand);
 
         vec3 partsAmbient = mix(vec3(1.0), uPartsAmbientColor, 0.62);

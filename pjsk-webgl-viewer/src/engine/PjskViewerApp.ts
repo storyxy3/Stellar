@@ -72,6 +72,11 @@ export type RuntimeMaterialDebug = {
   shaderHasShadowTex?: number | null;
   shaderHasFaceShadowTex?: number | null;
   shaderHasValueTex?: number | null;
+  shaderLightDirectionX?: number | null;
+  shaderLightDirectionY?: number | null;
+  shaderLightDirectionZ?: number | null;
+  shaderShadowThreshold?: number | null;
+  shaderShadowWeight?: number | null;
   shaderSpecularPower?: number | null;
   shaderRimThreshold?: number | null;
   shaderControllerRimThreshold?: number | null;
@@ -228,6 +233,8 @@ type HeadMorphRuntime = {
 type CharacterEyeMaterialController = {
   lightInfluence: number | null;
   lightInfluenceForEyeHighlight: number | null;
+  tintColor: string | null;
+  emissionColor: string | null;
   baseTiling: SekaiLayerAtlas | null;
   highlightTiling: SekaiLayerAtlas | null;
 };
@@ -630,6 +637,17 @@ function readRuntimeNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function readRuntimeColor(value: unknown) {
+  const record = asRuntimeRecord(value);
+  const r = readRuntimeNumber(record.r ?? record.R);
+  const g = readRuntimeNumber(record.g ?? record.G);
+  const b = readRuntimeNumber(record.b ?? record.B);
+  if (r === null || g === null || b === null) {
+    return null;
+  }
+  return `#${new THREE.Color(r, g, b).getHexString()}`;
+}
+
 function readRuntimeTiling(value: unknown, enabled = true): SekaiLayerAtlas | null {
   const record = asRuntimeRecord(value);
   const tileX = readRuntimeNumber(record.tileX ?? record.TileX);
@@ -656,6 +674,8 @@ function readCharacterEyeMaterialController(
     lightInfluenceForEyeHighlight: readRuntimeNumber(
       eye.lightInfluenceForEyeHighlight ?? eye.LightInfluenceForEyeHighlight
     ),
+    tintColor: readRuntimeColor(eye.tintColor ?? eye.TintColor),
+    emissionColor: readRuntimeColor(eye.emissionColor ?? eye.EmissionColor),
     // The eye mesh UV already spans the left/right eye atlas. Keep this visible in debug
     // without cropping it again unless we later confirm the exact runtime remap.
     baseTiling: readRuntimeTiling(eye.baseTiling ?? eye.BaseTiling, false),
@@ -2267,6 +2287,11 @@ export class PjskViewerApp {
             shaderHasMainTex: shaderUniforms?.uUseMainTex?.value ?? null,
             shaderHasShadowTex: shaderUniforms?.uUseShadowTex?.value ?? null,
             shaderHasValueTex: shaderUniforms?.uUseValueTex?.value ?? null,
+            shaderLightDirectionX: shaderUniforms?.uLightDirection?.value?.x ?? null,
+            shaderLightDirectionY: shaderUniforms?.uLightDirection?.value?.y ?? null,
+            shaderLightDirectionZ: shaderUniforms?.uLightDirection?.value?.z ?? null,
+            shaderShadowThreshold: shaderUniforms?.uShadowThreshold?.value ?? null,
+            shaderShadowWeight: shaderUniforms?.uShadowWeight?.value ?? null,
             shaderSpecularPower: shaderUniforms?.uSpecularPower?.value ?? null,
             shaderRimThreshold: shaderUniforms?.uRimThreshold?.value ?? null,
             shaderControllerRimThreshold:
@@ -2345,6 +2370,8 @@ export class PjskViewerApp {
           "eye",
           options.eyeController?.baseTiling,
           {
+            tintColor: options.eyeController?.tintColor,
+            emissionColor: options.eyeController?.emissionColor,
             lightInfluence: options.eyeController?.lightInfluence ?? lighting?.lightInfluence,
             distortionFps: lighting?.distortionFps,
             distortionIntensity: lighting?.distortionIntensity,
@@ -2366,6 +2393,8 @@ export class PjskViewerApp {
           "eyelight",
           options.eyeController?.highlightTiling,
           {
+            tintColor: options.eyeController?.tintColor,
+            emissionColor: options.eyeController?.emissionColor,
             lightInfluence: options.eyeController?.lightInfluence ?? lighting?.lightInfluence,
             highlightInfluence: options.eyeController?.lightInfluenceForEyeHighlight ?? lighting?.lightInfluenceForEyeHighlight,
             distortionFps: lighting?.distortionFps,
@@ -2485,6 +2514,11 @@ export class PjskViewerApp {
             shaderHasShadowTex: shaderUniforms?.uUseShadowTex?.value ?? null,
             shaderHasFaceShadowTex: shaderUniforms?.uUseFaceShadowTex?.value ?? null,
             shaderHasValueTex: shaderUniforms?.uUseValueTex?.value ?? null,
+            shaderLightDirectionX: shaderUniforms?.uLightDirection?.value?.x ?? null,
+            shaderLightDirectionY: shaderUniforms?.uLightDirection?.value?.y ?? null,
+            shaderLightDirectionZ: shaderUniforms?.uLightDirection?.value?.z ?? null,
+            shaderShadowThreshold: shaderUniforms?.uShadowThreshold?.value ?? null,
+            shaderShadowWeight: shaderUniforms?.uShadowWeight?.value ?? null,
             shaderSpecularPower: shaderUniforms?.uSpecularPower?.value ?? null,
             shaderRimThreshold: shaderUniforms?.uRimThreshold?.value ?? null,
             shaderControllerRimThreshold:

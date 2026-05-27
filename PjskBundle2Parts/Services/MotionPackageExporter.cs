@@ -603,10 +603,64 @@ public sealed class MotionPackageExporter
 
         return new PjskLightMotionClip(
             source.Name,
+            InferLightControllerKind(source.Name, curves),
             BakeSampleRate,
             source.Duration,
             curves
         );
+    }
+
+    private static string InferLightControllerKind(
+        string clipName,
+        IReadOnlyList<PjskLightMotionCurve> curves
+    )
+    {
+        var normalizedName = clipName.Replace('-', '_').ToLowerInvariant();
+        if (normalizedName.Contains("character_rim") || normalizedName.Contains("chara_rim"))
+        {
+            return "character_rim";
+        }
+        if (normalizedName.Contains("character_ambient") || normalizedName.Contains("chara_ambient"))
+        {
+            return "character_ambient";
+        }
+        if (normalizedName.Contains("directional") || normalizedName.Contains("direction"))
+        {
+            return "directional";
+        }
+        if (normalizedName.Contains("ambient"))
+        {
+            return "ambient";
+        }
+        if (normalizedName.Contains("rim"))
+        {
+            return "character_rim";
+        }
+
+        var properties = curves.Select(curve => curve.Property).ToHashSet(StringComparer.Ordinal);
+        if (
+            properties.Contains("rimColor.r") ||
+            properties.Contains("rimColor.g") ||
+            properties.Contains("rimColor.b") ||
+            properties.Contains("shadowRimColor.r") ||
+            properties.Contains("shadowRimColor.g") ||
+            properties.Contains("shadowRimColor.b") ||
+            properties.Contains("edgeSmoothness") ||
+            properties.Contains("shadowSharpness") ||
+            properties.Contains("isUseShadowColor")
+        )
+        {
+            return "character_rim";
+        }
+        if (properties.Contains("shadowColor.r") || properties.Contains("shadowColor.g") || properties.Contains("shadowColor.b"))
+        {
+            return "directional";
+        }
+        if (properties.Contains("ambientColor.r") || properties.Contains("ambientColor.g") || properties.Contains("ambientColor.b"))
+        {
+            return "ambient";
+        }
+        return "unknown";
     }
 
     private static List<float> BuildBakeTimes(float duration)

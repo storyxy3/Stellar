@@ -118,18 +118,26 @@ export function createSekaiFaceMaterial(initial: FaceMaterialUniforms) {
         if (uUseShadowTex > 0.5 && uUseFaceShadowTex > 0.5) {
           vec3 shadowColor = texture2D(uShadowTex, vUv).rgb;
           vec3 lightDir = normalize(uLightDirection);
-          float faceSide = dot(lightDir, normalize(uFaceRight));
-          float faceFront = dot(lightDir, normalize(uFaceForward));
+          vec3 faceRight = normalize(uFaceRight);
+          vec3 faceForward = normalize(uFaceForward);
+          vec2 faceLight = vec2(dot(lightDir, faceRight), dot(lightDir, faceForward));
+          faceLight /= max(length(faceLight), 0.001);
+          float faceSide = faceLight.x;
+          float faceFront = faceLight.y;
           vec2 sdfUv = vFaceShadowUv;
           if (faceSide < 0.0) {
             sdfUv.x = 1.0 - sdfUv.x;
           }
-          vec3 sdfColor = texture2D(uFaceShadowTex, sdfUv).rgb;
-          float sdfLimit = clamp(1.0 - (faceFront * 0.5 + 0.5), 0.02, 0.98);
-          float sdfWidth = mix(0.015, 0.12, clamp(uFaceSoftness, 0.0, 1.0));
-          float sdfMask = 1.0 - smoothstep(sdfLimit - sdfWidth, sdfLimit + sdfWidth, sdfColor.r);
-          vec3 softFaceShadow = mix(mainColor, shadowColor, 0.24);
-          color = mix(color, softFaceShadow, sdfMask * skinMask * 0.28);
+          float sdfValue = texture2D(uFaceShadowTex, sdfUv).r;
+          float sdfLimit = clamp(1.0 - (faceFront * 0.5 + 0.5), 0.015, 0.985);
+          float sdfWidth = mix(0.012, 0.075, clamp(uFaceSoftness, 0.0, 1.0));
+          float sideGate = smoothstep(0.035, 0.18, abs(faceSide));
+          float backGate = smoothstep(0.0, 0.35, -faceFront);
+          float sdfMask = 1.0 - smoothstep(sdfLimit - sdfWidth, sdfLimit + sdfWidth, sdfValue);
+          sdfMask *= max(sideGate, backGate);
+          vec3 softFaceShadow = mix(mainColor, shadowColor, 0.56);
+          float faceShadowStrength = clamp(0.20 + abs(faceSide) * 0.34 + backGate * 0.18, 0.0, 0.58);
+          color = mix(color, softFaceShadow, sdfMask * skinMask * faceShadowStrength);
         }
         float sceneExposure = clamp(0.88 + uLightIntensity * 0.25 + uAmbientIntensity * 0.18, 0.82, 1.18);
         color *= sceneExposure * vec3(1.01, 0.998, 0.986);

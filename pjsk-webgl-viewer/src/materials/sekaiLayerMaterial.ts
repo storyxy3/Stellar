@@ -10,6 +10,8 @@ export type SekaiLayerAtlas = {
 };
 
 export type SekaiLayerOptions = {
+  tintColor?: THREE.ColorRepresentation | null;
+  emissionColor?: THREE.ColorRepresentation | null;
   lightInfluence?: number | null;
   highlightInfluence?: number | null;
   distortionFps?: number | null;
@@ -43,10 +45,15 @@ export function createSekaiLayerMaterial(
     depthTest: true,
     side: THREE.DoubleSide,
     blending: isAdditive ? THREE.AdditiveBlending : THREE.NormalBlending,
+    polygonOffset: true,
+    polygonOffsetFactor: isEyelight ? -2 : -1,
+    polygonOffsetUnits: isEyelight ? -2 : -1,
     uniforms: {
       uMainTex: { value: texture },
       uUseMainTex: { value: texture ? 1.0 : 0.0 },
       uMode: { value: mode === "eye" ? 1.0 : isEyelight ? 2.0 : 0.0 },
+      uTintColor: { value: new THREE.Color(options?.tintColor ?? "#ffffff") },
+      uEmissionColor: { value: new THREE.Color(options?.emissionColor ?? "#000000") },
       uAtlasTile: { value: new THREE.Vector2(atlasTileX, atlasTileY) },
       uAtlasSample: { value: atlasSample },
       uUseAtlas: { value: atlas?.enabled === false ? 0.0 : atlas ? 1.0 : 0.0 },
@@ -108,6 +115,8 @@ export function createSekaiLayerMaterial(
       uniform sampler2D uMainTex;
       uniform float uUseMainTex;
       uniform float uMode;
+      uniform vec3 uTintColor;
+      uniform vec3 uEmissionColor;
       uniform vec2 uAtlasTile;
       uniform float uAtlasSample;
       uniform float uUseAtlas;
@@ -169,12 +178,15 @@ export function createSekaiLayerMaterial(
         if (alpha < 0.001) {
           discard;
         }
-        vec3 color = sampleColor.rgb;
+        vec3 color = sampleColor.rgb * uTintColor + uEmissionColor;
         if (uMode > 0.5 && uMode < 1.5) {
           color *= mix(1.0, 1.04, uLightInfluence);
         }
         if (uMode > 1.5) {
-          color *= 0.82 + alpha * mix(0.26, 0.52, uHighlightInfluence);
+          float brightness = max(max(sampleColor.r, sampleColor.g), sampleColor.b);
+          color = max(color, vec3(brightness) * uTintColor);
+          color *= 0.95 + alpha * mix(0.45, 0.72, uHighlightInfluence);
+          alpha = clamp(alpha * mix(0.9, 1.2, uHighlightInfluence), 0.0, 1.0);
         }
         gl_FragColor = vec4(outputColor(clamp(color, 0.0, 1.0)), alpha);
       }

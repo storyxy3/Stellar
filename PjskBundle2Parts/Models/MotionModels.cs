@@ -38,6 +38,7 @@ public sealed record PjskLightMotionSet(
 
 public sealed record PjskLightMotionClip(
     [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("controllerKind")] string ControllerKind,
     [property: JsonPropertyName("sampleRate")] float SampleRate,
     [property: JsonPropertyName("duration")] float Duration,
     [property: JsonPropertyName("curves")] IReadOnlyList<PjskLightMotionCurve> Curves

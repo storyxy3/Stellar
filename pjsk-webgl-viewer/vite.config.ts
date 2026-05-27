@@ -4,6 +4,11 @@ export default defineConfig({
   server: {
     host: "0.0.0.0",
     port: 4173,
+    watch: {
+      // WSL drvfs paths such as /mnt/d do not reliably emit file change events.
+      usePolling: true,
+      interval: 250,
+    },
   },
   build: {
     rollupOptions: {

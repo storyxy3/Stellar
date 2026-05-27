@@ -689,6 +689,66 @@ function normalizeRuntimeExtension(raw: unknown) {
   };
 }
 
+function readRuntimePreviewLight(extension: UnknownRecord) {
+  const profile = asRecord(
+    extension.sekaiRuntimeMaterialProfile ?? extension.SekaiRuntimeMaterialProfile
+  );
+  const preview = asRecord(
+    profile.viewerTunedPreview ?? profile.ViewerTunedPreview
+  );
+  const pluginPreview = asRecord(
+    profile.pluginPreview ?? profile.PluginPreview
+  );
+  const pluginDirection = asRecord(
+    pluginPreview.directionalLocation ?? pluginPreview.DirectionalLocation
+  );
+  if (!Object.keys(preview).length) {
+    return null;
+  }
+  const pluginX = readNumber(pluginDirection.x ?? pluginDirection.X, Number.NaN);
+  const pluginY = readNumber(pluginDirection.y ?? pluginDirection.Y, Number.NaN);
+  const pluginZ = readNumber(pluginDirection.z ?? pluginDirection.Z, Number.NaN);
+  const hasPluginDirection = Number.isFinite(pluginX)
+    && Number.isFinite(pluginY)
+    && Number.isFinite(pluginZ);
+  return {
+    x: readNumber(
+      preview.x ?? preview.X,
+      hasPluginDirection ? pluginX : previewState.x
+    ),
+    y: readNumber(
+      preview.y ?? preview.Y,
+      hasPluginDirection ? pluginZ : previewState.y
+    ),
+    z: readNumber(
+      preview.z ?? preview.Z,
+      hasPluginDirection ? -pluginY : previewState.z
+    ),
+    intensity: readNumber(preview.intensity ?? preview.Intensity, previewState.intensity),
+    ambient: readNumber(preview.ambient ?? preview.Ambient, previewState.ambient),
+    shadowThreshold: readNumber(
+      preview.shadowThreshold ?? preview.ShadowThreshold,
+      previewState.shadowThreshold
+    ),
+    shadowWeight: readNumber(preview.shadowWeight ?? preview.ShadowWeight, previewState.shadowWeight),
+    characterAmbient: readNumber(
+      preview.characterAmbient ?? preview.CharacterAmbient,
+      previewState.characterAmbient
+    ),
+    rimIntensity: readNumber(preview.rimIntensity ?? preview.RimIntensity, previewState.rimIntensity),
+    rimThreshold: readNumber(preview.rimThreshold ?? preview.RimThreshold, previewState.rimThreshold),
+    rimDirectionality: readNumber(
+      preview.rimDirectionality ?? preview.RimDirectionality,
+      previewState.rimDirectionality
+    ),
+    faceSoftness: readNumber(preview.faceSoftness ?? preview.FaceSoftness, previewState.faceSoftness),
+    characterHeight: readNumber(
+      preview.characterHeight ?? preview.CharacterHeight,
+      previewState.characterHeight
+    ),
+  };
+}
+
 function readRuntimeMotionPackage(extension: UnknownRecord) {
   return asRecord(extension.motionPackage ?? extension.MotionPackage);
 }
@@ -765,6 +825,11 @@ async function parseConverterFolder(files: File[]) {
       URL.createObjectURL(combinedCharacterFile);
     localAssetState.converterRuntimeExtension = runtime.extension;
     localAssetState.converterCombinedFile = combinedCharacterFile;
+    const runtimePreview = readRuntimePreviewLight(runtime.extension);
+    if (runtimePreview) {
+      Object.assign(previewState, runtimePreview);
+      viewer.updatePreviewLight(previewState);
+    }
     const bodyMotionPath = readEmbeddedBodyMotionPath(runtime.extension);
     const bodyMotionUrl = bodyMotionPath
       ? findConverterUrl(bodyMotionPath)
