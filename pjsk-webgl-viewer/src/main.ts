@@ -1,4 +1,5 @@
 import "./styles/main.css";
+import * as THREE from "three";
 import {
   type BodyAssetManifest,
   type HeadAssetManifest,
@@ -52,6 +53,35 @@ const animationState = {
 
 type UnknownRecord = Record<string, unknown>;
 
+type LightMotionCurve = {
+  property: string;
+  curveHash: number;
+  pathHash: number;
+  typeId: string;
+  keyframes: Array<{ time: number; value: number }>;
+};
+
+type LightMotionClip = {
+  name: string;
+  controllerKind?: string;
+  sampleRate: number;
+  duration: number;
+  curves: LightMotionCurve[];
+};
+
+type LightMotionSet = {
+  bundlePath?: string;
+  clips: LightMotionClip[];
+};
+
+type LightControllerPreview = {
+  ambient?: Record<string, unknown>;
+  directional?: Record<string, unknown>;
+  characterAmbient?: Record<string, unknown>;
+  characterRim?: Record<string, unknown>;
+  unknownClips: string[];
+};
+
 const localAssetState = {
   faceMotionData: null as FaceMotionSet | null,
   faceMotionError: "" as string,
@@ -66,6 +96,8 @@ const localAssetState = {
   converterBodyMotionPath: null as string | null,
   converterBodyMotionUrl: null as string | null,
   converterEmbeddedFaceMotionData: null as FaceMotionSet | null,
+  converterEmbeddedLightMotionData: null as LightMotionSet | null,
+  converterLightControllerPreview: null as LightControllerPreview | null,
   converterError: "" as string,
 };
 
@@ -762,6 +794,209 @@ function readEmbeddedFaceMotion(extension: UnknownRecord): FaceMotionSet | null 
   return faceMotion as FaceMotionSet;
 }
 
+function readEmbeddedLightMotion(extension: UnknownRecord): LightMotionSet | null {
+  const motionPackage = readRuntimeMotionPackage(extension);
+  const lightMotion = motionPackage.lightMotion ?? motionPackage.LightMotion;
+  if (!lightMotion) {
+    return null;
+  }
+  return lightMotion as LightMotionSet;
+}
+
+function readFirstLightValue(clip: LightMotionClip, property: string) {
+  const curve = clip.curves.find((entry) => entry.property === property);
+  const value = curve?.keyframes[0]?.value;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function formatColorChannel(value: number) {
+  return Math.round(Math.min(Math.max(value, 0), 1) * 255)
+    .toString(16)
+    .padStart(2, "0");
+}
+
+function readFirstLightColor(clip: LightMotionClip, prefix: string) {
+  const r = readFirstLightValue(clip, `${prefix}.r`);
+  const g = readFirstLightValue(clip, `${prefix}.g`);
+  const b = readFirstLightValue(clip, `${prefix}.b`);
+  if (r === null || g === null || b === null) {
+    return null;
+  }
+  return `#${formatColorChannel(r)}${formatColorChannel(g)}${formatColorChannel(b)}`;
+}
+
+function readFirstLightVector(clip: LightMotionClip, prefix: string): Vec3 | null {
+  const x = readFirstLightValue(clip, `${prefix}.x`);
+  const y = readFirstLightValue(clip, `${prefix}.y`);
+  const z = readFirstLightValue(clip, `${prefix}.z`);
+  if (x === null || y === null || z === null) {
+    return null;
+  }
+  return { x, y, z };
+}
+
+function buildLightControllerPreview(lightMotion: LightMotionSet | null): LightControllerPreview | null {
+  if (!lightMotion?.clips.length) {
+    return null;
+  }
+  const preview: LightControllerPreview = { unknownClips: [] };
+  for (const clip of lightMotion.clips) {
+    const controllerKind = clip.controllerKind ?? "unknown";
+    switch (controllerKind) {
+      case "ambient":
+        preview.ambient = {
+          clip: clip.name,
+          intensity: readFirstLightValue(clip, "intensity"),
+          ambientColor: readFirstLightColor(clip, "ambientColor"),
+        };
+        break;
+      case "directional":
+        preview.directional = {
+          clip: clip.name,
+          shadowColor: readFirstLightColor(clip, "shadowColor"),
+          outlineColor: readFirstLightColor(clip, "outlineColor"),
+          outlineBlending: readFirstLightValue(clip, "outlineBlending"),
+          rotationEuler: readFirstLightVector(clip, "rotationEuler"),
+          hasRotationEuler: clip.curves.some((curve) =>
+            curve.property === "rotationEuler" || curve.property.startsWith("rotationEuler.")
+          ),
+        };
+        break;
+      case "character_ambient":
+        preview.characterAmbient = {
+          clip: clip.name,
+          intensity: readFirstLightValue(clip, "intensity"),
+          ambientColor: readFirstLightColor(clip, "ambientColor"),
+        };
+        break;
+      case "character_rim":
+        preview.characterRim = {
+          clip: clip.name,
+          rimColor: readFirstLightColor(clip, "rimColor"),
+          shadowRimColor: readFirstLightColor(clip, "shadowRimColor"),
+          lightInfluence: readFirstLightValue(clip, "lightInfluence"),
+          edgeSmoothness: readFirstLightValue(clip, "edgeSmoothness"),
+          shadowSharpness: readFirstLightValue(clip, "shadowSharpness"),
+          isUseShadowColor: readFirstLightValue(clip, "isUseShadowColor"),
+        };
+        break;
+      default:
+        preview.unknownClips.push(formatLightMotionClip(clip));
+        break;
+    }
+  }
+  return preview;
+}
+
+function readOptionalLightNumber(value: unknown) {
+  const next = readNumber(value, Number.NaN);
+  return Number.isFinite(next) ? next : null;
+}
+
+function clampLightControllerValue(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function readOptionalVec3Record(value: unknown): Vec3 | null {
+  const record = asRecord(value);
+  const x = readOptionalLightNumber(record.x ?? record.X);
+  const y = readOptionalLightNumber(record.y ?? record.Y);
+  const z = readOptionalLightNumber(record.z ?? record.Z);
+  if (x === null || y === null || z === null) {
+    return null;
+  }
+  return { x, y, z };
+}
+
+function eulerDegreesToViewerLightDirection(euler: Vec3): Vec3 {
+  const direction = new THREE.Vector3(0, 0, 1)
+    .applyEuler(
+      new THREE.Euler(
+        THREE.MathUtils.degToRad(euler.x),
+        THREE.MathUtils.degToRad(euler.y),
+        THREE.MathUtils.degToRad(euler.z),
+        "XYZ"
+      )
+    )
+    .normalize();
+  return { x: direction.x, y: direction.y, z: direction.z };
+}
+
+function applyLightControllerPreview(preview: LightControllerPreview | null) {
+  const directionalShadowColor = readString(preview?.directional?.shadowColor);
+  viewer.updateGlobalShadowColor(directionalShadowColor || "#ffffff");
+  const ambientColor =
+    readString(preview?.characterAmbient?.ambientColor) ||
+    readString(preview?.ambient?.ambientColor) ||
+    null;
+  const isUseShadowColor = readOptionalLightNumber(preview?.characterRim?.isUseShadowColor);
+  const shadowRimColor =
+    isUseShadowColor === null || isUseShadowColor > 0.5
+      ? readString(preview?.characterRim?.shadowRimColor) || null
+      : null;
+  viewer.updateLightControllerColors({
+    ambientColor,
+    rimColor: readString(preview?.characterRim?.rimColor) || null,
+    shadowRimColor,
+  });
+  viewer.updateLightControllerRimShape({
+    edgeSmoothness: readOptionalLightNumber(preview?.characterRim?.edgeSmoothness),
+    shadowSharpness: readOptionalLightNumber(preview?.characterRim?.shadowSharpness),
+  });
+  viewer.updateLightControllerOutline({
+    color: readString(preview?.directional?.outlineColor) || null,
+    blending: readOptionalLightNumber(preview?.directional?.outlineBlending),
+  });
+
+  let previewLightChanged = false;
+  const rotationEuler = readOptionalVec3Record(preview?.directional?.rotationEuler);
+  if (rotationEuler) {
+    const direction = eulerDegreesToViewerLightDirection(rotationEuler);
+    previewState.x = direction.x;
+    previewState.y = direction.y;
+    previewState.z = direction.z;
+    previewLightChanged = true;
+  }
+
+  const ambientIntensity = readOptionalLightNumber(preview?.ambient?.intensity);
+  if (ambientIntensity !== null) {
+    previewState.ambient = clampLightControllerValue(
+      previewState.ambient * Math.max(ambientIntensity, 0),
+      0,
+      0.8
+    );
+    previewLightChanged = true;
+  }
+
+  const characterAmbientIntensity = readOptionalLightNumber(
+    preview?.characterAmbient?.intensity
+  );
+  if (characterAmbientIntensity !== null) {
+    previewState.characterAmbient = clampLightControllerValue(
+      previewState.characterAmbient * Math.max(characterAmbientIntensity, 0),
+      0,
+      1
+    );
+    previewLightChanged = true;
+  }
+
+  const rimLightInfluence = readOptionalLightNumber(
+    preview?.characterRim?.lightInfluence
+  );
+  if (rimLightInfluence !== null) {
+    previewState.rimIntensity = clampLightControllerValue(
+      previewState.rimIntensity * Math.max(rimLightInfluence, 0),
+      0,
+      1.5
+    );
+    previewLightChanged = true;
+  }
+
+  if (previewLightChanged) {
+    viewer.updatePreviewLight(previewState);
+  }
+}
+
 function readEmbeddedBodyMotionPath(extension: UnknownRecord) {
   const motionPackage = readRuntimeMotionPackage(extension);
   return readString(motionPackage.bodyMotionGlb ?? motionPackage.BodyMotionGlb) || null;
@@ -795,6 +1030,9 @@ async function parseConverterFolder(files: File[]) {
   localAssetState.converterBodyMotionPath = null;
   localAssetState.converterBodyMotionUrl = null;
   localAssetState.converterEmbeddedFaceMotionData = null;
+  localAssetState.converterEmbeddedLightMotionData = null;
+  localAssetState.converterLightControllerPreview = null;
+  applyLightControllerPreview(null);
   localAssetState.converterError = "";
 
   for (const file of files) {
@@ -838,6 +1076,11 @@ async function parseConverterFolder(files: File[]) {
     localAssetState.converterBodyMotionUrl = bodyMotionUrl;
     const embeddedFaceMotion = readEmbeddedFaceMotion(runtime.extension);
     localAssetState.converterEmbeddedFaceMotionData = embeddedFaceMotion;
+    localAssetState.converterEmbeddedLightMotionData =
+      readEmbeddedLightMotion(runtime.extension);
+    localAssetState.converterLightControllerPreview =
+      buildLightControllerPreview(localAssetState.converterEmbeddedLightMotionData);
+    applyLightControllerPreview(localAssetState.converterLightControllerPreview);
     if (embeddedFaceMotion) {
       localAssetState.faceMotionData = embeddedFaceMotion;
       localAssetState.faceMotionError = "";
@@ -1226,9 +1469,17 @@ function resetLocalOverrides() {
   localAssetState.converterBodyMotionPath = null;
   localAssetState.converterBodyMotionUrl = null;
   localAssetState.converterEmbeddedFaceMotionData = null;
+  localAssetState.converterEmbeddedLightMotionData = null;
+  localAssetState.converterLightControllerPreview = null;
+  applyLightControllerPreview(null);
   localAssetState.converterError = "";
   localAssetState.faceMotionData = null;
   localAssetState.faceMotionError = "";
+}
+
+function formatLightMotionClip(clip: LightMotionClip) {
+  const controllerKind = clip.controllerKind ?? "unknown";
+  return `${clip.name}:${controllerKind}`;
 }
 
 function renderImportSummary(loading = false) {
@@ -1372,6 +1623,13 @@ function renderImportSummary(loading = false) {
             : ""
       }
       ${
+        localAssetState.converterEmbeddedLightMotionData?.clips.length
+          ? `<code>Motion Package Light: ${localAssetState.converterEmbeddedLightMotionData.clips.map(formatLightMotionClip).join(" -> ")}</code>`
+          : localAssetState.converterRuntimeExtension
+            ? `<code>Motion Package Light: <none></code>`
+            : ""
+      }
+      ${
         lastAnimationSnapshot?.activeClipName
           ? `<code>Runtime Body Clip: ${lastAnimationSnapshot.activeClipName}${
               lastAnimationSnapshot.queuedLoopClipName
@@ -1419,6 +1677,14 @@ function renderImportSummary(loading = false) {
       runtimeBodyMotionResolved: Boolean(localAssetState.converterBodyMotionUrl),
       embeddedFaceMotionClips:
         localAssetState.converterEmbeddedFaceMotionData?.clips.map((clip) => clip.name) ?? [],
+      embeddedLightMotionClips:
+        localAssetState.converterEmbeddedLightMotionData?.clips.map((clip) => ({
+          name: clip.name,
+          controllerKind: clip.controllerKind ?? "unknown",
+          curveCount: clip.curves.length,
+          properties: Array.from(new Set(clip.curves.map((curve) => curve.property))).sort(),
+        })) ?? [],
+      lightControllerPreview: localAssetState.converterLightControllerPreview,
       animationUrls: bodyAsset.source.animationUrls ?? [],
       headMorphChannels: headAsset.morphChannels ?? [],
       headMorphBindings: headAsset.morphChannelBindings ?? [],

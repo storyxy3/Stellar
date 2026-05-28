@@ -26,6 +26,14 @@ export type BodyMaterialUniforms = {
   saturation?: number;
   partsAmbientColor?: THREE.ColorRepresentation;
   reflectionBlendColor?: THREE.ColorRepresentation;
+  globalShadowColor?: THREE.ColorRepresentation;
+  controllerAmbientColor?: THREE.ColorRepresentation;
+  controllerRimColor?: THREE.ColorRepresentation;
+  controllerShadowRimColor?: THREE.ColorRepresentation;
+  controllerRimColorWeight?: number;
+  controllerShadowRimColorWeight?: number;
+  controllerRimEdgeSmoothness?: number;
+  controllerRimShadowSharpness?: number;
   skinTintEnabled?: boolean;
 };
 
@@ -43,6 +51,18 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
       uSkinColor2: { value: new THREE.Color(initial.skinColor2 ?? initial.skinColor1 ?? initial.shadowColor) },
       uPartsAmbientColor: { value: new THREE.Color(initial.partsAmbientColor ?? "#ffffff") },
       uReflectionBlendColor: { value: new THREE.Color(initial.reflectionBlendColor ?? "#ffffff") },
+      uGlobalShadowColor: { value: new THREE.Color(initial.globalShadowColor ?? "#ffffff") },
+      uControllerAmbientColor: { value: new THREE.Color(initial.controllerAmbientColor ?? "#ffffff") },
+      uControllerRimColor: { value: new THREE.Color(initial.controllerRimColor ?? "#e6edf9") },
+      uControllerShadowRimColor: { value: new THREE.Color(initial.controllerShadowRimColor ?? "#ffffff") },
+      uControllerRimColorWeight: {
+        value: initial.controllerRimColorWeight ?? (initial.controllerRimColor ? 1.0 : 0.0),
+      },
+      uControllerShadowRimColorWeight: {
+        value: initial.controllerShadowRimColorWeight ?? (initial.controllerShadowRimColor ? 1.0 : 0.0),
+      },
+      uControllerRimEdgeSmoothness: { value: initial.controllerRimEdgeSmoothness ?? 0.38 },
+      uControllerRimShadowSharpness: { value: initial.controllerRimShadowSharpness ?? 0.0 },
       uMainTex: { value: initial.mainTex ?? null },
       uShadowTex: { value: initial.shadowTex ?? null },
       uValueTex: { value: initial.valueTex ?? null },
@@ -107,6 +127,14 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
       uniform vec3 uSkinColor2;
       uniform vec3 uPartsAmbientColor;
       uniform vec3 uReflectionBlendColor;
+      uniform vec3 uGlobalShadowColor;
+      uniform vec3 uControllerAmbientColor;
+      uniform vec3 uControllerRimColor;
+      uniform vec3 uControllerShadowRimColor;
+      uniform float uControllerRimColorWeight;
+      uniform float uControllerShadowRimColorWeight;
+      uniform float uControllerRimEdgeSmoothness;
+      uniform float uControllerRimShadowSharpness;
       uniform sampler2D uMainTex;
       uniform sampler2D uShadowTex;
       uniform sampler2D uValueTex;
@@ -197,13 +225,13 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
         float shadowBand = clamp((1.0 - litBand) * uShadowWeight, 0.0, 1.0);
 
         // PJSK character shader semantics: C is the lit color; S already owns the toon-shadow target color.
-        vec3 fallbackShadowColor = mainColor * uShadowColor;
-        vec3 shadowColor = (uUseShadowTex > 0.5) ? shadowValue : fallbackShadowColor;
+        vec3 fallbackShadowColor = mainColor * uShadowColor * uGlobalShadowColor;
+        vec3 shadowColor = (uUseShadowTex > 0.5) ? shadowValue * uGlobalShadowColor : fallbackShadowColor;
         vec3 color = mix(mainColor, shadowColor, shadowBand);
 
         vec3 partsAmbient = mix(vec3(1.0), uPartsAmbientColor, 0.62);
         float characterAmbient = clamp(uAmbientIntensity + uCharacterAmbientIntensity, 0.0, 1.0);
-        vec3 ambientTarget = max(color, mainColor * partsAmbient);
+        vec3 ambientTarget = max(color, mainColor * partsAmbient * uControllerAmbientColor);
         color = mix(color, ambientTarget, characterAmbient * 0.18 * (0.35 + shadowBand * 0.65));
 
         float halfLambert = clamp(dot(normal, normalize(lightDir + viewDir)), 0.0, 1.0);
@@ -217,7 +245,7 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
         float nDotRim = dot(normal, rimDirection);
         float vDotRim = max(dot(viewDir, rimDirection), 0.0);
         float rimFactorX = 7.2;
-        float rimFactorZ = 0.38;
+        float rimFactorZ = clamp(uControllerRimEdgeSmoothness, 0.02, 1.0);
         float rimFactorW = clamp(uRimDirectionality, 0.0, 1.0);
         float viewFresnel = pow(1.0 - nDotV, 10.0 - rimFactorX);
         float rimViewModulation = max(0.0, 1.0 + rimFactorW * (vDotRim - 1.0));
@@ -225,9 +253,24 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
         float rimThreshold = clamp(max(uRimThreshold, uControllerRimThreshold), 0.0, 0.95);
         float rim = smoothstep(0.0, rimFactorZ, rimBase - rimThreshold);
         float rimMask = max(hMask, hAlpha);
-        vec3 rimLitColor = mix(vec3(0.9, 0.93, 0.98), uReflectionBlendColor, 0.2);
-        vec3 rimShadowColor = mix(shadowColor, rimLitColor, 0.42);
-        float rimColorMix = smoothstep(-0.5, 0.5, nDotRim);
+        vec3 controllerRimBase = mix(
+          vec3(0.9, 0.93, 0.98),
+          uControllerRimColor,
+          clamp(uControllerRimColorWeight, 0.0, 1.0)
+        );
+        vec3 rimLitColor = mix(controllerRimBase, uReflectionBlendColor, 0.2);
+        vec3 controllerShadowRimBase = mix(
+          shadowColor,
+          uControllerShadowRimColor,
+          clamp(uControllerShadowRimColorWeight, 0.0, 1.0)
+        );
+        vec3 rimShadowColor = mix(controllerShadowRimBase, rimLitColor, 0.42);
+        float rimShadowTransitionWidth = mix(1.0, 0.08, clamp(uControllerRimShadowSharpness, 0.0, 1.0));
+        float rimColorMix = smoothstep(
+          -rimShadowTransitionWidth * 0.5,
+          rimShadowTransitionWidth * 0.5,
+          nDotRim
+        );
         vec3 rimColor = mix(rimLitColor, rimShadowColor, rimColorMix);
         float rimEnergy = 0.42 * uRimIntensity * clamp(0.72 + uLightIntensity, 0.0, 1.25);
         color += rimColor * rim * rimMask * rimEnergy * mix(0.42, 1.0, litBand);
@@ -252,6 +295,16 @@ export function updateSekaiBodyMaterial(
   material.uniforms.uSkinColor2.value.set(next.skinColor2 ?? next.skinColor1 ?? next.shadowColor);
   material.uniforms.uPartsAmbientColor.value.set(next.partsAmbientColor ?? "#ffffff");
   material.uniforms.uReflectionBlendColor.value.set(next.reflectionBlendColor ?? "#ffffff");
+  material.uniforms.uGlobalShadowColor.value.set(next.globalShadowColor ?? "#ffffff");
+  material.uniforms.uControllerAmbientColor.value.set(next.controllerAmbientColor ?? "#ffffff");
+  material.uniforms.uControllerRimColor.value.set(next.controllerRimColor ?? "#e6edf9");
+  material.uniforms.uControllerShadowRimColor.value.set(next.controllerShadowRimColor ?? "#ffffff");
+  material.uniforms.uControllerRimColorWeight.value =
+    next.controllerRimColorWeight ?? (next.controllerRimColor ? 1.0 : 0.0);
+  material.uniforms.uControllerShadowRimColorWeight.value =
+    next.controllerShadowRimColorWeight ?? (next.controllerShadowRimColor ? 1.0 : 0.0);
+  material.uniforms.uControllerRimEdgeSmoothness.value = next.controllerRimEdgeSmoothness ?? 0.38;
+  material.uniforms.uControllerRimShadowSharpness.value = next.controllerRimShadowSharpness ?? 0.0;
   material.uniforms.uMainTex.value = next.mainTex ?? null;
   material.uniforms.uShadowTex.value = next.shadowTex ?? null;
   material.uniforms.uValueTex.value = next.valueTex ?? null;

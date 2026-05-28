@@ -390,6 +390,7 @@ function createSekaiOutlineMaterial(
     vertexColors: useVertexColor,
   });
   material.name = "pjsk_shell_outline";
+  material.userData.pjskBaseOutlineColor = `#${outlineColor.getHexString()}`;
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uOutlineWidthNear = { value: sourceOutlineWidth * 0.34 };
     shader.uniforms.uOutlineWidthFar = { value: sourceOutlineWidth * 0.88 };
@@ -499,6 +500,30 @@ function cloneBodyShaderMaterial(
     reflectionBlendColor:
       params.lighting?.reflectionBlendColor ??
       `#${source.uniforms.uReflectionBlendColor.value.getHexString()}`,
+    globalShadowColor:
+      source.uniforms.uGlobalShadowColor
+        ? `#${source.uniforms.uGlobalShadowColor.value.getHexString()}`
+        : "#ffffff",
+    controllerAmbientColor:
+      source.uniforms.uControllerAmbientColor
+        ? `#${source.uniforms.uControllerAmbientColor.value.getHexString()}`
+        : "#ffffff",
+    controllerRimColor:
+      source.uniforms.uControllerRimColor
+        ? `#${source.uniforms.uControllerRimColor.value.getHexString()}`
+        : "#e6edf9",
+    controllerShadowRimColor:
+      source.uniforms.uControllerShadowRimColor
+        ? `#${source.uniforms.uControllerShadowRimColor.value.getHexString()}`
+        : "#ffffff",
+    controllerRimColorWeight:
+      source.uniforms.uControllerRimColorWeight?.value ?? 0,
+    controllerShadowRimColorWeight:
+      source.uniforms.uControllerShadowRimColorWeight?.value ?? 0,
+    controllerRimEdgeSmoothness:
+      source.uniforms.uControllerRimEdgeSmoothness?.value ?? 0.38,
+    controllerRimShadowSharpness:
+      source.uniforms.uControllerRimShadowSharpness?.value ?? 0,
     skinTintEnabled:
       params.skinTintEnabled ??
       ((source.uniforms.uSkinTintEnabled?.value ?? 1.0) > 0.5),
@@ -964,6 +989,8 @@ export class PjskViewerApp {
   private currentAnimationMixer: THREE.AnimationMixer | null = null;
   private currentAnimationFinishedHandler: THREE.EventListener<any, any, any> | null = null;
   private currentAnimationError: string | null = null;
+  private controllerOutlineColor: THREE.Color | null = null;
+  private controllerOutlineBlending = 0;
   private queuedLoopClipName: string | null = null;
   private currentFaceMotionSet: FaceMotionSet | null = null;
   private currentFaceMotionClip: FaceMotionClip | null = null;
@@ -1541,6 +1568,14 @@ export class PjskViewerApp {
       saturation: this.bodyMaterial.uniforms.uSaturation.value,
       partsAmbientColor: `#${this.bodyMaterial.uniforms.uPartsAmbientColor.value.getHexString()}`,
       reflectionBlendColor: `#${this.bodyMaterial.uniforms.uReflectionBlendColor.value.getHexString()}`,
+      globalShadowColor: `#${this.bodyMaterial.uniforms.uGlobalShadowColor.value.getHexString()}`,
+      controllerAmbientColor: `#${this.bodyMaterial.uniforms.uControllerAmbientColor.value.getHexString()}`,
+      controllerRimColor: `#${this.bodyMaterial.uniforms.uControllerRimColor.value.getHexString()}`,
+      controllerShadowRimColor: `#${this.bodyMaterial.uniforms.uControllerShadowRimColor.value.getHexString()}`,
+      controllerRimColorWeight: this.bodyMaterial.uniforms.uControllerRimColorWeight.value,
+      controllerShadowRimColorWeight: this.bodyMaterial.uniforms.uControllerShadowRimColorWeight.value,
+      controllerRimEdgeSmoothness: this.bodyMaterial.uniforms.uControllerRimEdgeSmoothness.value,
+      controllerRimShadowSharpness: this.bodyMaterial.uniforms.uControllerRimShadowSharpness.value,
       skinTintEnabled: true,
     });
     updateSekaiBodyMaterial(this.hairMaterial, {
@@ -1562,6 +1597,14 @@ export class PjskViewerApp {
       saturation: this.hairMaterial.uniforms.uSaturation.value,
       partsAmbientColor: `#${this.hairMaterial.uniforms.uPartsAmbientColor.value.getHexString()}`,
       reflectionBlendColor: `#${this.hairMaterial.uniforms.uReflectionBlendColor.value.getHexString()}`,
+      globalShadowColor: `#${this.hairMaterial.uniforms.uGlobalShadowColor.value.getHexString()}`,
+      controllerAmbientColor: `#${this.hairMaterial.uniforms.uControllerAmbientColor.value.getHexString()}`,
+      controllerRimColor: `#${this.hairMaterial.uniforms.uControllerRimColor.value.getHexString()}`,
+      controllerShadowRimColor: `#${this.hairMaterial.uniforms.uControllerShadowRimColor.value.getHexString()}`,
+      controllerRimColorWeight: this.hairMaterial.uniforms.uControllerRimColorWeight.value,
+      controllerShadowRimColorWeight: this.hairMaterial.uniforms.uControllerShadowRimColorWeight.value,
+      controllerRimEdgeSmoothness: this.hairMaterial.uniforms.uControllerRimEdgeSmoothness.value,
+      controllerRimShadowSharpness: this.hairMaterial.uniforms.uControllerRimShadowSharpness.value,
       skinTintEnabled: false,
     });
     updateSekaiFaceMaterial(this.faceMaterial, {
@@ -1585,6 +1628,150 @@ export class PjskViewerApp {
       faceSoftness: next.faceSoftness,
     });
     this.updateLoadedMaterialLight(next);
+  }
+
+  updateGlobalShadowColor(color: THREE.ColorRepresentation) {
+    const nextColor = new THREE.Color(color);
+    for (const material of [this.bodyMaterial, this.hairMaterial]) {
+      material.uniforms.uGlobalShadowColor?.value.copy(nextColor);
+    }
+    for (const slot of [this.bodySlot, this.headSlot]) {
+      slot.traverse((node) => {
+        const mesh = node as THREE.Mesh;
+        if (!mesh.isMesh) {
+          return;
+        }
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const material of materials) {
+          if (material instanceof THREE.ShaderMaterial) {
+            material.uniforms.uGlobalShadowColor?.value.copy(nextColor);
+          }
+        }
+      });
+    }
+  }
+
+  updateLightControllerColors(colors: {
+    ambientColor?: THREE.ColorRepresentation | null;
+    rimColor?: THREE.ColorRepresentation | null;
+    shadowRimColor?: THREE.ColorRepresentation | null;
+  }) {
+    const ambientColor = new THREE.Color(colors.ambientColor ?? "#ffffff");
+    const rimColor = new THREE.Color(colors.rimColor ?? "#e6edf9");
+    const shadowRimColor = new THREE.Color(colors.shadowRimColor ?? "#ffffff");
+    const rimColorWeight = colors.rimColor ? 1.0 : 0.0;
+    const shadowRimColorWeight = colors.shadowRimColor ? 1.0 : 0.0;
+    const applyUniforms = (material: THREE.ShaderMaterial) => {
+      material.uniforms.uControllerAmbientColor?.value.copy(ambientColor);
+      material.uniforms.uControllerRimColor?.value.copy(rimColor);
+      material.uniforms.uControllerShadowRimColor?.value.copy(shadowRimColor);
+      if (material.uniforms.uControllerRimColorWeight) {
+        material.uniforms.uControllerRimColorWeight.value = rimColorWeight;
+      }
+      if (material.uniforms.uControllerShadowRimColorWeight) {
+        material.uniforms.uControllerShadowRimColorWeight.value = shadowRimColorWeight;
+      }
+    };
+    for (const material of [this.bodyMaterial, this.hairMaterial]) {
+      applyUniforms(material);
+    }
+    for (const slot of [this.bodySlot, this.headSlot]) {
+      slot.traverse((node) => {
+        const mesh = node as THREE.Mesh;
+        if (!mesh.isMesh) {
+          return;
+        }
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const material of materials) {
+          if (material instanceof THREE.ShaderMaterial) {
+            applyUniforms(material);
+          }
+        }
+      });
+    }
+  }
+
+  updateLightControllerRimShape(shape: {
+    edgeSmoothness?: number | null;
+    shadowSharpness?: number | null;
+  }) {
+    const edgeSmoothness = THREE.MathUtils.clamp(
+      shape.edgeSmoothness ?? 0.38,
+      0.02,
+      1.0
+    );
+    const shadowSharpness = THREE.MathUtils.clamp(
+      shape.shadowSharpness ?? 0.0,
+      0.0,
+      1.0
+    );
+    const applyUniforms = (material: THREE.ShaderMaterial) => {
+      if (material.uniforms.uControllerRimEdgeSmoothness) {
+        material.uniforms.uControllerRimEdgeSmoothness.value = edgeSmoothness;
+      }
+      if (material.uniforms.uControllerRimShadowSharpness) {
+        material.uniforms.uControllerRimShadowSharpness.value = shadowSharpness;
+      }
+    };
+    for (const material of [this.bodyMaterial, this.hairMaterial]) {
+      applyUniforms(material);
+    }
+    for (const slot of [this.bodySlot, this.headSlot]) {
+      slot.traverse((node) => {
+        const mesh = node as THREE.Mesh;
+        if (!mesh.isMesh) {
+          return;
+        }
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const material of materials) {
+          if (material instanceof THREE.ShaderMaterial) {
+            applyUniforms(material);
+          }
+        }
+      });
+    }
+  }
+
+  updateLightControllerOutline(outline: {
+    color?: THREE.ColorRepresentation | null;
+    blending?: number | null;
+  }) {
+    this.controllerOutlineColor = outline.color ? new THREE.Color(outline.color) : null;
+    this.controllerOutlineBlending = THREE.MathUtils.clamp(
+      outline.blending ?? (this.controllerOutlineColor ? 1.0 : 0.0),
+      0.0,
+      1.0
+    );
+    for (const slot of [this.bodySlot, this.headSlot]) {
+      slot.traverse((node) => {
+        const mesh = node as THREE.Mesh;
+        if (!mesh.isMesh || !mesh.userData.pjskOutlineShell) {
+          return;
+        }
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const material of materials) {
+          if (material instanceof THREE.MeshBasicMaterial) {
+            this.applyLightControllerOutlineMaterial(material);
+          }
+        }
+      });
+    }
+  }
+
+  private applyLightControllerOutlineMaterial(material: THREE.MeshBasicMaterial) {
+    if (material.name !== "pjsk_shell_outline") {
+      return;
+    }
+    const baseColor = new THREE.Color(
+      typeof material.userData.pjskBaseOutlineColor === "string"
+        ? material.userData.pjskBaseOutlineColor
+        : "#1f1b1b"
+    );
+    if (!this.controllerOutlineColor) {
+      material.color.copy(baseColor);
+      return;
+    }
+    material.color.copy(baseColor.lerp(this.controllerOutlineColor, this.controllerOutlineBlending));
   }
 
   private updateLoadedMaterialLight(next: PreviewLightState) {
@@ -2105,6 +2292,7 @@ export class PjskViewerApp {
         Boolean(mesh.geometry.getAttribute("color")),
         lighting
       );
+      this.applyLightControllerOutlineMaterial(outlineMaterial);
       const outline = mesh instanceof THREE.SkinnedMesh
         ? new THREE.SkinnedMesh(mesh.geometry, outlineMaterial)
         : new THREE.Mesh(mesh.geometry, outlineMaterial);

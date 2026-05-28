@@ -571,7 +571,8 @@ public sealed class MotionPackageExporter
             }
             else if (curve.Binding.TypeId == ClassIDType.Transform && curve.Binding.Attribute == 4)
             {
-                propertyName = "rotationEuler";
+                AddVectorLightCurves(curves, curve, times, source.Duration, "rotationEuler", 3);
+                continue;
             }
 
             if (propertyName is null)
@@ -608,6 +609,47 @@ public sealed class MotionPackageExporter
             source.Duration,
             curves
         );
+    }
+
+    private static void AddVectorLightCurves(
+        List<PjskLightMotionCurve> curves,
+        UnityCurve curve,
+        IReadOnlyList<float> times,
+        float duration,
+        string propertyPrefix,
+        int componentCount
+    )
+    {
+        var componentNames = new[] { "x", "y", "z", "w" };
+        for (var component = 0; component < componentCount; component++)
+        {
+            var componentIndex = component;
+            var keyframes = times
+                .Select(time =>
+                {
+                    var values = SampleCurve(curve, time);
+                    var value = componentIndex < values.Length ? values[componentIndex] : 0f;
+                    return new PjskFaceMotionKeyframe(time, value);
+                })
+                .ToList();
+            if (CanCollapseScalarCurve(keyframes))
+            {
+                var value = keyframes[0].Value;
+                keyframes = new List<PjskFaceMotionKeyframe>
+                {
+                    new(0f, value),
+                    new(duration, value),
+                };
+            }
+
+            curves.Add(new PjskLightMotionCurve(
+                Property: $"{propertyPrefix}.{componentNames[component]}",
+                CurveHash: curve.Binding.Attribute,
+                PathHash: curve.Binding.Path,
+                TypeId: curve.Binding.TypeId.ToString(),
+                Keyframes: keyframes
+            ));
+        }
     }
 
     private static string InferLightControllerKind(
@@ -652,7 +694,18 @@ public sealed class MotionPackageExporter
         {
             return "character_rim";
         }
-        if (properties.Contains("shadowColor.r") || properties.Contains("shadowColor.g") || properties.Contains("shadowColor.b"))
+        if (
+            properties.Contains("shadowColor.r") ||
+            properties.Contains("shadowColor.g") ||
+            properties.Contains("shadowColor.b") ||
+            properties.Contains("outlineColor.r") ||
+            properties.Contains("outlineColor.g") ||
+            properties.Contains("outlineColor.b") ||
+            properties.Contains("outlineBlending") ||
+            properties.Contains("rotationEuler.x") ||
+            properties.Contains("rotationEuler.y") ||
+            properties.Contains("rotationEuler.z")
+        )
         {
             return "directional";
         }
