@@ -24,6 +24,10 @@ import {
 } from "../materials/sekaiLayerMaterial";
 import { loadGltfAnimations, loadGltfPart } from "./loadGltfPart";
 
+const NECK_CONTACT_SHADOW_STRENGTH = 0.0;
+const DEFAULT_CAMERA_TARGET_SCALE = new THREE.Vector3(0.04835, 0.48222, 0.07241);
+const DEFAULT_CAMERA_OFFSET_SCALE = new THREE.Vector3(-0.08532, 0.12848, 1.93551);
+
 export type PartImportMode = "glb" | "proxy";
 export type CompositionMode =
   | "separate_parts"
@@ -51,6 +55,20 @@ export type CompositionStatus = {
 };
 
 export type MaterialBindingMode = "manifest" | "glb";
+export type BodyDebugMode =
+  | "off"
+  | "skin"
+  | "neck"
+  | "contact"
+  | "h_r"
+  | "h_g"
+  | "h_b"
+  | "h_a"
+  | "vertex_r"
+  | "vertex_g"
+  | "base_shadow"
+  | "ndotl_raw"
+  | "h_b_adjusted_shadow";
 export type FaceSdfDebugMode = "off" | "sdf" | "mask" | "limit" | "basis";
 export type FaceSdfDebugLightMode = "scene" | "front" | "left" | "right" | "back";
 export type RenderIsolationMode =
@@ -88,6 +106,8 @@ export type RuntimeMaterialDebug = {
   shaderLightDirectionZ?: number | null;
   shaderShadowThreshold?: number | null;
   shaderShadowWeight?: number | null;
+  shaderShadowWidthOverride?: number | null;
+  shaderValueShadowInfluence?: number | null;
   shaderSpecularPower?: number | null;
   shaderRimThreshold?: number | null;
   shaderControllerRimThreshold?: number | null;
@@ -99,6 +119,14 @@ export type RuntimeMaterialDebug = {
   shaderSkinTintEnabled?: number | null;
   shaderSkinColorDefault?: string | null;
   shaderSkinColor1?: string | null;
+  shaderNeckContactCenterX?: number | null;
+  shaderNeckContactCenterY?: number | null;
+  shaderNeckContactCenterZ?: number | null;
+  shaderNeckContactSizeX?: number | null;
+  shaderNeckContactSizeY?: number | null;
+  shaderNeckContactSizeZ?: number | null;
+  shaderNeckContactStrength?: number | null;
+  shaderBodyDebugMode?: number | null;
   shaderFaceSoftness?: number | null;
   shaderFaceSdfUseLightDirection?: number | null;
   shaderFaceDebugMode?: number | null;
@@ -118,11 +146,27 @@ export type RuntimeHeadMorphDebug = {
   sampleChannels: string[];
 };
 
+export type RuntimeCameraDebug = {
+  position: { x: number; y: number; z: number };
+  target: { x: number; y: number; z: number };
+  offset: { x: number; y: number; z: number };
+  distance: number;
+  polarDegrees: number;
+  azimuthDegrees: number;
+  fovDegrees: number;
+  aspect: number;
+  zoom: number;
+  minPolarDegrees: number;
+  maxPolarDegrees: number;
+  characterHeight: number;
+};
+
 export type RuntimeDebugSnapshot = {
   materialBindingMode: MaterialBindingMode;
   body: RuntimeMaterialDebug[];
   head: RuntimeMaterialDebug[];
   headMorphs: RuntimeHeadMorphDebug[];
+  camera?: RuntimeCameraDebug;
 };
 
 export type SpringBoneRuntimeSnapshot = {
@@ -411,13 +455,13 @@ function shouldSkipOutlineMaterialKind(kind: unknown) {
 
 function getOutlineWidthScaleForMaterialKind(kind: unknown) {
   if (kind === "hair") {
-    return 0.10;
+    return 0.12;
   }
   if (kind === "face_sdf") {
-    return 0.16;
+    return 0.18;
   }
   if (kind === "body") {
-    return 0.44;
+    return 0.48;
   }
   return 0.85;
 }
@@ -444,7 +488,7 @@ function createSekaiOutlineMaterial(
     ? lighting.outlineWidth
     : 0.001;
   const outlineWidthScale = getOutlineWidthScaleForMaterialKind(materialKind);
-  const outlineOpacity = 0.5;
+  const outlineOpacity = 0.42;
   const outlineColor = new THREE.Color("#000000");
   const material = new THREE.MeshBasicMaterial({
     color: outlineColor,
@@ -521,6 +565,79 @@ function getSekaiPreviewRimDirection() {
     .normalize();
 }
 
+function getDefaultCameraTarget(characterHeight: number) {
+  return DEFAULT_CAMERA_TARGET_SCALE.clone().multiplyScalar(characterHeight);
+}
+
+function getDefaultCameraPosition(characterHeight: number) {
+  return getDefaultCameraTarget(characterHeight)
+    .add(DEFAULT_CAMERA_OFFSET_SCALE.clone().multiplyScalar(characterHeight));
+}
+
+function getBodyNeckContactCenter(bodyAsset?: BodyAssetManifest | null) {
+  const anchor = bodyAsset?.neckAnchor ?? { x: 0, y: 1.62, z: 0.16 };
+  return new THREE.Vector3(anchor.x, anchor.y - 0.12, anchor.z - 0.04);
+}
+
+function getBodyNeckContactSize(bodyAsset?: BodyAssetManifest | null, coordinateScale = 1) {
+  const heightScale = THREE.MathUtils.clamp(bodyAsset?.characterHeightMeters ?? 1.6, 1.45, 1.85) / 1.6;
+  return new THREE.Vector3(0.22 * heightScale, 0.14 * heightScale, 0.34 * heightScale)
+    .multiplyScalar(coordinateScale);
+}
+
+function getBodyNeckContactCenterFromResolvedNeck(
+  neckPosition: THREE.Vector3,
+  coordinateScale: number,
+  basisY = new THREE.Vector3(0, 1, 0),
+  basisZ = new THREE.Vector3(0, 0, 1)
+) {
+  return neckPosition.clone()
+    .addScaledVector(basisY, -0.12 * coordinateScale)
+    .addScaledVector(basisZ, -0.04 * coordinateScale);
+}
+
+function getBodyNeckContactCoordinateScale(
+  bodyAsset: BodyAssetManifest,
+  neckPosition: THREE.Vector3
+) {
+  const manifestNeckY = Math.abs(bodyAsset.neckAnchor.y);
+  if (manifestNeckY <= 0.001) {
+    return 1;
+  }
+  return THREE.MathUtils.clamp(Math.abs(neckPosition.y) / manifestNeckY, 0.35, 1.2);
+}
+
+function bodyDebugModeToUniform(mode: BodyDebugMode) {
+  switch (mode) {
+    case "skin":
+      return 1;
+    case "neck":
+      return 2;
+    case "contact":
+      return 3;
+    case "h_r":
+      return 4;
+    case "h_g":
+      return 5;
+    case "h_b":
+      return 6;
+    case "h_a":
+      return 7;
+    case "vertex_r":
+      return 8;
+    case "vertex_g":
+      return 9;
+    case "base_shadow":
+      return 10;
+    case "ndotl_raw":
+      return 11;
+    case "h_b_adjusted_shadow":
+      return 12;
+    default:
+      return 0;
+  }
+}
+
 function cloneBodyShaderMaterial(
   source: THREE.ShaderMaterial,
   params: {
@@ -531,6 +648,15 @@ function cloneBodyShaderMaterial(
     shadowColor?: THREE.ColorRepresentation;
     lighting?: MaterialLightingSettings;
     skinTintEnabled?: boolean;
+    neckContactCenter?: THREE.Vector3;
+    neckContactSize?: THREE.Vector3;
+    neckContactBasisX?: THREE.Vector3;
+    neckContactBasisY?: THREE.Vector3;
+    neckContactBasisZ?: THREE.Vector3;
+    neckContactStrength?: number;
+    bodyDebugMode?: number;
+    shadowWidthOverride?: number | null;
+    valueShadowInfluence?: number;
   }
 ) {
   const material = source.clone();
@@ -564,6 +690,15 @@ function cloneBodyShaderMaterial(
       params.lighting?.shadowWidth && params.lighting.shadowWidth > 0
         ? params.lighting.shadowWidth
         : source.uniforms.uShadowWidth.value,
+    shadowWidthOverride:
+      params.shadowWidthOverride ??
+      ((source.uniforms.uShadowWidthOverride?.value ?? -1) >= 0
+        ? source.uniforms.uShadowWidthOverride.value
+        : null),
+    valueShadowInfluence:
+      params.valueShadowInfluence ??
+      source.uniforms.uValueShadowInfluence?.value ??
+      0,
     saturation: params.lighting?.saturation ?? source.uniforms.uSaturation.value,
     partsAmbientColor:
       params.lighting?.partsAmbientColor ??
@@ -595,6 +730,28 @@ function cloneBodyShaderMaterial(
       source.uniforms.uControllerRimEdgeSmoothness?.value ?? 0.38,
     controllerRimShadowSharpness:
       source.uniforms.uControllerRimShadowSharpness?.value ?? 0,
+    neckContactCenter:
+      params.neckContactCenter ??
+      source.uniforms.uNeckContactCenter?.value.clone(),
+    neckContactSize:
+      params.neckContactSize ??
+      source.uniforms.uNeckContactSize?.value.clone(),
+    neckContactBasisX:
+      params.neckContactBasisX ??
+      source.uniforms.uNeckContactBasisX?.value.clone(),
+    neckContactBasisY:
+      params.neckContactBasisY ??
+      source.uniforms.uNeckContactBasisY?.value.clone(),
+    neckContactBasisZ:
+      params.neckContactBasisZ ??
+      source.uniforms.uNeckContactBasisZ?.value.clone(),
+    neckContactStrength:
+      params.neckContactStrength ??
+      source.uniforms.uNeckContactStrength?.value,
+    bodyDebugMode:
+      params.bodyDebugMode ??
+      source.uniforms.uBodyDebugMode?.value ??
+      0,
     skinTintEnabled:
       params.skinTintEnabled ??
       ((source.uniforms.uSkinTintEnabled?.value ?? 1.0) > 0.5),
@@ -1093,6 +1250,11 @@ export class PjskViewerApp {
   private currentImportSnapshot: PartImportSnapshot | null = null;
   private currentBodyAttachNode: THREE.Object3D | null = null;
   private currentHeadAttachOriginNode: THREE.Object3D | null = null;
+  private currentBodyNeckContactCenter: THREE.Vector3 | null = null;
+  private currentBodyNeckContactSize: THREE.Vector3 | null = null;
+  private currentBodyNeckContactBasisX: THREE.Vector3 | null = null;
+  private currentBodyNeckContactBasisY: THREE.Vector3 | null = null;
+  private currentBodyNeckContactBasisZ: THREE.Vector3 | null = null;
   private currentCompositionStatus: CompositionStatus = {
     mode: "separate_parts",
     linkedBoneCount: 0,
@@ -1151,9 +1313,13 @@ export class PjskViewerApp {
   private readonly sideHairTargetLocalQuat = new THREE.Quaternion();
   private readonly sideHairTargetTailWorld = new THREE.Vector3();
   private materialBindingMode: MaterialBindingMode = "manifest";
+  private bodyDebugMode: BodyDebugMode = "off";
+  private toonShadowWidthOverride: number | null = null;
+  private toonValueShadowInfluence = 0;
   private faceSdfDebugMode: FaceSdfDebugMode = "off";
   private faceSdfDebugLightMode: FaceSdfDebugLightMode = "scene";
   private renderIsolationMode: RenderIsolationMode = "normal";
+  private cameraDebugChangeCallback: (() => void) | null = null;
   private readonly runtimeDebug: RuntimeDebugSnapshot = {
     materialBindingMode: "manifest",
     body: [],
@@ -1170,11 +1336,7 @@ export class PjskViewerApp {
     const width = Math.max(container.clientWidth, 320);
     const height = Math.max(container.clientHeight, 320);
     this.camera = new THREE.PerspectiveCamera(35, width / height, 0.1, 100);
-    this.camera.position.set(
-      0,
-      1.6 * initialLight.characterHeight,
-      6.4 * initialLight.characterHeight
-    );
+    this.camera.position.copy(getDefaultCameraPosition(initialLight.characterHeight));
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -1184,9 +1346,12 @@ export class PjskViewerApp {
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
-    this.controls.minPolarAngle = THREE.MathUtils.degToRad(90);
+    this.controls.minPolarAngle = THREE.MathUtils.degToRad(82);
     this.controls.maxPolarAngle = THREE.MathUtils.degToRad(100);
-    this.controls.target.set(0, 1.25 * initialLight.characterHeight, 0);
+    this.controls.target.copy(getDefaultCameraTarget(initialLight.characterHeight));
+    this.controls.addEventListener("change", () => {
+      this.cameraDebugChangeCallback?.();
+    });
     this.controls.update();
 
     this.directionalLight = new THREE.DirectionalLight(
@@ -1422,6 +1587,18 @@ export class PjskViewerApp {
     this.applyFaceSdfDebugUniforms();
   }
 
+  setBodyDebugMode(mode: BodyDebugMode) {
+    this.bodyDebugMode = mode;
+    this.applyBodyDebugUniforms();
+  }
+
+  setToonShadowPreview(shadowWidthOverride: number | null, valueShadowInfluence: number) {
+    this.toonShadowWidthOverride =
+      shadowWidthOverride === null ? null : Math.max(0.0, shadowWidthOverride);
+    this.toonValueShadowInfluence = THREE.MathUtils.clamp(valueShadowInfluence, 0.0, 1.0);
+    this.applyToonShadowPreviewUniforms();
+  }
+
   setFaceSdfDebugLightMode(mode: FaceSdfDebugLightMode) {
     this.faceSdfDebugLightMode = mode;
     this.applyFaceSdfDebugUniforms();
@@ -1430,6 +1607,15 @@ export class PjskViewerApp {
   setRenderIsolationMode(mode: RenderIsolationMode) {
     this.renderIsolationMode = mode;
     this.applyRenderIsolationMode();
+  }
+
+  setCharacterYawDegrees(degrees: number) {
+    const yaw = THREE.MathUtils.degToRad(Number.isFinite(degrees) ? degrees : 0);
+    this.characterRoot.rotation.y = yaw;
+    this.characterRoot.updateMatrixWorld(true);
+    this.syncLinkedHeadBones();
+    this.characterRoot.updateMatrixWorld(true);
+    this.updateShaderFaceBasis();
   }
 
   private applyRenderIsolationMode() {
@@ -1514,8 +1700,172 @@ export class PjskViewerApp {
     }
   }
 
+  private applyBodyDebugUniforms() {
+    const debugUniform = bodyDebugModeToUniform(this.bodyDebugMode);
+    for (const slot of [this.bodySlot]) {
+      slot.traverse((node) => {
+        const mesh = node as THREE.Mesh;
+        if (!mesh.isMesh) {
+          return;
+        }
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const material of materials) {
+          if (material instanceof THREE.ShaderMaterial && material.uniforms.uBodyDebugMode) {
+            material.uniforms.uBodyDebugMode.value = debugUniform;
+          }
+        }
+      });
+    }
+    for (const entry of this.runtimeDebug.body) {
+      if (entry.shaderBodyDebugMode !== undefined || entry.resolvedKind === "body") {
+        entry.shaderBodyDebugMode = debugUniform;
+      }
+    }
+  }
+
+  private applyToonShadowPreviewUniforms() {
+    const shadowWidthUniform = this.toonShadowWidthOverride ?? -1.0;
+    const applyUniforms = (material: THREE.Material) => {
+      if (!(material instanceof THREE.ShaderMaterial)) {
+        return;
+      }
+      if (material.uniforms.uShadowWidthOverride) {
+        material.uniforms.uShadowWidthOverride.value = shadowWidthUniform;
+      }
+      if (material.uniforms.uValueShadowInfluence) {
+        material.uniforms.uValueShadowInfluence.value = this.toonValueShadowInfluence;
+      }
+    };
+
+    applyUniforms(this.bodyMaterial);
+    applyUniforms(this.hairMaterial);
+    for (const slot of [this.bodySlot, this.headSlot]) {
+      slot.traverse((node) => {
+        const mesh = node as THREE.Mesh;
+        if (!mesh.isMesh) {
+          return;
+        }
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const material of materials) {
+          applyUniforms(material);
+        }
+      });
+    }
+
+    for (const entries of [this.runtimeDebug.body, this.runtimeDebug.head]) {
+      for (const entry of entries) {
+        const hasToonShadowPreviewUniforms =
+          entry.shaderShadowWidthOverride !== undefined &&
+          entry.shaderShadowWidthOverride !== null &&
+          entry.shaderValueShadowInfluence !== undefined &&
+          entry.shaderValueShadowInfluence !== null;
+        if (hasToonShadowPreviewUniforms) {
+          entry.shaderShadowWidthOverride = shadowWidthUniform;
+          entry.shaderValueShadowInfluence = this.toonValueShadowInfluence;
+        }
+      }
+    }
+  }
+
+  private applyBodyNeckContactUniforms() {
+    if (!this.currentBodyAsset || !this.currentBodyAnimationRoot) {
+      return;
+    }
+    if (this.bodyDebugMode === "off" && NECK_CONTACT_SHADOW_STRENGTH <= 0.0) {
+      return;
+    }
+
+    const contact = this.resolveBodyNeckContact(
+      this.currentBodyAsset,
+      this.currentBodyAnimationRoot
+    );
+    this.currentBodyNeckContactCenter = contact.center.clone();
+    this.currentBodyNeckContactSize = contact.size.clone();
+    this.currentBodyNeckContactBasisX = contact.basisX.clone();
+    this.currentBodyNeckContactBasisY = contact.basisY.clone();
+    this.currentBodyNeckContactBasisZ = contact.basisZ.clone();
+
+    const syncMaterial = (material: THREE.Material) => {
+      if (!(material instanceof THREE.ShaderMaterial)) {
+        return;
+      }
+      const uniforms = material.uniforms;
+      uniforms.uNeckContactCenter?.value.copy(contact.center);
+      uniforms.uNeckContactSize?.value.copy(contact.size);
+      uniforms.uNeckContactBasisX?.value.copy(contact.basisX);
+      uniforms.uNeckContactBasisY?.value.copy(contact.basisY);
+      uniforms.uNeckContactBasisZ?.value.copy(contact.basisZ);
+    };
+
+    syncMaterial(this.bodyMaterial);
+    for (const slot of [this.bodySlot]) {
+      slot.traverse((node) => {
+        const mesh = node as THREE.Mesh;
+        if (!mesh.isMesh) {
+          return;
+        }
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const material of materials) {
+          syncMaterial(material);
+        }
+      });
+    }
+
+    for (const entry of this.runtimeDebug.body) {
+      if (entry.shaderNeckContactCenterX === undefined) {
+        continue;
+      }
+      entry.shaderNeckContactCenterX = contact.center.x;
+      entry.shaderNeckContactCenterY = contact.center.y;
+      entry.shaderNeckContactCenterZ = contact.center.z;
+      entry.shaderNeckContactSizeX = contact.size.x;
+      entry.shaderNeckContactSizeY = contact.size.y;
+      entry.shaderNeckContactSizeZ = contact.size.z;
+    }
+  }
+
   getRuntimeDebugSnapshot() {
-    return structuredClone(this.runtimeDebug);
+    return {
+      ...structuredClone(this.runtimeDebug),
+      camera: this.getCameraDebugSnapshot(),
+    };
+  }
+
+  getCameraDebugSnapshot(): RuntimeCameraDebug {
+    const position = this.camera.position;
+    const target = this.controls.target;
+    const offset = position.clone().sub(target);
+    const spherical = new THREE.Spherical().setFromVector3(offset);
+    return {
+      position: {
+        x: Number(position.x.toFixed(4)),
+        y: Number(position.y.toFixed(4)),
+        z: Number(position.z.toFixed(4)),
+      },
+      target: {
+        x: Number(target.x.toFixed(4)),
+        y: Number(target.y.toFixed(4)),
+        z: Number(target.z.toFixed(4)),
+      },
+      offset: {
+        x: Number(offset.x.toFixed(4)),
+        y: Number(offset.y.toFixed(4)),
+        z: Number(offset.z.toFixed(4)),
+      },
+      distance: Number(spherical.radius.toFixed(4)),
+      polarDegrees: Number(THREE.MathUtils.radToDeg(spherical.phi).toFixed(3)),
+      azimuthDegrees: Number(THREE.MathUtils.radToDeg(spherical.theta).toFixed(3)),
+      fovDegrees: Number(this.camera.fov.toFixed(3)),
+      aspect: Number(this.camera.aspect.toFixed(4)),
+      zoom: Number(this.camera.zoom.toFixed(4)),
+      minPolarDegrees: Number(THREE.MathUtils.radToDeg(this.controls.minPolarAngle).toFixed(3)),
+      maxPolarDegrees: Number(THREE.MathUtils.radToDeg(this.controls.maxPolarAngle).toFixed(3)),
+      characterHeight: Number(this.characterHeight.toFixed(4)),
+    };
+  }
+
+  onCameraDebugChange(callback: (() => void) | null) {
+    this.cameraDebugChangeCallback = callback;
   }
 
   getSpringBoneSnapshot(): SpringBoneRuntimeSnapshot {
@@ -1773,6 +2123,7 @@ export class PjskViewerApp {
     );
     this.directionalLight.intensity = next.intensity;
     this.fillLight.intensity = next.ambient;
+    const bodyNeckContact = this.getCurrentBodyNeckContact();
     updateSekaiBodyMaterial(this.bodyMaterial, {
       baseColor: this.currentBodyAsset?.proxy.bodyColor ?? "#f5d6d0",
       shadowColor: this.currentBodyAsset?.proxy.shadowColor ?? "#c79b95",
@@ -1789,6 +2140,8 @@ export class PjskViewerApp {
       specularPower: this.bodyMaterial.uniforms.uSpecularPower.value,
       rimThreshold: this.bodyMaterial.uniforms.uRimThreshold.value,
       shadowTexWeight: this.bodyMaterial.uniforms.uShadowTexWeight.value,
+      shadowWidthOverride: this.toonShadowWidthOverride,
+      valueShadowInfluence: this.toonValueShadowInfluence,
       saturation: this.bodyMaterial.uniforms.uSaturation.value,
       partsAmbientColor: `#${this.bodyMaterial.uniforms.uPartsAmbientColor.value.getHexString()}`,
       reflectionBlendColor: `#${this.bodyMaterial.uniforms.uReflectionBlendColor.value.getHexString()}`,
@@ -1800,6 +2153,13 @@ export class PjskViewerApp {
       controllerShadowRimColorWeight: this.bodyMaterial.uniforms.uControllerShadowRimColorWeight.value,
       controllerRimEdgeSmoothness: this.bodyMaterial.uniforms.uControllerRimEdgeSmoothness.value,
       controllerRimShadowSharpness: this.bodyMaterial.uniforms.uControllerRimShadowSharpness.value,
+      neckContactCenter: bodyNeckContact.center,
+      neckContactSize: bodyNeckContact.size,
+      neckContactBasisX: bodyNeckContact.basisX,
+      neckContactBasisY: bodyNeckContact.basisY,
+      neckContactBasisZ: bodyNeckContact.basisZ,
+      neckContactStrength: NECK_CONTACT_SHADOW_STRENGTH,
+      bodyDebugMode: bodyDebugModeToUniform(this.bodyDebugMode),
       skinTintEnabled: true,
     });
     updateSekaiBodyMaterial(this.hairMaterial, {
@@ -1818,6 +2178,8 @@ export class PjskViewerApp {
       specularPower: this.hairMaterial.uniforms.uSpecularPower.value,
       rimThreshold: this.hairMaterial.uniforms.uRimThreshold.value,
       shadowTexWeight: this.hairMaterial.uniforms.uShadowTexWeight.value,
+      shadowWidthOverride: this.toonShadowWidthOverride,
+      valueShadowInfluence: this.toonValueShadowInfluence,
       saturation: this.hairMaterial.uniforms.uSaturation.value,
       partsAmbientColor: `#${this.hairMaterial.uniforms.uPartsAmbientColor.value.getHexString()}`,
       reflectionBlendColor: `#${this.hairMaterial.uniforms.uReflectionBlendColor.value.getHexString()}`,
@@ -2087,8 +2449,8 @@ export class PjskViewerApp {
     }
     this.characterHeight = nextHeight;
     this.characterRoot.scale.setScalar(nextHeight);
-    this.controls.target.set(0, 1.25 * nextHeight, 0);
-    this.camera.position.set(0, 1.6 * nextHeight, 6.4 * nextHeight);
+    this.controls.target.copy(getDefaultCameraTarget(nextHeight));
+    this.camera.position.copy(getDefaultCameraPosition(nextHeight));
     this.controls.update();
   }
 
@@ -2123,6 +2485,72 @@ export class PjskViewerApp {
       return null;
     }
     return this.findNodeByImportedName(root, name);
+  }
+
+  private resolveBodyNeckContact(
+    bodyAsset: BodyAssetManifest,
+    root?: THREE.Object3D | null
+  ) {
+    if (root) {
+      root.updateMatrixWorld(true);
+      const neckNode =
+        this.findNodeByName(root, bodyAsset.skeleton.neckAttach.nodeName) ??
+        this.findNodeByImportedName(root, "Neck");
+      if (neckNode) {
+        const neckPosition = new THREE.Vector3();
+        neckNode.getWorldPosition(neckPosition);
+        root.worldToLocal(neckPosition);
+        const rootQuaternion = new THREE.Quaternion();
+        const neckQuaternion = new THREE.Quaternion();
+        root.getWorldQuaternion(rootQuaternion);
+        neckNode.getWorldQuaternion(neckQuaternion);
+        const contactQuaternion = rootQuaternion.invert().multiply(neckQuaternion);
+        const basisX = new THREE.Vector3(1, 0, 0).applyQuaternion(contactQuaternion).normalize();
+        const basisY = new THREE.Vector3(0, 1, 0).applyQuaternion(contactQuaternion).normalize();
+        const basisZ = new THREE.Vector3(0, 0, 1).applyQuaternion(contactQuaternion).normalize();
+        const coordinateScale = getBodyNeckContactCoordinateScale(bodyAsset, neckPosition);
+        return {
+          center: getBodyNeckContactCenterFromResolvedNeck(
+            neckPosition,
+            coordinateScale,
+            basisY,
+            basisZ
+          ),
+          size: getBodyNeckContactSize(bodyAsset, coordinateScale),
+          basisX,
+          basisY,
+          basisZ,
+        };
+      }
+    }
+
+    return {
+      center: getBodyNeckContactCenter(bodyAsset),
+      size: getBodyNeckContactSize(bodyAsset),
+      basisX: new THREE.Vector3(1, 0, 0),
+      basisY: new THREE.Vector3(0, 1, 0),
+      basisZ: new THREE.Vector3(0, 0, 1),
+    };
+  }
+
+  private getCurrentBodyNeckContact() {
+    return {
+      center:
+        this.currentBodyNeckContactCenter?.clone() ??
+        getBodyNeckContactCenter(this.currentBodyAsset),
+      size:
+        this.currentBodyNeckContactSize?.clone() ??
+        getBodyNeckContactSize(this.currentBodyAsset),
+      basisX:
+        this.currentBodyNeckContactBasisX?.clone() ??
+        new THREE.Vector3(1, 0, 0),
+      basisY:
+        this.currentBodyNeckContactBasisY?.clone() ??
+        new THREE.Vector3(0, 1, 0),
+      basisZ:
+        this.currentBodyNeckContactBasisZ?.clone() ??
+        new THREE.Vector3(0, 0, 1),
+    };
   }
 
   private collectBones(root: THREE.Object3D) {
@@ -2623,6 +3051,12 @@ export class PjskViewerApp {
     options: { exactMaterialNameOnly?: boolean } = {}
   ) {
     this.runtimeDebug.body = [];
+    const bodyNeckContact = this.resolveBodyNeckContact(bodyAsset, root);
+    this.currentBodyNeckContactCenter = bodyNeckContact.center.clone();
+    this.currentBodyNeckContactSize = bodyNeckContact.size.clone();
+    this.currentBodyNeckContactBasisX = bodyNeckContact.basisX.clone();
+    this.currentBodyNeckContactBasisY = bodyNeckContact.basisY.clone();
+    this.currentBodyNeckContactBasisZ = bodyNeckContact.basisZ.clone();
     const slotEntries: Array<{
       key: string;
       meshKey: string;
@@ -2648,6 +3082,13 @@ export class PjskViewerApp {
         shadowColor: bodyAsset.proxy.shadowColor,
         lighting,
         skinTintEnabled: usesSekaiSkinTint(materialKind),
+        neckContactCenter: bodyNeckContact.center,
+        neckContactSize: bodyNeckContact.size,
+        neckContactBasisX: bodyNeckContact.basisX,
+        neckContactBasisY: bodyNeckContact.basisY,
+        neckContactBasisZ: bodyNeckContact.basisZ,
+        neckContactStrength: NECK_CONTACT_SHADOW_STRENGTH,
+        bodyDebugMode: bodyDebugModeToUniform(this.bodyDebugMode),
       });
       material.userData.pjskLighting = lighting;
       const meshKey = normalizeMeshSlotName(slot.meshName);
@@ -2721,6 +3162,10 @@ export class PjskViewerApp {
             shaderLightDirectionZ: shaderUniforms?.uLightDirection?.value?.z ?? null,
             shaderShadowThreshold: shaderUniforms?.uShadowThreshold?.value ?? null,
             shaderShadowWeight: shaderUniforms?.uShadowWeight?.value ?? null,
+            shaderShadowWidthOverride:
+              shaderUniforms?.uShadowWidthOverride?.value ?? null,
+            shaderValueShadowInfluence:
+              shaderUniforms?.uValueShadowInfluence?.value ?? null,
             shaderSpecularPower: shaderUniforms?.uSpecularPower?.value ?? null,
             shaderRimThreshold: shaderUniforms?.uRimThreshold?.value ?? null,
             shaderControllerRimThreshold:
@@ -2739,6 +3184,22 @@ export class PjskViewerApp {
             shaderSkinColor1: shaderUniforms?.uSkinColor1?.value
               ? `#${shaderUniforms.uSkinColor1.value.getHexString()}`
               : null,
+            shaderNeckContactCenterX:
+              shaderUniforms?.uNeckContactCenter?.value?.x ?? null,
+            shaderNeckContactCenterY:
+              shaderUniforms?.uNeckContactCenter?.value?.y ?? null,
+            shaderNeckContactCenterZ:
+              shaderUniforms?.uNeckContactCenter?.value?.z ?? null,
+            shaderNeckContactSizeX:
+              shaderUniforms?.uNeckContactSize?.value?.x ?? null,
+            shaderNeckContactSizeY:
+              shaderUniforms?.uNeckContactSize?.value?.y ?? null,
+            shaderNeckContactSizeZ:
+              shaderUniforms?.uNeckContactSize?.value?.z ?? null,
+            shaderNeckContactStrength:
+              shaderUniforms?.uNeckContactStrength?.value ?? null,
+            shaderBodyDebugMode:
+              shaderUniforms?.uBodyDebugMode?.value ?? null,
           });
           return resolvedEntry.material;
         }
@@ -2957,6 +3418,10 @@ export class PjskViewerApp {
             shaderLightDirectionZ: shaderUniforms?.uLightDirection?.value?.z ?? null,
             shaderShadowThreshold: shaderUniforms?.uShadowThreshold?.value ?? null,
             shaderShadowWeight: shaderUniforms?.uShadowWeight?.value ?? null,
+            shaderShadowWidthOverride:
+              shaderUniforms?.uShadowWidthOverride?.value ?? null,
+            shaderValueShadowInfluence:
+              shaderUniforms?.uValueShadowInfluence?.value ?? null,
             shaderSpecularPower: shaderUniforms?.uSpecularPower?.value ?? null,
             shaderRimThreshold: shaderUniforms?.uRimThreshold?.value ?? null,
             shaderControllerRimThreshold:
@@ -3017,6 +3482,12 @@ export class PjskViewerApp {
     this.currentRuntimeExtension = null;
     this.currentVrmSpringBoneManager = loaded.springBoneManager ?? null;
     this.currentBodyAttachNode = null;
+    const bodyNeckContact = this.resolveBodyNeckContact(bodyAsset, loaded.root);
+    this.currentBodyNeckContactCenter = bodyNeckContact.center.clone();
+    this.currentBodyNeckContactSize = bodyNeckContact.size.clone();
+    this.currentBodyNeckContactBasisX = bodyNeckContact.basisX.clone();
+    this.currentBodyNeckContactBasisY = bodyNeckContact.basisY.clone();
+    this.currentBodyNeckContactBasisZ = bodyNeckContact.basisZ.clone();
     updateSekaiBodyMaterial(this.bodyMaterial, {
       baseColor: bodyAsset.proxy.bodyColor,
       shadowColor: bodyAsset.proxy.shadowColor,
@@ -3035,9 +3506,18 @@ export class PjskViewerApp {
       specularPower: this.bodyMaterial.uniforms.uSpecularPower.value,
       rimThreshold: this.bodyMaterial.uniforms.uRimThreshold.value,
       shadowTexWeight: this.bodyMaterial.uniforms.uShadowTexWeight.value,
+      shadowWidthOverride: this.toonShadowWidthOverride,
+      valueShadowInfluence: this.toonValueShadowInfluence,
       saturation: this.bodyMaterial.uniforms.uSaturation.value,
       partsAmbientColor: `#${this.bodyMaterial.uniforms.uPartsAmbientColor.value.getHexString()}`,
       reflectionBlendColor: `#${this.bodyMaterial.uniforms.uReflectionBlendColor.value.getHexString()}`,
+      neckContactCenter: bodyNeckContact.center,
+      neckContactSize: bodyNeckContact.size,
+      neckContactBasisX: bodyNeckContact.basisX,
+      neckContactBasisY: bodyNeckContact.basisY,
+      neckContactBasisZ: bodyNeckContact.basisZ,
+      neckContactStrength: NECK_CONTACT_SHADOW_STRENGTH,
+      bodyDebugMode: bodyDebugModeToUniform(this.bodyDebugMode),
       skinTintEnabled: true,
     });
 
@@ -3425,6 +3905,7 @@ export class PjskViewerApp {
     this.currentAnimationMixer?.update(delta);
     this.updateFaceMotion(delta);
     this.syncLinkedHeadBones();
+    this.applyBodyNeckContactUniforms();
     this.controls.update();
     this.updateShaderCameraPositions();
     this.updateShaderFaceBasis();

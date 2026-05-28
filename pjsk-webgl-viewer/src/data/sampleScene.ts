@@ -222,13 +222,21 @@ export type CharacterImportCatalog = {
   defaultAssembly: CharacterAssemblyState;
 };
 
+export const previewLightDirectionFit: Vec3 = {
+  x: -1.6,
+  y: 0.9,
+  z: 0.75,
+};
+
+export const previewShadowThresholdFit = 0.33;
+
 export const previewLightDefaults: PreviewLightState = {
-  x: -0.42,
-  y: -0.42,
-  z: 1.35,
+  x: previewLightDirectionFit.x,
+  y: previewLightDirectionFit.y,
+  z: previewLightDirectionFit.z,
   intensity: 0.48,
   ambient: 0.16,
-  shadowThreshold: 0.22,
+  shadowThreshold: previewShadowThresholdFit,
   shadowWeight: 1,
   characterAmbient: 0.12,
   rimIntensity: 0.18,
@@ -252,10 +260,10 @@ export const sekaiRuntimeMaterialProfile: SekaiRuntimeMaterialProfile = {
     faceShadow: "Sekai SDF",
   },
   pluginPreview: {
-    directionalLocation: { x: -1.15, y: -1.0, z: 1.0 },
+    directionalLocation: { x: -1.6, y: -0.75, z: 0.9 },
     directionalEnergy: 0.48,
     ambientIntensity: 0.16,
-    shadowThreshold: 0.22,
+    shadowThreshold: previewShadowThresholdFit,
     shadowWeight: 1,
     characterAmbientIntensity: 0.12,
     rimIntensity: 0.18,

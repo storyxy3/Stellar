@@ -206,12 +206,12 @@ public sealed class ConversionPlanner
         var normalizedCharacterId = characterId.PadLeft(2, '0');
         var characterHeight = ResolveCharacterHeightMeters(normalizedCharacterId);
         var preview = new PreviewLightProfile(
-            X: -0.42f,
-            Y: -0.42f,
-            Z: 1.35f,
+            X: -1.6f,
+            Y: 0.9f,
+            Z: 0.75f,
             Intensity: 0.48f,
             Ambient: 0.16f,
-            ShadowThreshold: 0.22f,
+            ShadowThreshold: 0.33f,
             ShadowWeight: 1f,
             CharacterAmbient: 0.12f,
             RimIntensity: 0.18f,
@@ -235,10 +235,10 @@ public sealed class ConversionPlanner
                 ["faceShadow"] = "Sekai SDF",
             },
             PluginPreview: new PluginPreviewProfile(
-                DirectionalLocation: new Vec3(-1.15f, -1.0f, 1.0f),
+                DirectionalLocation: new Vec3(-1.6f, -0.75f, 0.9f),
                 DirectionalEnergy: 0.48f,
                 AmbientIntensity: 0.16f,
-                ShadowThreshold: 0.22f,
+                ShadowThreshold: 0.33f,
                 ShadowWeight: 1f,
                 CharacterAmbientIntensity: 0.12f,
                 RimIntensity: 0.18f,

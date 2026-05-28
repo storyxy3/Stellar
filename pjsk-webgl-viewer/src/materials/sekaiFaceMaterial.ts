@@ -127,8 +127,13 @@ export function createSekaiFaceMaterial(initial: FaceMaterialUniforms) {
         }
 
         vec3 color = mainColor;
+        float faceSkinLuma = dot(mainColor, vec3(0.299, 0.587, 0.114));
+        float faceSkinMask = smoothstep(0.46, 0.82, faceSkinLuma) * (1.0 - smoothstep(0.92, 0.99, faceSkinLuma));
+        vec3 faceSkinTint = color * vec3(1.035, 0.970, 0.945);
+        color = mix(color, faceSkinTint, faceSkinMask * 0.58);
         if ((uFaceSdfEnabled > 0.5 || uFaceDebugMode > 0.5) && uUseShadowTex > 0.5 && uUseFaceShadowTex > 0.5) {
           vec3 shadowColor = texture2D(uShadowTex, vUv).rgb;
+          shadowColor = mix(shadowColor, shadowColor * vec3(1.075, 0.930, 1.015), faceSkinMask * 0.75);
           vec3 faceRight = normalize(uFaceRight);
           vec3 faceForward = normalize(uFaceForward);
           vec3 lightDir = normalize(uLightDirection);
@@ -185,8 +190,8 @@ export function createSekaiFaceMaterial(initial: FaceMaterialUniforms) {
             color = mix(mainColor, shadowColor, sdfMask);
           }
         }
-        float sceneExposure = clamp(0.88 + uLightIntensity * 0.25 + uAmbientIntensity * 0.18, 0.82, 1.18);
-        color *= sceneExposure * vec3(1.024, 1.010, 0.960);
+        float sceneExposure = clamp(0.86 + uLightIntensity * 0.24 + uAmbientIntensity * 0.16, 0.80, 1.16);
+        color *= sceneExposure * vec3(1.018, 0.992, 0.980);
         gl_FragColor = vec4(outputColor(clamp(color, 0.0, 1.0)), 1.0);
       }
     `,

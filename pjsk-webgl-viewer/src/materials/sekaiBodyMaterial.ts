@@ -15,6 +15,8 @@ export type BodyMaterialUniforms = {
   shadowThreshold: number;
   shadowWeight: number;
   shadowWidth?: number;
+  shadowWidthOverride?: number | null;
+  valueShadowInfluence?: number;
   characterAmbientIntensity?: number;
   rimIntensity?: number;
   controllerRimThreshold?: number;
@@ -34,6 +36,13 @@ export type BodyMaterialUniforms = {
   controllerShadowRimColorWeight?: number;
   controllerRimEdgeSmoothness?: number;
   controllerRimShadowSharpness?: number;
+  neckContactCenter?: THREE.Vector3;
+  neckContactSize?: THREE.Vector3;
+  neckContactBasisX?: THREE.Vector3;
+  neckContactBasisY?: THREE.Vector3;
+  neckContactBasisZ?: THREE.Vector3;
+  neckContactStrength?: number;
+  bodyDebugMode?: number;
   skinTintEnabled?: boolean;
 };
 
@@ -63,6 +72,23 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
       },
       uControllerRimEdgeSmoothness: { value: initial.controllerRimEdgeSmoothness ?? 0.38 },
       uControllerRimShadowSharpness: { value: initial.controllerRimShadowSharpness ?? 0.0 },
+      uNeckContactCenter: {
+        value: (initial.neckContactCenter ?? new THREE.Vector3(0, 1.62, 0.16)).clone(),
+      },
+      uNeckContactSize: {
+        value: (initial.neckContactSize ?? new THREE.Vector3(0.16, 0.08, 0.16)).clone(),
+      },
+      uNeckContactBasisX: {
+        value: (initial.neckContactBasisX ?? new THREE.Vector3(1, 0, 0)).clone().normalize(),
+      },
+      uNeckContactBasisY: {
+        value: (initial.neckContactBasisY ?? new THREE.Vector3(0, 1, 0)).clone().normalize(),
+      },
+      uNeckContactBasisZ: {
+        value: (initial.neckContactBasisZ ?? new THREE.Vector3(0, 0, 1)).clone().normalize(),
+      },
+      uNeckContactStrength: { value: initial.neckContactStrength ?? 0.0 },
+      uBodyDebugMode: { value: initial.bodyDebugMode ?? 0 },
       uMainTex: { value: initial.mainTex ?? null },
       uShadowTex: { value: initial.shadowTex ?? null },
       uValueTex: { value: initial.valueTex ?? null },
@@ -76,6 +102,8 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
       uShadowThreshold: { value: initial.shadowThreshold },
       uShadowWeight: { value: initial.shadowWeight },
       uShadowWidth: { value: initial.shadowWidth ?? 0.04 },
+      uShadowWidthOverride: { value: initial.shadowWidthOverride ?? -1.0 },
+      uValueShadowInfluence: { value: initial.valueShadowInfluence ?? 0.0 },
       uCharacterAmbientIntensity: { value: initial.characterAmbientIntensity ?? 0.3 },
       uRimIntensity: { value: initial.rimIntensity ?? 0.35 },
       uControllerRimThreshold: { value: initial.controllerRimThreshold ?? 0.18 },
@@ -97,6 +125,7 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
 
       varying vec3 vWorldPosition;
       varying vec3 vWorldNormal;
+      varying vec3 vModelPosition;
       varying vec2 vUv;
 
       void main() {
@@ -112,6 +141,7 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
         vec4 worldPosition = modelMatrix * vec4(transformed, 1.0);
         vWorldPosition = worldPosition.xyz;
         vWorldNormal = normalize(mat3(modelMatrix) * objectNormal);
+        vModelPosition = transformed;
         vUv = uv;
         gl_Position = projectionMatrix * viewMatrix * worldPosition;
       }
@@ -135,6 +165,13 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
       uniform float uControllerShadowRimColorWeight;
       uniform float uControllerRimEdgeSmoothness;
       uniform float uControllerRimShadowSharpness;
+      uniform vec3 uNeckContactCenter;
+      uniform vec3 uNeckContactSize;
+      uniform vec3 uNeckContactBasisX;
+      uniform vec3 uNeckContactBasisY;
+      uniform vec3 uNeckContactBasisZ;
+      uniform float uNeckContactStrength;
+      uniform float uBodyDebugMode;
       uniform sampler2D uMainTex;
       uniform sampler2D uShadowTex;
       uniform sampler2D uValueTex;
@@ -148,6 +185,8 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
       uniform float uShadowThreshold;
       uniform float uShadowWeight;
       uniform float uShadowWidth;
+      uniform float uShadowWidthOverride;
+      uniform float uValueShadowInfluence;
       uniform float uCharacterAmbientIntensity;
       uniform float uRimIntensity;
       uniform float uControllerRimThreshold;
@@ -161,6 +200,7 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
 
       varying vec3 vWorldPosition;
       varying vec3 vWorldNormal;
+      varying vec3 vModelPosition;
       varying vec2 vUv;
 
       vec3 outputColor(vec3 color) {
@@ -172,7 +212,7 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
 
       vec3 applyMaterialSaturation(vec3 color, float saturation) {
         float gray = dot(color, vec3(0.299, 0.587, 0.114));
-        float amount = clamp(1.0 + (saturation - 0.5) * 0.35, 0.65, 1.35);
+        float amount = clamp(1.055 + (saturation - 0.5) * 0.35, 0.65, 1.35);
         return mix(vec3(gray), color, amount);
       }
 
@@ -191,10 +231,12 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
           mainSample = texture2D(uMainTex, vUv);
           mainColor = mainSample.rgb;
         }
+        vec3 rawMainColor = mainColor;
         vec3 shadowValue = mainColor;
         if (uUseShadowTex > 0.5) {
           shadowValue = mix(shadowValue, texture2D(uShadowTex, vUv).rgb, clamp(uShadowTexWeight, 0.0, 1.0));
         }
+        vec3 rawShadowValue = shadowValue;
         vec4 valueSample = vec4(0.0, 0.0, 1.0, 0.0);
         if (uUseValueTex > 0.5) {
           valueSample = texture2D(uValueTex, vUv);
@@ -204,32 +246,95 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
         float skinLinePreserve = smoothstep(0.36, 0.72, skinTextureLuma);
         float skinTintMask = skinMask * skinLinePreserve;
         float skinRamp = smoothstep(0.36, 0.92, mainSample.r);
-        vec3 skinWarmBias = vec3(1.025, 1.012, 0.955);
-        vec3 skinShadowWarmBias = vec3(1.018, 1.006, 0.965);
+        vec3 skinWarmBias = vec3(1.040, 0.970, 0.945);
+        vec3 skinShadowWarmBias = vec3(1.095, 0.925, 1.020);
         vec3 skinLitColor = mix(uSkinColor1, uSkinColorDefault, skinRamp) * skinWarmBias;
         vec3 skinShadowRampColor = mix(uSkinColor2, uSkinColor1, skinRamp) * skinShadowWarmBias;
-        vec3 skinShadowColor = mix(skinShadowRampColor, skinLitColor, 0.18);
+        vec3 skinShadowColor = mix(skinShadowRampColor, skinLitColor, 0.08);
         mainColor = mix(mainColor, skinLitColor, skinTintMask);
         shadowValue = mix(shadowValue, skinShadowColor, skinTintMask);
         float hMask = valueSample.b;
         float hAlpha = valueSample.a;
+        float vertexOutlineIntensity = 1.0;
+        float vertexRimIntensity = 1.0;
+        #ifdef USE_COLOR
+        vertexOutlineIntensity = clamp(vColor.r, 0.0, 1.0);
+        vertexRimIntensity = clamp(vColor.g, 0.0, 1.0);
+        #endif
 
         float halfNdl = clamp(ndl * 0.5 + 0.5, 0.0, 1.0);
         float materialShadowThreshold = clamp(uShadowThreshold, 0.0, 1.0);
-        float shadowWidth = max(uShadowWidth, 0.001);
+        float shadowWidth = (uShadowWidthOverride >= 0.0)
+          ? uShadowWidthOverride
+          : max(uShadowWidth, 0.03);
         float litBand = smoothstep(
           materialShadowThreshold - shadowWidth,
           materialShadowThreshold + shadowWidth,
           halfNdl
         );
         float shadowBand = clamp((1.0 - litBand) * uShadowWeight, 0.0, 1.0);
+        float hAdjustedHalfNdl = (uUseValueTex > 0.5)
+          ? clamp(halfNdl + (valueSample.b * 2.0 - 1.0), 0.0, 1.0)
+          : halfNdl;
+        float hAdjustedLitBand = smoothstep(
+          materialShadowThreshold - shadowWidth,
+          materialShadowThreshold + shadowWidth,
+          hAdjustedHalfNdl
+        );
+        float hAdjustedShadowBand = clamp((1.0 - hAdjustedLitBand) * uShadowWeight, 0.0, 1.0);
+        float valueShadowInfluence = clamp(uValueShadowInfluence, 0.0, 1.0);
+        shadowBand = mix(shadowBand, hAdjustedShadowBand, valueShadowInfluence);
 
         // PJSK character shader semantics: C is the lit color; S already owns the toon-shadow target color.
         vec3 fallbackShadowColor = mainColor * uShadowColor * uGlobalShadowColor;
         vec3 shadowColor = (uUseShadowTex > 0.5) ? shadowValue * uGlobalShadowColor : fallbackShadowColor;
+        float staticShadowDelta = max(0.0, dot(rawMainColor - rawShadowValue, vec3(0.299, 0.587, 0.114)));
+        float hShadowPushMask = (uUseValueTex > 0.5) ? clamp((1.0 - valueSample.b) * 1.35, 0.0, 1.0) : 0.0;
+        vec3 neckContactSize = max(uNeckContactSize, vec3(0.001));
+        vec3 neckContactOffset = vModelPosition - uNeckContactCenter;
+        vec3 neckContactDelta = vec3(
+          dot(neckContactOffset, normalize(uNeckContactBasisX)),
+          dot(neckContactOffset, normalize(uNeckContactBasisY)),
+          dot(neckContactOffset, normalize(uNeckContactBasisZ))
+        ) / neckContactSize;
+        float neckContactPlane = 1.0 - smoothstep(0.9, 1.55, dot(neckContactDelta, neckContactDelta));
+        float authoredContactMask = max(hShadowPushMask, smoothstep(0.01, 0.09, staticShadowDelta));
+        float staticSkinContactShadow =
+          skinMask *
+          neckContactPlane *
+          mix(0.62, 1.0, authoredContactMask);
+        if (uBodyDebugMode > 0.5) {
+          float debugValue = skinMask;
+          if (uBodyDebugMode > 1.5 && uBodyDebugMode < 2.5) {
+            debugValue = neckContactPlane;
+          } else if (uBodyDebugMode > 2.5 && uBodyDebugMode < 3.5) {
+            debugValue = staticSkinContactShadow;
+          } else if (uBodyDebugMode > 3.5 && uBodyDebugMode < 4.5) {
+            debugValue = valueSample.r;
+          } else if (uBodyDebugMode > 4.5 && uBodyDebugMode < 5.5) {
+            debugValue = valueSample.g;
+          } else if (uBodyDebugMode > 5.5 && uBodyDebugMode < 6.5) {
+            debugValue = valueSample.b;
+          } else if (uBodyDebugMode > 6.5 && uBodyDebugMode < 7.5) {
+            debugValue = valueSample.a;
+          } else if (uBodyDebugMode > 7.5 && uBodyDebugMode < 8.5) {
+            debugValue = vertexOutlineIntensity;
+          } else if (uBodyDebugMode > 8.5 && uBodyDebugMode < 9.5) {
+            debugValue = vertexRimIntensity;
+          } else if (uBodyDebugMode > 9.5 && uBodyDebugMode < 10.5) {
+            debugValue = shadowBand;
+          } else if (uBodyDebugMode > 10.5 && uBodyDebugMode < 11.5) {
+            debugValue = halfNdl;
+          } else if (uBodyDebugMode > 11.5) {
+            debugValue = hAdjustedShadowBand;
+          }
+          gl_FragColor = vec4(outputColor(vec3(debugValue)), 1.0);
+          return;
+        }
+        shadowBand = max(shadowBand, staticSkinContactShadow * uNeckContactStrength);
         float lightSurfaceMask = (1.0 - skinMask) * smoothstep(0.58, 0.86, dot(mainColor, vec3(0.299, 0.587, 0.114)));
         shadowBand *= mix(1.0, 0.62, lightSurfaceMask);
-        vec3 cleanLightShadowColor = mix(shadowColor, mainColor * vec3(0.93, 0.96, 0.99), 0.48);
+        vec3 cleanLightShadowColor = mix(shadowColor, mainColor * vec3(0.93, 0.96, 0.99), 0.34);
         shadowColor = mix(shadowColor, cleanLightShadowColor, lightSurfaceMask);
         vec3 color = mix(mainColor, shadowColor, shadowBand);
 
@@ -240,7 +345,7 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
 
         float halfLambert = clamp(dot(normal, normalize(lightDir + viewDir)), 0.0, 1.0);
         float specPower = 10.0 / max(uSpecularPower, 0.001);
-        float specMask = max(hAlpha, hMask * 0.35) * step(0.01, uSpecularPower);
+        float specMask = hAlpha * step(0.01, uSpecularPower);
         float litGate = toonBand(ndl, -0.02, 0.12);
         float specular = pow(halfLambert, specPower) * specMask * litGate;
 
@@ -256,7 +361,7 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
         float rimBase = viewFresnel * rimViewModulation * step(0.0, nDotRim);
         float rimThreshold = clamp(max(uRimThreshold, uControllerRimThreshold), 0.0, 0.95);
         float rim = smoothstep(0.0, rimFactorZ, rimBase - rimThreshold);
-        float rimMask = max(hMask, hAlpha);
+        float rimMask = vertexRimIntensity;
         vec3 controllerRimBase = mix(
           vec3(0.9, 0.93, 0.98),
           uControllerRimColor,
@@ -281,7 +386,7 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
         color += uReflectionBlendColor * specular * uLightIntensity * 0.22;
 
         color *= mix(vec3(1.0), uPartsAmbientColor, 0.06);
-        color *= vec3(1.018, 1.009, 0.968);
+        color *= vec3(1.024, 0.998, 0.986);
         color = applyMaterialSaturation(color, uSaturation);
         gl_FragColor = vec4(outputColor(clamp(color, 0.0, 1.0)), 1.0);
       }
@@ -310,6 +415,27 @@ export function updateSekaiBodyMaterial(
     next.controllerShadowRimColorWeight ?? (next.controllerShadowRimColor ? 1.0 : 0.0);
   material.uniforms.uControllerRimEdgeSmoothness.value = next.controllerRimEdgeSmoothness ?? 0.38;
   material.uniforms.uControllerRimShadowSharpness.value = next.controllerRimShadowSharpness ?? 0.0;
+  if (next.neckContactCenter && material.uniforms.uNeckContactCenter) {
+    material.uniforms.uNeckContactCenter.value.copy(next.neckContactCenter);
+  }
+  if (next.neckContactSize && material.uniforms.uNeckContactSize) {
+    material.uniforms.uNeckContactSize.value.copy(next.neckContactSize);
+  }
+  if (next.neckContactBasisX && material.uniforms.uNeckContactBasisX) {
+    material.uniforms.uNeckContactBasisX.value.copy(next.neckContactBasisX).normalize();
+  }
+  if (next.neckContactBasisY && material.uniforms.uNeckContactBasisY) {
+    material.uniforms.uNeckContactBasisY.value.copy(next.neckContactBasisY).normalize();
+  }
+  if (next.neckContactBasisZ && material.uniforms.uNeckContactBasisZ) {
+    material.uniforms.uNeckContactBasisZ.value.copy(next.neckContactBasisZ).normalize();
+  }
+  if (next.neckContactStrength !== undefined && material.uniforms.uNeckContactStrength) {
+    material.uniforms.uNeckContactStrength.value = next.neckContactStrength;
+  }
+  if (next.bodyDebugMode !== undefined && material.uniforms.uBodyDebugMode) {
+    material.uniforms.uBodyDebugMode.value = next.bodyDebugMode;
+  }
   material.uniforms.uMainTex.value = next.mainTex ?? null;
   material.uniforms.uShadowTex.value = next.shadowTex ?? null;
   material.uniforms.uValueTex.value = next.valueTex ?? null;
@@ -324,6 +450,12 @@ export function updateSekaiBodyMaterial(
   material.uniforms.uShadowThreshold.value = next.shadowThreshold;
   material.uniforms.uShadowWeight.value = next.shadowWeight;
   material.uniforms.uShadowWidth.value = next.shadowWidth ?? material.uniforms.uShadowWidth.value;
+  if (next.shadowWidthOverride !== undefined && material.uniforms.uShadowWidthOverride) {
+    material.uniforms.uShadowWidthOverride.value = next.shadowWidthOverride ?? -1.0;
+  }
+  if (next.valueShadowInfluence !== undefined && material.uniforms.uValueShadowInfluence) {
+    material.uniforms.uValueShadowInfluence.value = next.valueShadowInfluence;
+  }
   material.uniforms.uCharacterAmbientIntensity.value = next.characterAmbientIntensity ?? 0.3;
   material.uniforms.uRimIntensity.value = next.rimIntensity ?? 0.35;
   material.uniforms.uControllerRimThreshold.value = next.controllerRimThreshold ?? 0.18;

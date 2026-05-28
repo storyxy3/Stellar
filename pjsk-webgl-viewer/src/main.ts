@@ -8,7 +8,9 @@ import {
   cloneAssemblyState,
   getBodyAsset,
   getHeadAsset,
+  previewLightDirectionFit,
   previewLightDefaults,
+  previewShadowThresholdFit,
   sampleCatalog,
 } from "./data/sampleScene";
 import {
@@ -18,6 +20,7 @@ import {
   type FaceMotionPlaybackSnapshot,
   type FaceMotionSet,
   type MaterialBindingMode,
+  type BodyDebugMode,
   type PartImportSnapshot,
   type RuntimeDebugSnapshot,
   type RuntimeCombinedCharacterAsset,
@@ -41,8 +44,37 @@ let lastRuntimeDebug: RuntimeDebugSnapshot | null = null;
 let lastAnimationSnapshot: AnimationPlaybackSnapshot | null = null;
 let lastFaceMotionSnapshot: FaceMotionPlaybackSnapshot | null = null;
 let lastSpringBoneSnapshot: SpringBoneRuntimeSnapshot | null = null;
+type ToonShadowSmoothMode = "auto" | "hard" | "w003" | "w005" | "w008" | "w012";
+type ValueShadowInfluenceMode = "0" | "0.25" | "0.5" | "1";
+type CharacterYawMode = "0" | "45" | "-45" | "90" | "-90" | "180";
+const toonShadowSmoothByMode: Record<ToonShadowSmoothMode, number | null> = {
+  auto: null,
+  hard: 0.001,
+  w003: 0.03,
+  w005: 0.05,
+  w008: 0.08,
+  w012: 0.12,
+};
+const valueShadowInfluenceByMode: Record<ValueShadowInfluenceMode, number> = {
+  "0": 0,
+  "0.25": 0.25,
+  "0.5": 0.5,
+  "1": 1,
+};
+const characterYawDegreesByMode: Record<CharacterYawMode, number> = {
+  "0": 0,
+  "45": 45,
+  "-45": -45,
+  "90": 90,
+  "-90": -90,
+  "180": 180,
+};
 const renderState = {
   materialBindingMode: "manifest" as MaterialBindingMode,
+  bodyDebugMode: "off" as BodyDebugMode,
+  toonShadowSmoothMode: "auto" as ToonShadowSmoothMode,
+  valueShadowInfluenceMode: "1" as ValueShadowInfluenceMode,
+  characterYawMode: "0" as CharacterYawMode,
   faceSdfDebugMode: "off" as FaceSdfDebugMode,
   faceSdfDebugLightMode: "scene" as FaceSdfDebugLightMode,
   renderIsolationMode: "normal" as RenderIsolationMode,
@@ -145,6 +177,44 @@ root.innerHTML = `
           </select>
         </label>
         <label>
+          <span>Body Debug</span>
+          <select data-render-key="bodyDebugMode">
+            <option value="off" selected>Off</option>
+            <option value="skin">Skin Mask</option>
+            <option value="neck">Neck Plane</option>
+            <option value="contact">Contact Shadow</option>
+            <option value="h_r">H.R Raw</option>
+            <option value="h_g">H.G Raw</option>
+            <option value="h_b">H.B Raw</option>
+            <option value="h_a">H Alpha</option>
+            <option value="vertex_r">Vertex R</option>
+            <option value="vertex_g">Vertex G</option>
+            <option value="base_shadow">Base Shadow</option>
+            <option value="ndotl_raw">NdotL Raw</option>
+            <option value="h_b_adjusted_shadow">H.B Adjusted Shadow</option>
+          </select>
+        </label>
+        <label>
+          <span>Shadow Smooth</span>
+          <select data-render-key="toonShadowSmoothMode">
+            <option value="auto" selected>Auto</option>
+            <option value="hard">Hard 0.001</option>
+            <option value="w003">0.03</option>
+            <option value="w005">0.05</option>
+            <option value="w008">0.08</option>
+            <option value="w012">0.12</option>
+          </select>
+        </label>
+        <label>
+          <span>H.B Influence</span>
+          <select data-render-key="valueShadowInfluenceMode">
+            <option value="0">0</option>
+            <option value="0.25">0.25</option>
+            <option value="0.5">0.5</option>
+            <option value="1" selected>1</option>
+          </select>
+        </label>
+        <label>
           <span>FaceSDF Debug</span>
           <select data-render-key="faceSdfDebugMode">
             <option value="off" selected>Off</option>
@@ -175,6 +245,17 @@ root.innerHTML = `
             <option value="no_body_outline">No Body Outline</option>
             <option value="no_hair_outline">No Hair Outline</option>
             <option value="no_face_outline">No Face Outline</option>
+          </select>
+        </label>
+        <label>
+          <span>Model Yaw</span>
+          <select data-render-key="characterYawMode">
+            <option value="0" selected>0 deg</option>
+            <option value="45">+45 deg</option>
+            <option value="-45">-45 deg</option>
+            <option value="90">+90 deg</option>
+            <option value="-90">-90 deg</option>
+            <option value="180">180 deg</option>
           </select>
         </label>
         <div class="callout">
@@ -265,9 +346,19 @@ if (!viewerHost) {
 
 const viewer = new PjskViewerApp(viewerHost, previewState);
 viewer.setMaterialBindingMode(renderState.materialBindingMode);
+viewer.setBodyDebugMode(renderState.bodyDebugMode);
+viewer.setToonShadowPreview(
+  toonShadowSmoothByMode[renderState.toonShadowSmoothMode],
+  valueShadowInfluenceByMode[renderState.valueShadowInfluenceMode]
+);
 viewer.setFaceSdfDebugMode(renderState.faceSdfDebugMode);
 viewer.setFaceSdfDebugLightMode(renderState.faceSdfDebugLightMode);
 viewer.setRenderIsolationMode(renderState.renderIsolationMode);
+viewer.setCharacterYawDegrees(characterYawDegreesByMode[renderState.characterYawMode]);
+viewer.onCameraDebugChange(() => {
+  lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
+  renderImportSummary();
+});
 
 function copyBodyAsset(base: BodyAssetManifest): BodyAssetManifest {
   return {
@@ -770,40 +861,19 @@ function readRuntimePreviewLight(extension: UnknownRecord) {
   const preview = asRecord(
     profile.viewerTunedPreview ?? profile.ViewerTunedPreview
   );
-  const pluginPreview = asRecord(
-    profile.pluginPreview ?? profile.PluginPreview
-  );
-  const pluginDirection = asRecord(
-    pluginPreview.directionalLocation ?? pluginPreview.DirectionalLocation
-  );
   if (!Object.keys(preview).length) {
     return null;
   }
-  const pluginX = readNumber(pluginDirection.x ?? pluginDirection.X, Number.NaN);
-  const pluginY = readNumber(pluginDirection.y ?? pluginDirection.Y, Number.NaN);
-  const pluginZ = readNumber(pluginDirection.z ?? pluginDirection.Z, Number.NaN);
-  const hasPluginDirection = Number.isFinite(pluginX)
-    && Number.isFinite(pluginY)
-    && Number.isFinite(pluginZ);
+  // Keep this pass on one known candidate direction even when old imported packages
+  // still carry earlier ViewerTunedPreview / PluginPreview vectors.
+  const runtimeLightDirection = previewLightDirectionFit;
   return {
-    x: readNumber(
-      preview.x ?? preview.X,
-      hasPluginDirection ? pluginX : previewState.x
-    ),
-    y: readNumber(
-      preview.y ?? preview.Y,
-      hasPluginDirection ? pluginZ : previewState.y
-    ),
-    z: readNumber(
-      preview.z ?? preview.Z,
-      hasPluginDirection ? -pluginY : previewState.z
-    ),
+    x: runtimeLightDirection.x,
+    y: runtimeLightDirection.y,
+    z: runtimeLightDirection.z,
     intensity: readNumber(preview.intensity ?? preview.Intensity, previewState.intensity),
     ambient: readNumber(preview.ambient ?? preview.Ambient, previewState.ambient),
-    shadowThreshold: readNumber(
-      preview.shadowThreshold ?? preview.ShadowThreshold,
-      previewState.shadowThreshold
-    ),
+    shadowThreshold: previewShadowThresholdFit,
     shadowWeight: readNumber(preview.shadowWeight ?? preview.ShadowWeight, previewState.shadowWeight),
     characterAmbient: readNumber(
       preview.characterAmbient ?? preview.CharacterAmbient,
@@ -1885,7 +1955,13 @@ async function applyCharacterImport() {
     return;
   }
   viewer.setMaterialBindingMode(renderState.materialBindingMode);
+  viewer.setBodyDebugMode(renderState.bodyDebugMode);
+  viewer.setToonShadowPreview(
+    toonShadowSmoothByMode[renderState.toonShadowSmoothMode],
+    valueShadowInfluenceByMode[renderState.valueShadowInfluenceMode]
+  );
   viewer.setRenderIsolationMode(renderState.renderIsolationMode);
+  viewer.setCharacterYawDegrees(characterYawDegreesByMode[renderState.characterYawMode]);
   const snapshot = await viewer.importCombinedCharacter(combinedAsset);
   if (run !== importRun) {
     return;
@@ -1895,6 +1971,7 @@ async function applyCharacterImport() {
   lastSpringBoneSnapshot = viewer.getSpringBoneSnapshot();
   viewer.updateAssembly(assemblyState);
   viewer.setRenderIsolationMode(renderState.renderIsolationMode);
+  viewer.setCharacterYawDegrees(characterYawDegreesByMode[renderState.characterYawMode]);
   await applyBodyAnimation(bodyAsset);
   await applyFaceMotion();
   lastFaceMotionSnapshot = viewer.getFaceMotionSnapshot();
@@ -1935,6 +2012,30 @@ document
         lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
         renderImportSummary();
       }
+      if (key === "bodyDebugMode") {
+        renderState.bodyDebugMode = select.value as BodyDebugMode;
+        viewer.setBodyDebugMode(renderState.bodyDebugMode);
+        lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
+        renderImportSummary();
+      }
+      if (key === "toonShadowSmoothMode") {
+        renderState.toonShadowSmoothMode = select.value as ToonShadowSmoothMode;
+        viewer.setToonShadowPreview(
+          toonShadowSmoothByMode[renderState.toonShadowSmoothMode],
+          valueShadowInfluenceByMode[renderState.valueShadowInfluenceMode]
+        );
+        lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
+        renderImportSummary();
+      }
+      if (key === "valueShadowInfluenceMode") {
+        renderState.valueShadowInfluenceMode = select.value as ValueShadowInfluenceMode;
+        viewer.setToonShadowPreview(
+          toonShadowSmoothByMode[renderState.toonShadowSmoothMode],
+          valueShadowInfluenceByMode[renderState.valueShadowInfluenceMode]
+        );
+        lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
+        renderImportSummary();
+      }
       if (key === "faceSdfDebugLightMode") {
         renderState.faceSdfDebugLightMode = select.value as FaceSdfDebugLightMode;
         viewer.setFaceSdfDebugLightMode(renderState.faceSdfDebugLightMode);
@@ -1946,6 +2047,10 @@ document
         viewer.setRenderIsolationMode(renderState.renderIsolationMode);
         lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
         renderImportSummary();
+      }
+      if (key === "characterYawMode") {
+        renderState.characterYawMode = select.value as CharacterYawMode;
+        viewer.setCharacterYawDegrees(characterYawDegreesByMode[renderState.characterYawMode]);
       }
     });
   });
