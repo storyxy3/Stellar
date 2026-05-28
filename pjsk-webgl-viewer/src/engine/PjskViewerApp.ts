@@ -411,15 +411,15 @@ function shouldSkipOutlineMaterialKind(kind: unknown) {
 
 function getOutlineWidthScaleForMaterialKind(kind: unknown) {
   if (kind === "hair") {
-    return 0.12;
+    return 0.10;
   }
   if (kind === "face_sdf") {
-    return 0.24;
+    return 0.16;
   }
   if (kind === "body") {
-    return 0.62;
+    return 0.44;
   }
-  return 1.05;
+  return 0.85;
 }
 
 function isOutlineHiddenByIsolation(kind: string, mode: RenderIsolationMode) {
