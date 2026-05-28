@@ -21,6 +21,9 @@ import {
   type PartImportSnapshot,
   type RuntimeDebugSnapshot,
   type RuntimeCombinedCharacterAsset,
+  type FaceSdfDebugMode,
+  type FaceSdfDebugLightMode,
+  type RenderIsolationMode,
   type SpringBoneRuntimeSnapshot,
 } from "./engine/PjskViewerApp";
 
@@ -40,6 +43,9 @@ let lastFaceMotionSnapshot: FaceMotionPlaybackSnapshot | null = null;
 let lastSpringBoneSnapshot: SpringBoneRuntimeSnapshot | null = null;
 const renderState = {
   materialBindingMode: "manifest" as MaterialBindingMode,
+  faceSdfDebugMode: "off" as FaceSdfDebugMode,
+  faceSdfDebugLightMode: "scene" as FaceSdfDebugLightMode,
+  renderIsolationMode: "normal" as RenderIsolationMode,
   faceMotionEnabled: true,
   bodyHeadTracksEnabled: true,
 };
@@ -138,6 +144,39 @@ root.innerHTML = `
             <option value="glb">GLB Original</option>
           </select>
         </label>
+        <label>
+          <span>FaceSDF Debug</span>
+          <select data-render-key="faceSdfDebugMode">
+            <option value="off" selected>Off</option>
+            <option value="sdf">Raw SDF</option>
+            <option value="mask">Mask</option>
+            <option value="limit">Limit</option>
+            <option value="basis">Basis</option>
+          </select>
+        </label>
+        <label>
+          <span>FaceSDF Light</span>
+          <select data-render-key="faceSdfDebugLightMode">
+            <option value="scene" selected>Scene Light</option>
+            <option value="front">Front</option>
+            <option value="left">Left</option>
+            <option value="right">Right</option>
+            <option value="back">Back</option>
+          </select>
+        </label>
+        <label>
+          <span>Render Isolation</span>
+          <select data-render-key="renderIsolationMode">
+            <option value="normal" selected>Normal Preview</option>
+            <option value="face_sdf">FaceSDF Shading</option>
+            <option value="no_face_sdf">No FaceSDF</option>
+            <option value="no_face_layers">No Face Layers</option>
+            <option value="no_outline">No Outline</option>
+            <option value="no_body_outline">No Body Outline</option>
+            <option value="no_hair_outline">No Hair Outline</option>
+            <option value="no_face_outline">No Face Outline</option>
+          </select>
+        </label>
         <div class="callout">
           Use this to separate two classes of bugs:
           if GLB Original looks correct, converter output is fine and runtime rebinding is wrong.
@@ -226,6 +265,9 @@ if (!viewerHost) {
 
 const viewer = new PjskViewerApp(viewerHost, previewState);
 viewer.setMaterialBindingMode(renderState.materialBindingMode);
+viewer.setFaceSdfDebugMode(renderState.faceSdfDebugMode);
+viewer.setFaceSdfDebugLightMode(renderState.faceSdfDebugLightMode);
+viewer.setRenderIsolationMode(renderState.renderIsolationMode);
 
 function copyBodyAsset(base: BodyAssetManifest): BodyAssetManifest {
   return {
@@ -774,6 +816,10 @@ function readRuntimePreviewLight(extension: UnknownRecord) {
       previewState.rimDirectionality
     ),
     faceSoftness: readNumber(preview.faceSoftness ?? preview.FaceSoftness, previewState.faceSoftness),
+    faceSdfUseLightDirection: readNumber(
+      preview.faceSdfUseLightDirection ?? preview.FaceSdfUseLightDirection,
+      previewState.faceSdfUseLightDirection
+    ),
     characterHeight: readNumber(
       preview.characterHeight ?? preview.CharacterHeight,
       previewState.characterHeight
@@ -857,6 +903,8 @@ function buildLightControllerPreview(lightMotion: LightMotionSet | null): LightC
           outlineColor: readFirstLightColor(clip, "outlineColor"),
           outlineBlending: readFirstLightValue(clip, "outlineBlending"),
           rotationEuler: readFirstLightVector(clip, "rotationEuler"),
+          faceShadowLimitRange: readFirstLightValue(clip, "faceShadowLimitRange"),
+          useFaceShadowLimiter: readFirstLightValue(clip, "useFaceShadowLimiter"),
           hasRotationEuler: clip.curves.some((curve) =>
             curve.property === "rotationEuler" || curve.property.startsWith("rotationEuler.")
           ),
@@ -988,6 +1036,24 @@ function applyLightControllerPreview(preview: LightControllerPreview | null) {
       previewState.rimIntensity * Math.max(rimLightInfluence, 0),
       0,
       1.5
+    );
+    previewLightChanged = true;
+  }
+
+  const faceShadowLimitRange = readOptionalLightNumber(
+    preview?.directional?.faceShadowLimitRange
+  );
+  const useFaceShadowLimiter = readOptionalLightNumber(
+    preview?.directional?.useFaceShadowLimiter
+  );
+  if (
+    faceShadowLimitRange !== null &&
+    (useFaceShadowLimiter === null || useFaceShadowLimiter > 0.5)
+  ) {
+    previewState.faceSdfUseLightDirection = clampLightControllerValue(
+      faceShadowLimitRange,
+      0,
+      1
     );
     previewLightChanged = true;
   }
@@ -1819,6 +1885,7 @@ async function applyCharacterImport() {
     return;
   }
   viewer.setMaterialBindingMode(renderState.materialBindingMode);
+  viewer.setRenderIsolationMode(renderState.renderIsolationMode);
   const snapshot = await viewer.importCombinedCharacter(combinedAsset);
   if (run !== importRun) {
     return;
@@ -1827,6 +1894,7 @@ async function applyCharacterImport() {
   lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
   lastSpringBoneSnapshot = viewer.getSpringBoneSnapshot();
   viewer.updateAssembly(assemblyState);
+  viewer.setRenderIsolationMode(renderState.renderIsolationMode);
   await applyBodyAnimation(bodyAsset);
   await applyFaceMotion();
   lastFaceMotionSnapshot = viewer.getFaceMotionSnapshot();
@@ -1860,6 +1928,24 @@ document
       if (key === "materialBindingMode") {
         renderState.materialBindingMode = select.value as MaterialBindingMode;
         void applyCharacterImport();
+      }
+      if (key === "faceSdfDebugMode") {
+        renderState.faceSdfDebugMode = select.value as FaceSdfDebugMode;
+        viewer.setFaceSdfDebugMode(renderState.faceSdfDebugMode);
+        lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
+        renderImportSummary();
+      }
+      if (key === "faceSdfDebugLightMode") {
+        renderState.faceSdfDebugLightMode = select.value as FaceSdfDebugLightMode;
+        viewer.setFaceSdfDebugLightMode(renderState.faceSdfDebugLightMode);
+        lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
+        renderImportSummary();
+      }
+      if (key === "renderIsolationMode") {
+        renderState.renderIsolationMode = select.value as RenderIsolationMode;
+        viewer.setRenderIsolationMode(renderState.renderIsolationMode);
+        lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
+        renderImportSummary();
       }
     });
   });

@@ -204,8 +204,10 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
         float skinLinePreserve = smoothstep(0.36, 0.72, skinTextureLuma);
         float skinTintMask = skinMask * skinLinePreserve;
         float skinRamp = smoothstep(0.36, 0.92, mainSample.r);
-        vec3 skinLitColor = mix(uSkinColor1, uSkinColorDefault, skinRamp) * vec3(1.015, 0.998, 0.986);
-        vec3 skinShadowRampColor = mix(uSkinColor2, uSkinColor1, skinRamp);
+        vec3 skinWarmBias = vec3(1.025, 1.012, 0.955);
+        vec3 skinShadowWarmBias = vec3(1.018, 1.006, 0.965);
+        vec3 skinLitColor = mix(uSkinColor1, uSkinColorDefault, skinRamp) * skinWarmBias;
+        vec3 skinShadowRampColor = mix(uSkinColor2, uSkinColor1, skinRamp) * skinShadowWarmBias;
         vec3 skinShadowColor = mix(skinShadowRampColor, skinLitColor, 0.18);
         mainColor = mix(mainColor, skinLitColor, skinTintMask);
         shadowValue = mix(shadowValue, skinShadowColor, skinTintMask);
@@ -213,20 +215,22 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
         float hAlpha = valueSample.a;
 
         float halfNdl = clamp(ndl * 0.5 + 0.5, 0.0, 1.0);
-        float hShadowOffset = (uUseValueTex > 0.5) ? valueSample.b * 2.0 - 1.0 : 0.0;
-        float shadowLuma = clamp(halfNdl + hShadowOffset, 0.0, 1.0);
         float materialShadowThreshold = clamp(uShadowThreshold, 0.0, 1.0);
         float shadowWidth = max(uShadowWidth, 0.001);
         float litBand = smoothstep(
           materialShadowThreshold - shadowWidth,
           materialShadowThreshold + shadowWidth,
-          shadowLuma
+          halfNdl
         );
         float shadowBand = clamp((1.0 - litBand) * uShadowWeight, 0.0, 1.0);
 
         // PJSK character shader semantics: C is the lit color; S already owns the toon-shadow target color.
         vec3 fallbackShadowColor = mainColor * uShadowColor * uGlobalShadowColor;
         vec3 shadowColor = (uUseShadowTex > 0.5) ? shadowValue * uGlobalShadowColor : fallbackShadowColor;
+        float lightSurfaceMask = (1.0 - skinMask) * smoothstep(0.58, 0.86, dot(mainColor, vec3(0.299, 0.587, 0.114)));
+        shadowBand *= mix(1.0, 0.62, lightSurfaceMask);
+        vec3 cleanLightShadowColor = mix(shadowColor, mainColor * vec3(0.93, 0.96, 0.99), 0.48);
+        shadowColor = mix(shadowColor, cleanLightShadowColor, lightSurfaceMask);
         vec3 color = mix(mainColor, shadowColor, shadowBand);
 
         vec3 partsAmbient = mix(vec3(1.0), uPartsAmbientColor, 0.62);
@@ -277,6 +281,7 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
         color += uReflectionBlendColor * specular * uLightIntensity * 0.22;
 
         color *= mix(vec3(1.0), uPartsAmbientColor, 0.06);
+        color *= vec3(1.018, 1.009, 0.968);
         color = applyMaterialSaturation(color, uSaturation);
         gl_FragColor = vec4(outputColor(clamp(color, 0.0, 1.0)), 1.0);
       }

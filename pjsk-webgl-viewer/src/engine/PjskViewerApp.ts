@@ -51,6 +51,17 @@ export type CompositionStatus = {
 };
 
 export type MaterialBindingMode = "manifest" | "glb";
+export type FaceSdfDebugMode = "off" | "sdf" | "mask" | "limit" | "basis";
+export type FaceSdfDebugLightMode = "scene" | "front" | "left" | "right" | "back";
+export type RenderIsolationMode =
+  | "normal"
+  | "face_sdf"
+  | "no_face_sdf"
+  | "no_face_layers"
+  | "no_outline"
+  | "no_body_outline"
+  | "no_hair_outline"
+  | "no_face_outline";
 
 export type BodyAnimationSelection = {
   motionUrl: string | null;
@@ -89,6 +100,10 @@ export type RuntimeMaterialDebug = {
   shaderSkinColorDefault?: string | null;
   shaderSkinColor1?: string | null;
   shaderFaceSoftness?: number | null;
+  shaderFaceSdfUseLightDirection?: number | null;
+  shaderFaceDebugMode?: number | null;
+  shaderFaceDebugLightMode?: number | null;
+  shaderFaceSdfEnabled?: number | null;
   shaderAtlasTileX?: number | null;
   shaderAtlasTileY?: number | null;
   shaderAtlasSample?: number | null;
@@ -369,19 +384,73 @@ function getVertexColorRedMax(geometry: THREE.BufferGeometry) {
   return max;
 }
 
+function isFaceLayerMaterialKind(kind: unknown) {
+  return kind === "eyelash" || kind === "eyebrow" || kind === "eye" || kind === "eyelight";
+}
+
+function getOutlineSourceMaterialKind(mesh: THREE.Mesh) {
+  if (typeof mesh.userData.pjskMaterialKind === "string") {
+    return mesh.userData.pjskMaterialKind;
+  }
+  const materialNames = (Array.isArray(mesh.material) ? mesh.material : [mesh.material])
+    .map((material) => material.name.toLowerCase());
+  const meshName = mesh.name.toLowerCase();
+  if (
+    normalizeMeshSlotName(mesh.name) === "acc" ||
+    meshName.includes("/acc") ||
+    materialNames.some((name) => name.includes("_acc") || name.startsWith("mtl_acc"))
+  ) {
+    return "accessory";
+  }
+  return null;
+}
+
+function shouldSkipOutlineMaterialKind(kind: unknown) {
+  return kind === "accessory" || isFaceLayerMaterialKind(kind);
+}
+
+function getOutlineWidthScaleForMaterialKind(kind: unknown) {
+  if (kind === "hair") {
+    return 0.12;
+  }
+  if (kind === "face_sdf") {
+    return 0.24;
+  }
+  if (kind === "body") {
+    return 0.62;
+  }
+  return 1.05;
+}
+
+function isOutlineHiddenByIsolation(kind: string, mode: RenderIsolationMode) {
+  switch (mode) {
+    case "no_body_outline":
+      return kind === "body";
+    case "no_hair_outline":
+      return kind === "hair";
+    case "no_face_outline":
+      return kind === "face_sdf";
+    default:
+      return false;
+  }
+}
+
 function createSekaiOutlineMaterial(
   useVertexColor: boolean,
-  lighting?: MaterialLightingSettings
+  lighting?: MaterialLightingSettings,
+  materialKind?: unknown
 ) {
   const sourceOutlineWidth = lighting?.outlineWidth && lighting.outlineWidth > 0
     ? lighting.outlineWidth
     : 0.001;
-  const outlineLightness = THREE.MathUtils.clamp(lighting?.outlineLightness ?? 0.42, 0.22, 0.62);
-  const outlineColor = new THREE.Color().setHSL(0.0, 0.03, outlineLightness * 0.42);
+  const outlineWidthScale = getOutlineWidthScaleForMaterialKind(materialKind);
+  const outlineOpacity = 0.5;
+  const outlineColor = new THREE.Color("#000000");
   const material = new THREE.MeshBasicMaterial({
     color: outlineColor,
     side: THREE.BackSide,
-    transparent: false,
+    transparent: true,
+    opacity: outlineOpacity,
     depthWrite: false,
     depthTest: true,
     polygonOffset: true,
@@ -391,9 +460,10 @@ function createSekaiOutlineMaterial(
   });
   material.name = "pjsk_shell_outline";
   material.userData.pjskBaseOutlineColor = `#${outlineColor.getHexString()}`;
+  material.userData.pjskBaseOutlineOpacity = outlineOpacity;
   material.onBeforeCompile = (shader) => {
-    shader.uniforms.uOutlineWidthNear = { value: sourceOutlineWidth * 0.34 };
-    shader.uniforms.uOutlineWidthFar = { value: sourceOutlineWidth * 0.88 };
+    shader.uniforms.uOutlineWidthNear = { value: sourceOutlineWidth * outlineWidthScale };
+    shader.uniforms.uOutlineWidthFar = { value: sourceOutlineWidth * outlineWidthScale * 1.12 };
     shader.uniforms.uOutlineDistanceNear = { value: 1.4 };
     shader.uniforms.uOutlineDistanceFar = { value: 5.0 };
     shader.vertexShader = shader.vertexShader.replace(
@@ -416,8 +486,9 @@ function createSekaiOutlineMaterial(
         "float outlineDistanceMix = smoothstep(uOutlineDistanceNear, uOutlineDistanceFar, outlineDistance);",
         "float outlineWidth = mix(uOutlineWidthNear, uOutlineWidthFar, outlineDistanceMix);",
         "#ifdef USE_COLOR",
-        "float outlineScale = clamp(color.r, 0.0, 1.0);",
-        "vOutlineMask = outlineScale;",
+        "float outlineMask = clamp(color.r, 0.0, 1.0);",
+        "vOutlineMask = outlineMask;",
+        "float outlineScale = outlineMask <= 0.01 ? 0.0 : mix(0.75, 1.0, outlineMask);",
         "#else",
         "float outlineScale = 1.0;",
         "vOutlineMask = 1.0;",
@@ -542,6 +613,7 @@ function cloneFaceShaderMaterial(
     skinColorDefault?: THREE.ColorRepresentation;
     skinColor1?: THREE.ColorRepresentation;
     skinColor2?: THREE.ColorRepresentation;
+    faceSdfEnabled?: boolean;
   }
 ) {
   const material = source.clone();
@@ -568,6 +640,10 @@ function cloneFaceShaderMaterial(
     lightIntensity: source.uniforms.uLightIntensity.value,
     ambientIntensity: source.uniforms.uAmbientIntensity.value,
     faceSoftness: source.uniforms.uFaceSoftness.value,
+    faceSdfUseLightDirection: source.uniforms.uFaceSdfUseLightDirection?.value ?? 0.5,
+    faceDebugMode: source.uniforms.uFaceDebugMode?.value ?? 0,
+    faceDebugLightMode: source.uniforms.uFaceDebugLightMode?.value ?? 0,
+    faceSdfEnabled: params.faceSdfEnabled ?? ((source.uniforms.uFaceSdfEnabled?.value ?? 1.0) > 0.5),
   });
   updateSekaiFaceBasis(
     material,
@@ -575,6 +651,23 @@ function cloneFaceShaderMaterial(
     source.uniforms.uFaceForward?.value ?? new THREE.Vector3(0, 0, 1)
   );
   return material;
+}
+
+function ensureFaceSdfUv1Attribute(mesh: THREE.Mesh) {
+  const geometry = mesh.geometry;
+  if (!geometry || geometry.getAttribute("uv1")) {
+    return;
+  }
+  const uv = geometry.getAttribute("uv");
+  if (!uv) {
+    return;
+  }
+  const uv1 = new Float32Array(uv.count * 2);
+  for (let i = 0; i < uv.count; i += 1) {
+    uv1[i * 2] = uv.getX(i);
+    uv1[i * 2 + 1] = uv.getY(i);
+  }
+  geometry.setAttribute("uv1", new THREE.BufferAttribute(uv1, 2));
 }
 
 function isMorphMesh(node: THREE.Object3D): node is THREE.Mesh {
@@ -652,6 +745,36 @@ function tuneLightingForPreview(
 
 function usesSekaiSkinTint(kind: string | undefined) {
   return (kind ?? "body") === "body";
+}
+
+function faceSdfDebugModeToUniform(mode: FaceSdfDebugMode) {
+  switch (mode) {
+    case "sdf":
+      return 1;
+    case "mask":
+      return 2;
+    case "limit":
+      return 3;
+    case "basis":
+      return 4;
+    default:
+      return 0;
+  }
+}
+
+function faceSdfDebugLightModeToUniform(mode: FaceSdfDebugLightMode) {
+  switch (mode) {
+    case "front":
+      return 1;
+    case "left":
+      return 2;
+    case "right":
+      return 3;
+    case "back":
+      return 4;
+    default:
+      return 0;
+  }
 }
 
 function asRuntimeRecord(value: unknown): Record<string, unknown> {
@@ -1028,6 +1151,9 @@ export class PjskViewerApp {
   private readonly sideHairTargetLocalQuat = new THREE.Quaternion();
   private readonly sideHairTargetTailWorld = new THREE.Vector3();
   private materialBindingMode: MaterialBindingMode = "manifest";
+  private faceSdfDebugMode: FaceSdfDebugMode = "off";
+  private faceSdfDebugLightMode: FaceSdfDebugLightMode = "scene";
+  private renderIsolationMode: RenderIsolationMode = "normal";
   private readonly runtimeDebug: RuntimeDebugSnapshot = {
     materialBindingMode: "manifest",
     body: [],
@@ -1038,8 +1164,8 @@ export class PjskViewerApp {
   constructor(container: HTMLElement, initialLight: PreviewLightState) {
     this.container = container;
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color("#cfd8e0");
-    this.scene.fog = new THREE.Fog("#cfd8e0", 5.5, 15);
+    this.scene.background = new THREE.Color("#7f8d95");
+    this.scene.fog = new THREE.Fog("#7f8d95", 5.5, 15);
 
     const width = Math.max(container.clientWidth, 320);
     const height = Math.max(container.clientHeight, 320);
@@ -1115,6 +1241,7 @@ export class PjskViewerApp {
       lightIntensity: initialLight.intensity,
       ambientIntensity: initialLight.ambient,
       faceSoftness: initialLight.faceSoftness,
+      faceSdfUseLightDirection: initialLight.faceSdfUseLightDirection,
     });
 
     this.characterRoot = new THREE.Group();
@@ -1288,6 +1415,103 @@ export class PjskViewerApp {
   setMaterialBindingMode(mode: MaterialBindingMode) {
     this.materialBindingMode = mode;
     this.runtimeDebug.materialBindingMode = mode;
+  }
+
+  setFaceSdfDebugMode(mode: FaceSdfDebugMode) {
+    this.faceSdfDebugMode = mode;
+    this.applyFaceSdfDebugUniforms();
+  }
+
+  setFaceSdfDebugLightMode(mode: FaceSdfDebugLightMode) {
+    this.faceSdfDebugLightMode = mode;
+    this.applyFaceSdfDebugUniforms();
+  }
+
+  setRenderIsolationMode(mode: RenderIsolationMode) {
+    this.renderIsolationMode = mode;
+    this.applyRenderIsolationMode();
+  }
+
+  private applyRenderIsolationMode() {
+    const faceSdfEnabled = this.renderIsolationMode === "face_sdf";
+    const faceLayersVisible = this.renderIsolationMode !== "no_face_layers";
+    const outlineVisible = this.renderIsolationMode !== "no_outline";
+    const apply = (node: THREE.Object3D) => {
+      const mesh = node as THREE.Mesh;
+      if (!mesh.isMesh) {
+        return;
+      }
+      if (mesh.userData.pjskOutlineShell) {
+        const sourceKind = typeof mesh.userData.pjskSourceMaterialKind === "string"
+          ? mesh.userData.pjskSourceMaterialKind
+          : "";
+        const isFaceLayerOutline =
+          sourceKind === "eyelash" ||
+          sourceKind === "eyebrow" ||
+          sourceKind === "eye" ||
+          sourceKind === "eyelight";
+        mesh.visible =
+          outlineVisible &&
+          !isOutlineHiddenByIsolation(sourceKind, this.renderIsolationMode) &&
+          (!isFaceLayerOutline || faceLayersVisible);
+        return;
+      }
+      const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      let isFaceLayer = false;
+      for (const material of materials) {
+        if (material instanceof THREE.ShaderMaterial) {
+          if (material.uniforms.uFaceSdfEnabled) {
+            material.uniforms.uFaceSdfEnabled.value = faceSdfEnabled ? 1.0 : 0.0;
+          }
+          if (material.uniforms.uMode && !material.uniforms.uFaceSdfEnabled) {
+            isFaceLayer = true;
+          }
+        }
+      }
+      if (isFaceLayer) {
+        mesh.visible = faceLayersVisible;
+      }
+    };
+    for (const slot of [this.bodySlot, this.headSlot]) {
+      slot.traverse(apply);
+    }
+    for (const entries of [this.runtimeDebug.body, this.runtimeDebug.head]) {
+      for (const entry of entries) {
+        if (entry.shaderFaceSdfEnabled !== undefined || entry.resolvedKind === "face_sdf") {
+          entry.shaderFaceSdfEnabled = faceSdfEnabled ? 1.0 : 0.0;
+        }
+      }
+    }
+  }
+
+  private applyFaceSdfDebugUniforms() {
+    const debugUniform = faceSdfDebugModeToUniform(this.faceSdfDebugMode);
+    const debugLightUniform = faceSdfDebugLightModeToUniform(this.faceSdfDebugLightMode);
+    this.faceMaterial.uniforms.uFaceDebugMode.value = debugUniform;
+    this.faceMaterial.uniforms.uFaceDebugLightMode.value = debugLightUniform;
+    for (const slot of [this.bodySlot, this.headSlot]) {
+      slot.traverse((node) => {
+        const mesh = node as THREE.Mesh;
+        if (!mesh.isMesh) {
+          return;
+        }
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const material of materials) {
+          if (material instanceof THREE.ShaderMaterial && material.uniforms.uFaceDebugMode) {
+            material.uniforms.uFaceDebugMode.value = debugUniform;
+            material.uniforms.uFaceDebugLightMode.value = debugLightUniform;
+          }
+        }
+      });
+    }
+    for (const entries of [this.runtimeDebug.body, this.runtimeDebug.head]) {
+      for (const entry of entries) {
+        if (entry.resolvedKind === "face_sdf" || entry.shaderFaceDebugMode !== undefined) {
+          entry.shaderFaceDebugMode = debugUniform;
+          entry.shaderFaceDebugLightMode = debugLightUniform;
+        }
+      }
+    }
   }
 
   getRuntimeDebugSnapshot() {
@@ -1626,6 +1850,7 @@ export class PjskViewerApp {
       lightIntensity: next.intensity,
       ambientIntensity: next.ambient,
       faceSoftness: next.faceSoftness,
+      faceSdfUseLightDirection: next.faceSdfUseLightDirection,
     });
     this.updateLoadedMaterialLight(next);
   }
@@ -1769,9 +1994,15 @@ export class PjskViewerApp {
     );
     if (!this.controllerOutlineColor) {
       material.color.copy(baseColor);
+      material.opacity = typeof material.userData.pjskBaseOutlineOpacity === "number"
+        ? material.userData.pjskBaseOutlineOpacity
+        : 0.5;
       return;
     }
     material.color.copy(baseColor.lerp(this.controllerOutlineColor, this.controllerOutlineBlending));
+    material.opacity = typeof material.userData.pjskBaseOutlineOpacity === "number"
+      ? material.userData.pjskBaseOutlineOpacity
+      : 0.5;
   }
 
   private updateLoadedMaterialLight(next: PreviewLightState) {
@@ -1817,6 +2048,9 @@ export class PjskViewerApp {
           uniforms.uRimDirection?.value.copy(rimDirection);
           if (uniforms.uFaceSoftness) {
             uniforms.uFaceSoftness.value = next.faceSoftness;
+          }
+          if (uniforms.uFaceSdfUseLightDirection) {
+            uniforms.uFaceSdfUseLightDirection.value = next.faceSdfUseLightDirection;
           }
         }
       });
@@ -2279,6 +2513,11 @@ export class PjskViewerApp {
     });
 
     for (const mesh of targets) {
+      const sourceMaterialKind = getOutlineSourceMaterialKind(mesh);
+      if (shouldSkipOutlineMaterialKind(sourceMaterialKind)) {
+        continue;
+      }
+
       const vertexColorRedMax = getVertexColorRedMax(mesh.geometry);
       if (vertexColorRedMax !== null && vertexColorRedMax <= 0.01) {
         continue;
@@ -2290,7 +2529,8 @@ export class PjskViewerApp {
         .find(Boolean);
       const outlineMaterial = createSekaiOutlineMaterial(
         Boolean(mesh.geometry.getAttribute("color")),
-        lighting
+        lighting,
+        sourceMaterialKind
       );
       this.applyLightControllerOutlineMaterial(outlineMaterial);
       const outline = mesh instanceof THREE.SkinnedMesh
@@ -2300,6 +2540,7 @@ export class PjskViewerApp {
       outline.renderOrder = Math.max(mesh.renderOrder - 2, 0);
       outline.frustumCulled = mesh.frustumCulled;
       outline.userData.pjskOutlineShell = true;
+      outline.userData.pjskSourceMaterialKind = sourceMaterialKind;
       outline.matrixAutoUpdate = mesh.matrixAutoUpdate;
       outline.position.copy(mesh.position);
       outline.quaternion.copy(mesh.quaternion);
@@ -2443,9 +2684,9 @@ export class PjskViewerApp {
         const resolvedEntry =
           resolvedByMaterialName ??
           (allowMeshFallback ? meshSlots[index] ?? meshSlots[0] ?? null : null);
-        if (resolvedEntry) {
-          const mainMap = this.extractColorMap(original);
-          this.syncReplacementTextureFromOriginal(resolvedEntry.material, mainMap);
+          if (resolvedEntry) {
+            const mainMap = this.extractColorMap(original);
+            this.syncReplacementTextureFromOriginal(resolvedEntry.material, mainMap);
           let usedOriginalMap = false;
           if (
             resolvedEntry.material instanceof THREE.ShaderMaterial &&
@@ -2630,6 +2871,11 @@ export class PjskViewerApp {
           skinColor1: headAsset.proxy.skinColor1 ?? headAsset.proxy.faceShadeColor,
           skinColor2: headAsset.proxy.skinColor2 ?? headAsset.proxy.faceShadeColor,
         });
+        if (material instanceof THREE.ShaderMaterial && material.uniforms.uFaceDebugMode) {
+          material.uniforms.uFaceDebugMode.value = faceSdfDebugModeToUniform(this.faceSdfDebugMode);
+          material.uniforms.uFaceDebugLightMode.value = faceSdfDebugLightModeToUniform(this.faceSdfDebugLightMode);
+          material.uniforms.uFaceSdfEnabled.value = this.renderIsolationMode === "face_sdf" ? 1.0 : 0.0;
+        }
       }
       material.userData.pjskLighting = lighting;
       slotEntries.push({
@@ -2683,10 +2929,14 @@ export class PjskViewerApp {
             usedOriginalMap = true;
           }
           mesh.renderOrder = getHeadLayerRenderOrder(resolvedEntry.materialKind);
+          mesh.userData.pjskMaterialKind = resolvedEntry.materialKind;
           const shaderUniforms =
             resolvedEntry.material instanceof THREE.ShaderMaterial
               ? resolvedEntry.material.uniforms
               : null;
+          if (shaderUniforms?.uFaceShadowTex) {
+            ensureFaceSdfUv1Attribute(mesh);
+          }
           this.runtimeDebug.head.push({
             meshName: mesh.name,
             sourceMaterialName: original.name,
@@ -2720,6 +2970,11 @@ export class PjskViewerApp {
             shaderSaturation: shaderUniforms?.uSaturation?.value ?? null,
             shaderSkinTintEnabled: shaderUniforms?.uSkinTintEnabled?.value ?? null,
             shaderFaceSoftness: shaderUniforms?.uFaceSoftness?.value ?? null,
+            shaderFaceSdfUseLightDirection:
+              shaderUniforms?.uFaceSdfUseLightDirection?.value ?? null,
+            shaderFaceDebugMode: shaderUniforms?.uFaceDebugMode?.value ?? null,
+            shaderFaceDebugLightMode: shaderUniforms?.uFaceDebugLightMode?.value ?? null,
+            shaderFaceSdfEnabled: shaderUniforms?.uFaceSdfEnabled?.value ?? null,
             shaderAtlasTileX: shaderUniforms?.uAtlasTile?.value?.x ?? null,
             shaderAtlasTileY: shaderUniforms?.uAtlasTile?.value?.y ?? null,
             shaderAtlasSample: shaderUniforms?.uAtlasSample?.value ?? null,
@@ -2730,6 +2985,7 @@ export class PjskViewerApp {
         }
         if (allowMeshFallback) {
           mesh.renderOrder = mesh.name.toLowerCase().includes("face") ? 10 : 12;
+          mesh.userData.pjskMaterialKind = null;
           this.runtimeDebug.head.push({
             meshName: mesh.name,
             sourceMaterialName: original.name,
@@ -2856,6 +3112,8 @@ export class PjskViewerApp {
       lightIntensity: this.directionalLight.intensity,
       ambientIntensity: this.fillLight.intensity,
       faceSoftness: this.faceMaterial.uniforms.uFaceSoftness.value,
+      faceSdfUseLightDirection:
+        this.faceMaterial.uniforms.uFaceSdfUseLightDirection?.value ?? 0.5,
     });
     updateSekaiBodyMaterial(this.hairMaterial, {
       baseColor: headAsset.proxy.hairColor,

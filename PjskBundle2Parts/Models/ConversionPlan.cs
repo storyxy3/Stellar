@@ -57,6 +57,7 @@ public sealed record PreviewLightProfile(
     float RimThreshold,
     float RimDirectionality,
     float FaceSoftness,
+    float FaceSdfUseLightDirection,
     float CharacterHeight
 );
 

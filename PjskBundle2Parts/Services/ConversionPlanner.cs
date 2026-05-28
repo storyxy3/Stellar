@@ -218,6 +218,7 @@ public sealed class ConversionPlanner
             RimThreshold: 0.18f,
             RimDirectionality: 0.85f,
             FaceSoftness: 0.96f,
+            FaceSdfUseLightDirection: 0.5f,
             CharacterHeight: characterHeight
         );
         var runtimeProfile = new SekaiRuntimeMaterialProfile(

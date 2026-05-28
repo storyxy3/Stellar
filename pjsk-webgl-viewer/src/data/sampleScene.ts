@@ -17,6 +17,7 @@ export type PreviewLightState = {
   rimThreshold: number;
   rimDirectionality: number;
   faceSoftness: number;
+  faceSdfUseLightDirection: number;
   characterHeight: number;
 };
 
@@ -234,6 +235,7 @@ export const previewLightDefaults: PreviewLightState = {
   rimThreshold: 0.18,
   rimDirectionality: 0.85,
   faceSoftness: 0.96,
+  faceSdfUseLightDirection: 0.5,
   characterHeight: 1,
 };
 
