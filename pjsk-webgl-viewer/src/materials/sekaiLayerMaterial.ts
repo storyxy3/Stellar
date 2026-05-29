@@ -14,6 +14,7 @@ export type SekaiLayerOptions = {
   emissionColor?: THREE.ColorRepresentation | null;
   lightInfluence?: number | null;
   highlightInfluence?: number | null;
+  vertexBViewOffset?: number | null;
   distortionFps?: number | null;
   distortionIntensity?: number | null;
   distortionIntensityX?: number | null;
@@ -39,11 +40,13 @@ export function createSekaiLayerMaterial(
   const atlasTileX = atlas && atlas.tileX > 0 ? atlas.tileX : 1;
   const atlasTileY = atlas && atlas.tileY > 0 ? atlas.tileY : 1;
   const atlasSample = Math.max(0, atlas?.sample ?? 0);
+  const useVertexBViewOffset = (options?.vertexBViewOffset ?? 0.0) > 0.0;
   const material = new THREE.ShaderMaterial({
     transparent: true,
     depthWrite: false,
     depthTest: true,
     side: THREE.DoubleSide,
+    vertexColors: useVertexBViewOffset,
     blending: isAdditive ? THREE.AdditiveBlending : THREE.NormalBlending,
     polygonOffset: true,
     polygonOffsetFactor: isEyelight ? -2 : -1,
@@ -60,6 +63,7 @@ export function createSekaiLayerMaterial(
       uTime: { value: 0.0 },
       uLightInfluence: { value: THREE.MathUtils.clamp(options?.lightInfluence ?? 1.0, 0.0, 1.0) },
       uHighlightInfluence: { value: THREE.MathUtils.clamp(options?.highlightInfluence ?? 1.0, 0.0, 1.0) },
+      uVertexBViewOffset: { value: Math.max(0.0, options?.vertexBViewOffset ?? 0.0) },
       uDistortionFps: { value: Math.max(1.0, options?.distortionFps ?? 12.0) },
       uDistortionIntensity: { value: Math.max(0.0, options?.distortionIntensity ?? (isEyelight ? 1.0 : 0.0)) },
       uDistortionIntensityXY: {
@@ -86,14 +90,18 @@ export function createSekaiLayerMaterial(
     vertexShader: `
       #include <common>
       #include <uv_pars_vertex>
+      #include <color_pars_vertex>
       #include <skinning_pars_vertex>
       #include <morphtarget_pars_vertex>
+
+      uniform float uVertexBViewOffset;
 
       varying vec2 vUv;
       varying vec3 vViewNormal;
 
       void main() {
         #include <uv_vertex>
+        #include <color_vertex>
         #include <beginnormal_vertex>
         #include <morphnormal_vertex>
         #include <skinbase_vertex>
@@ -104,6 +112,9 @@ export function createSekaiLayerMaterial(
         #include <skinning_vertex>
 
         vec4 mvPosition = modelViewMatrix * vec4(transformed, 1.0);
+        #ifdef USE_COLOR
+        mvPosition.z += clamp(vColor.b, 0.0, 1.0) * uVertexBViewOffset;
+        #endif
         vUv = uv;
         vViewNormal = normalize(normalMatrix * objectNormal);
         gl_Position = projectionMatrix * mvPosition;

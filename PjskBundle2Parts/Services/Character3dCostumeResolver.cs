@@ -171,7 +171,38 @@ public sealed class Character3dCostumeResolver
             return path;
         }
 
+        var fallbackPath = ResolveDefaultFaceBundleFallbackPath(assetRoot, normalizedName);
+        if (fallbackPath is not null)
+        {
+            return fallbackPath;
+        }
+
         throw new FileNotFoundException($"{label} face bundle was not found: {path}");
+    }
+
+    private static string? ResolveDefaultFaceBundleFallbackPath(
+        string assetRoot,
+        string normalizedAssetbundleName
+    )
+    {
+        var trimmedName = normalizedAssetbundleName.Trim('/');
+        var leaf = Path.GetFileName(trimmedName);
+        if (string.IsNullOrWhiteSpace(leaf) || leaf.Any(static character => character != '0'))
+        {
+            return null;
+        }
+
+        var directory = Path.GetDirectoryName(trimmedName)?.Replace('\\', '/') ?? string.Empty;
+        var fallbackLeaf = new string('0', Math.Max(leaf.Length - 1, 0)) + "1";
+        var fallbackName = string.IsNullOrWhiteSpace(directory)
+            ? fallbackLeaf
+            : $"{directory}/{fallbackLeaf}";
+        var fallbackPath = Path.Combine(
+            ResolveAssetBaseDirectory(assetRoot, "face"),
+            $"{ToSystemPath(fallbackName)}.bundle"
+        );
+
+        return File.Exists(fallbackPath) ? fallbackPath : null;
     }
 
     private static string? ResolveCompleteHeadPath(string assetRoot, Costume3dModelMaster head)

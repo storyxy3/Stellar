@@ -482,7 +482,8 @@ function isOutlineHiddenByIsolation(kind: string, mode: RenderIsolationMode) {
 function createSekaiOutlineMaterial(
   useVertexColor: boolean,
   lighting?: MaterialLightingSettings,
-  materialKind?: unknown
+  materialKind?: unknown,
+  useSecondNormal = false
 ) {
   const sourceOutlineWidth = lighting?.outlineWidth && lighting.outlineWidth > 0
     ? lighting.outlineWidth
@@ -519,6 +520,7 @@ function createSekaiOutlineMaterial(
         "uniform float uOutlineWidthFar;",
         "uniform float uOutlineDistanceNear;",
         "uniform float uOutlineDistanceFar;",
+        useSecondNormal ? "attribute vec4 tangent;" : "",
       ].join("\n")
     );
     shader.vertexShader = shader.vertexShader.replace(
@@ -529,6 +531,9 @@ function createSekaiOutlineMaterial(
         "float outlineDistance = length(outlineViewPosition.xyz);",
         "float outlineDistanceMix = smoothstep(uOutlineDistanceNear, uOutlineDistanceFar, outlineDistance);",
         "float outlineWidth = mix(uOutlineWidthNear, uOutlineWidthFar, outlineDistanceMix);",
+        useSecondNormal
+          ? "vec3 outlineDirection = normalize(tangent.xyz);"
+          : "vec3 outlineDirection = objectNormal;",
         "#ifdef USE_COLOR",
         "float outlineMask = clamp(color.r, 0.0, 1.0);",
         "vOutlineMask = outlineMask;",
@@ -537,7 +542,7 @@ function createSekaiOutlineMaterial(
         "float outlineScale = 1.0;",
         "vOutlineMask = 1.0;",
         "#endif",
-        "transformed += objectNormal * outlineWidth * outlineScale;",
+        "transformed += outlineDirection * outlineWidth * outlineScale;",
       ].join("\n")
     );
     shader.fragmentShader = shader.fragmentShader.replace(
@@ -2955,10 +2960,14 @@ export class PjskViewerApp {
       const lighting = meshMaterials
         .map((material) => material.userData.pjskLighting as MaterialLightingSettings | undefined)
         .find(Boolean);
+      const useSecondNormal =
+        (lighting?.useOutlineSecondNormal ?? 0) > 0.5 &&
+        Boolean(mesh.geometry.getAttribute("tangent"));
       const outlineMaterial = createSekaiOutlineMaterial(
         Boolean(mesh.geometry.getAttribute("color")),
         lighting,
-        sourceMaterialKind
+        sourceMaterialKind,
+        useSecondNormal
       );
       this.applyLightControllerOutlineMaterial(outlineMaterial);
       const outline = mesh instanceof THREE.SkinnedMesh
@@ -3302,7 +3311,9 @@ export class PjskViewerApp {
           }
         );
       } else if (kind === "eyelash" || kind === "eyebrow") {
-        material = createSekaiLayerMaterial(mainTex, "alpha");
+        material = createSekaiLayerMaterial(mainTex, "alpha", null, {
+          vertexBViewOffset: 0.015,
+        });
       } else if (kind === "hair") {
         material = cloneBodyShaderMaterial(this.hairMaterial, {
           mainTex,
