@@ -500,7 +500,10 @@ public sealed class ConversionPlanner
     {
         return new MaterialLightingSettings(
             SpecularPower: FindFloatProperty(material, "_SpecularPower") ?? 0f,
-            RimThreshold: FindFloatProperty(material, "_RimThreshold") ?? 0.2f,
+            RimThreshold:
+                FindFloatProperty(material, "_SpecularStrength") ??
+                FindFloatProperty(material, "_RimThreshold") ??
+                0.2f,
             ShadowTexWeight: FindFloatProperty(material, "_ShadowTexWeight") ?? 1f,
             Saturation: FindFloatProperty(material, "_Saturation") ?? 0.5f,
             PartsAmbientColor: FindColorProperty(material, "_PartsAmbientColor") ?? "#ffffff",

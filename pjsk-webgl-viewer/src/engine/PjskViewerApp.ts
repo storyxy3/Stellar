@@ -68,7 +68,18 @@ export type BodyDebugMode =
   | "vertex_g"
   | "base_shadow"
   | "ndotl_raw"
-  | "h_b_adjusted_shadow";
+  | "h_b_adjusted_shadow"
+  | "ambient_target"
+  | "ambient_weight"
+  | "ambient_tint"
+  | "specular"
+  | "specular_mask"
+  | "specular_add"
+  | "rim_raw"
+  | "rim_add"
+  | "rim_gate"
+  | "rim_color"
+  | "rim_scalar";
 export type FaceSdfDebugMode = "off" | "sdf" | "mask" | "limit" | "basis";
 export type FaceSdfDebugLightMode = "scene" | "front" | "left" | "right" | "back";
 export type RenderIsolationMode =
@@ -76,6 +87,7 @@ export type RenderIsolationMode =
   | "face_sdf"
   | "no_face_sdf"
   | "no_face_layers"
+  | "outline_only"
   | "no_outline"
   | "no_body_outline"
   | "no_hair_outline"
@@ -453,17 +465,17 @@ function shouldSkipOutlineMaterialKind(kind: unknown) {
   return kind === "accessory" || isFaceLayerMaterialKind(kind);
 }
 
-function getOutlineWidthScaleForMaterialKind(kind: unknown) {
+function getSekaiOutlineProfile(kind: unknown) {
   if (kind === "hair") {
-    return 0.12;
+    return { widthScale: 0.14, opacity: 0.36, minMaskScale: 0.18 };
   }
   if (kind === "face_sdf") {
-    return 0.18;
+    return { widthScale: 0.24, opacity: 0.40, minMaskScale: 0.28 };
   }
   if (kind === "body") {
-    return 0.48;
+    return { widthScale: 0.58, opacity: 0.44, minMaskScale: 0.42 };
   }
-  return 0.85;
+  return { widthScale: 0.92, opacity: 0.42, minMaskScale: 0.32 };
 }
 
 function isOutlineHiddenByIsolation(kind: string, mode: RenderIsolationMode) {
@@ -488,8 +500,9 @@ function createSekaiOutlineMaterial(
   const sourceOutlineWidth = lighting?.outlineWidth && lighting.outlineWidth > 0
     ? lighting.outlineWidth
     : 0.001;
-  const outlineWidthScale = getOutlineWidthScaleForMaterialKind(materialKind);
-  const outlineOpacity = 0.42;
+  const profile = getSekaiOutlineProfile(materialKind);
+  const outlineClipOffset = THREE.MathUtils.clamp(lighting?.outlineOffset ?? 0, 0, 20) * 0.00008;
+  const outlineOpacity = profile.opacity;
   const outlineColor = new THREE.Color("#000000");
   const material = new THREE.MeshBasicMaterial({
     color: outlineColor,
@@ -507,19 +520,19 @@ function createSekaiOutlineMaterial(
   material.userData.pjskBaseOutlineColor = `#${outlineColor.getHexString()}`;
   material.userData.pjskBaseOutlineOpacity = outlineOpacity;
   material.onBeforeCompile = (shader) => {
-    shader.uniforms.uOutlineWidthNear = { value: sourceOutlineWidth * outlineWidthScale };
-    shader.uniforms.uOutlineWidthFar = { value: sourceOutlineWidth * outlineWidthScale * 1.12 };
-    shader.uniforms.uOutlineDistanceNear = { value: 1.4 };
-    shader.uniforms.uOutlineDistanceFar = { value: 5.0 };
+    shader.uniforms.uOutlineBaseWidth = { value: sourceOutlineWidth * profile.widthScale };
+    shader.uniforms.uOutlineDistanceScaleReference = { value: 0.255 };
+    shader.uniforms.uOutlineMinMaskScale = { value: profile.minMaskScale };
+    shader.uniforms.uOutlineClipOffset = { value: outlineClipOffset };
     shader.vertexShader = shader.vertexShader.replace(
       "#include <common>",
       [
         "#include <common>",
         "varying float vOutlineMask;",
-        "uniform float uOutlineWidthNear;",
-        "uniform float uOutlineWidthFar;",
-        "uniform float uOutlineDistanceNear;",
-        "uniform float uOutlineDistanceFar;",
+        "uniform float uOutlineBaseWidth;",
+        "uniform float uOutlineDistanceScaleReference;",
+        "uniform float uOutlineMinMaskScale;",
+        "uniform float uOutlineClipOffset;",
         useSecondNormal ? "attribute vec4 tangent;" : "",
       ].join("\n")
     );
@@ -528,21 +541,32 @@ function createSekaiOutlineMaterial(
       [
         "#include <begin_vertex>",
         "vec4 outlineViewPosition = modelViewMatrix * vec4(position, 1.0);",
-        "float outlineDistance = length(outlineViewPosition.xyz);",
-        "float outlineDistanceMix = smoothstep(uOutlineDistanceNear, uOutlineDistanceFar, outlineDistance);",
-        "float outlineWidth = mix(uOutlineWidthNear, uOutlineWidthFar, outlineDistanceMix);",
+        "float outlineFovDistance = (2.41400003 / projectionMatrix[1][1]) * max(-outlineViewPosition.z, 0.001);",
+        "float outlineNearMix = smoothstep(0.001, 2.0, outlineFovDistance);",
+        "float outlineFarMix = smoothstep(2.0, 6.0, outlineFovDistance);",
+        "float outlineDistanceScale = outlineFovDistance < 2.0",
+        "  ? mix(0.01, 0.245, outlineNearMix)",
+        "  : mix(0.245, 0.6, outlineFarMix);",
+        "float outlineWidth = uOutlineBaseWidth * outlineDistanceScale / max(uOutlineDistanceScaleReference, 0.001);",
         useSecondNormal
           ? "vec3 outlineDirection = normalize(tangent.xyz);"
           : "vec3 outlineDirection = objectNormal;",
         "#ifdef USE_COLOR",
         "float outlineMask = clamp(color.r, 0.0, 1.0);",
         "vOutlineMask = outlineMask;",
-        "float outlineScale = outlineMask <= 0.01 ? 0.0 : mix(0.75, 1.0, outlineMask);",
+        "float outlineScale = outlineMask <= 0.01 ? 0.0 : mix(uOutlineMinMaskScale, 1.0, outlineMask);",
         "#else",
         "float outlineScale = 1.0;",
         "vOutlineMask = 1.0;",
         "#endif",
         "transformed += outlineDirection * outlineWidth * outlineScale;",
+      ].join("\n")
+    );
+    shader.vertexShader = shader.vertexShader.replace(
+      "#include <project_vertex>",
+      [
+        "#include <project_vertex>",
+        "gl_Position.z += gl_Position.w * uOutlineClipOffset;",
       ].join("\n")
     );
     shader.fragmentShader = shader.fragmentShader.replace(
@@ -638,6 +662,28 @@ function bodyDebugModeToUniform(mode: BodyDebugMode) {
       return 11;
     case "h_b_adjusted_shadow":
       return 12;
+    case "ambient_target":
+      return 13;
+    case "ambient_weight":
+      return 14;
+    case "ambient_tint":
+      return 15;
+    case "specular":
+      return 16;
+    case "specular_mask":
+      return 22;
+    case "specular_add":
+      return 23;
+    case "rim_raw":
+      return 17;
+    case "rim_add":
+      return 18;
+    case "rim_gate":
+      return 19;
+    case "rim_color":
+      return 20;
+    case "rim_scalar":
+      return 21;
     default:
       return 0;
   }
@@ -810,6 +856,7 @@ function cloneFaceShaderMaterial(
   updateSekaiFaceBasis(
     material,
     source.uniforms.uFaceRight?.value ?? new THREE.Vector3(1, 0, 0),
+    source.uniforms.uFaceUp?.value ?? new THREE.Vector3(0, 1, 0),
     source.uniforms.uFaceForward?.value ?? new THREE.Vector3(0, 0, 1)
   );
   return material;
@@ -1304,6 +1351,7 @@ export class PjskViewerApp {
   private readonly tempQuaternion = new THREE.Quaternion();
   private readonly tempScale = new THREE.Vector3();
   private readonly faceRightWorld = new THREE.Vector3();
+  private readonly faceUpWorld = new THREE.Vector3();
   private readonly faceForwardWorld = new THREE.Vector3();
   private readonly sideHairParentWorld = new THREE.Vector3();
   private readonly sideHairTailWorld = new THREE.Vector3();
@@ -1626,6 +1674,7 @@ export class PjskViewerApp {
   private applyRenderIsolationMode() {
     const faceSdfEnabled = this.renderIsolationMode === "face_sdf";
     const faceLayersVisible = this.renderIsolationMode !== "no_face_layers";
+    const outlineOnly = this.renderIsolationMode === "outline_only";
     const outlineVisible = this.renderIsolationMode !== "no_outline";
     const apply = (node: THREE.Object3D) => {
       const mesh = node as THREE.Mesh;
@@ -1659,8 +1708,12 @@ export class PjskViewerApp {
           }
         }
       }
-      if (isFaceLayer) {
+      if (outlineOnly) {
+        mesh.visible = false;
+      } else if (isFaceLayer) {
         mesh.visible = faceLayersVisible;
+      } else {
+        mesh.visible = true;
       }
     };
     for (const slot of [this.bodySlot, this.headSlot]) {
@@ -3134,9 +3187,10 @@ export class PjskViewerApp {
         const resolvedEntry =
           resolvedByMaterialName ??
           (allowMeshFallback ? meshSlots[index] ?? meshSlots[0] ?? null : null);
-          if (resolvedEntry) {
-            const mainMap = this.extractColorMap(original);
-            this.syncReplacementTextureFromOriginal(resolvedEntry.material, mainMap);
+        if (resolvedEntry) {
+          const mainMap = this.extractColorMap(original);
+          this.syncReplacementTextureFromOriginal(resolvedEntry.material, mainMap);
+          mesh.userData.pjskMaterialKind = resolvedEntry.materialKind;
           let usedOriginalMap = false;
           if (
             resolvedEntry.material instanceof THREE.ShaderMaterial &&
@@ -3869,14 +3923,21 @@ export class PjskViewerApp {
 
   private updateShaderFaceBasis() {
     const headNode =
+      this.findFaceSdfHeadBone() ??
       this.findNodeByImportedName(this.bodySlot, "Head") ??
       this.findNodeByImportedName(this.headSlot, "Head") ??
       this.currentBodyAnimationRoot ??
       this.characterRoot;
     headNode.getWorldQuaternion(this.tempQuaternion);
     this.faceRightWorld.set(1, 0, 0).applyQuaternion(this.tempQuaternion).normalize();
+    this.faceUpWorld.set(0, 1, 0).applyQuaternion(this.tempQuaternion).normalize();
     this.faceForwardWorld.set(0, 0, 1).applyQuaternion(this.tempQuaternion).normalize();
-    updateSekaiFaceBasis(this.faceMaterial, this.faceRightWorld, this.faceForwardWorld);
+    updateSekaiFaceBasis(
+      this.faceMaterial,
+      this.faceRightWorld,
+      this.faceUpWorld,
+      this.faceForwardWorld
+    );
     for (const slot of [this.bodySlot, this.headSlot]) {
       slot.traverse((node) => {
         const mesh = node as THREE.Mesh;
@@ -3886,11 +3947,54 @@ export class PjskViewerApp {
         const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
         for (const material of materials) {
           if (material instanceof THREE.ShaderMaterial && material.uniforms.uFaceRight) {
-            updateSekaiFaceBasis(material, this.faceRightWorld, this.faceForwardWorld);
+            updateSekaiFaceBasis(
+              material,
+              this.faceRightWorld,
+              this.faceUpWorld,
+              this.faceForwardWorld
+            );
           }
         }
       });
     }
+  }
+
+  private findFaceSdfHeadBone() {
+    for (const slot of [this.headSlot, this.bodySlot]) {
+      let fallbackHead: THREE.Bone | null = null;
+      let faceSdfHead: THREE.Bone | null = null;
+      slot.traverse((node) => {
+        if (faceSdfHead) {
+          return;
+        }
+        const mesh = node as THREE.SkinnedMesh;
+        if (!mesh.isSkinnedMesh || !mesh.skeleton) {
+          return;
+        }
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        const usesFaceSdf = materials.some(
+          (material) =>
+            material instanceof THREE.ShaderMaterial &&
+            Boolean(material.uniforms.uFaceShadowTex)
+        );
+        if (!usesFaceSdf) {
+          return;
+        }
+        for (const bone of mesh.skeleton.bones) {
+          if (bone.name === "Head" || /^Head_\d+$/.test(bone.name)) {
+            faceSdfHead = bone;
+            return;
+          }
+          if (!fallbackHead && bone.name.toLowerCase().includes("head")) {
+            fallbackHead = bone;
+          }
+        }
+      });
+      if (faceSdfHead ?? fallbackHead) {
+        return faceSdfHead ?? fallbackHead;
+      }
+    }
+    return null;
   }
 
   private updateLayerMaterialTime(elapsedTime: number) {

@@ -303,7 +303,7 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
           skinMask *
           neckContactPlane *
           mix(0.62, 1.0, authoredContactMask);
-        if (uBodyDebugMode > 0.5) {
+        if (uBodyDebugMode > 0.5 && uBodyDebugMode < 12.5) {
           float debugValue = skinMask;
           if (uBodyDebugMode > 1.5 && uBodyDebugMode < 2.5) {
             debugValue = neckContactPlane;
@@ -325,7 +325,7 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
             debugValue = shadowBand;
           } else if (uBodyDebugMode > 10.5 && uBodyDebugMode < 11.5) {
             debugValue = halfNdl;
-          } else if (uBodyDebugMode > 11.5) {
+          } else if (uBodyDebugMode > 11.5 && uBodyDebugMode < 12.5) {
             debugValue = hAdjustedShadowBand;
           }
           gl_FragColor = vec4(outputColor(vec3(debugValue)), 1.0);
@@ -339,15 +339,33 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
         vec3 color = mix(mainColor, shadowColor, shadowBand);
 
         vec3 partsAmbient = mix(vec3(1.0), uPartsAmbientColor, 0.62);
-        float characterAmbient = clamp(uAmbientIntensity + uCharacterAmbientIntensity, 0.0, 1.0);
-        vec3 ambientTarget = max(color, mainColor * partsAmbient * uControllerAmbientColor);
-        color = mix(color, ambientTarget, characterAmbient * 0.18 * (0.35 + shadowBand * 0.65));
+        vec3 ambientTint = partsAmbient * uControllerAmbientColor;
+        float sceneAmbient = clamp(uAmbientIntensity, 0.0, 1.0);
+        float characterAmbient = clamp(uCharacterAmbientIntensity, 0.0, 1.0);
+        float ambientShadowFocus = smoothstep(0.08, 0.72, shadowBand);
+        float ambientLitSupport = sceneAmbient * 0.07 * (1.0 - shadowBand);
+        float ambientShadowSupport = characterAmbient * mix(0.055, 0.21, ambientShadowFocus);
+        float ambientWeight = clamp(ambientLitSupport + ambientShadowSupport, 0.0, 0.24);
+        vec3 ambientTarget = max(color, mainColor * ambientTint);
+        if (uBodyDebugMode > 12.5 && uBodyDebugMode < 13.5) {
+          gl_FragColor = vec4(outputColor(clamp(ambientTarget, 0.0, 1.0)), 1.0);
+          return;
+        } else if (uBodyDebugMode > 13.5 && uBodyDebugMode < 14.5) {
+          gl_FragColor = vec4(outputColor(vec3(clamp(ambientWeight / 0.24, 0.0, 1.0))), 1.0);
+          return;
+        } else if (uBodyDebugMode > 14.5 && uBodyDebugMode < 15.5) {
+          gl_FragColor = vec4(outputColor(clamp(ambientTint, 0.0, 1.0)), 1.0);
+          return;
+        }
+        color = mix(color, ambientTarget, ambientWeight);
 
         float halfLambert = clamp(dot(normal, normalize(lightDir + viewDir)), 0.0, 1.0);
-        float specPower = 10.0 / max(uSpecularPower, 0.001);
-        float specMask = hAlpha * step(0.01, uSpecularPower);
+        float specEnabled = step(0.01, uSpecularPower);
+        float specPower = mix(18.0, 42.0, clamp(uSpecularPower / 8.0, 0.0, 1.0));
+        float specMask = hAlpha * specEnabled;
         float litGate = toonBand(ndl, -0.02, 0.12);
         float specular = pow(halfLambert, specPower) * specMask * litGate;
+        vec3 specularAdd = uReflectionBlendColor * specular * uLightIntensity * 0.22;
 
         float nDotV = clamp(dot(normal, viewDir), 0.0, 1.0);
         vec3 rimDirection = normalize(uRimDirection);
@@ -357,8 +375,10 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
         float rimFactorZ = clamp(uControllerRimEdgeSmoothness, 0.02, 1.0);
         float rimFactorW = clamp(uRimDirectionality, 0.0, 1.0);
         float viewFresnel = pow(1.0 - nDotV, 10.0 - rimFactorX);
-        float rimViewModulation = max(0.0, 1.0 + rimFactorW * (vDotRim - 1.0));
-        float rimBase = viewFresnel * rimViewModulation * step(0.0, nDotRim);
+        float rimSideGate = smoothstep(-0.28, 0.48, nDotRim);
+        float rimDirectionGate = mix(1.0, mix(0.32, 1.0, rimSideGate), rimFactorW);
+        float rimViewGate = mix(1.0, mix(0.62, 1.0, vDotRim), rimFactorW * 0.45);
+        float rimBase = viewFresnel * rimDirectionGate * rimViewGate;
         float rimThreshold = clamp(max(uRimThreshold, uControllerRimThreshold), 0.0, 0.95);
         float rim = smoothstep(0.0, rimFactorZ, rimBase - rimThreshold);
         float rimMask = vertexRimIntensity;
@@ -382,8 +402,36 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
         );
         vec3 rimColor = mix(rimLitColor, rimShadowColor, rimColorMix);
         float rimEnergy = 0.42 * uRimIntensity * clamp(0.72 + uLightIntensity, 0.0, 1.25);
-        color += rimColor * rim * rimMask * rimEnergy * mix(0.42, 1.0, litBand);
-        color += uReflectionBlendColor * specular * uLightIntensity * 0.22;
+        float rimGate = rimMask * rimEnergy * mix(0.42, 1.0, litBand);
+        float rimScalar = rim * rimGate;
+        vec3 rimAdd = rimColor * rimScalar;
+        if (uBodyDebugMode > 15.5 && uBodyDebugMode < 16.5) {
+          gl_FragColor = vec4(outputColor(vec3(clamp(specular, 0.0, 1.0))), 1.0);
+          return;
+        } else if (uBodyDebugMode > 21.5 && uBodyDebugMode < 22.5) {
+          gl_FragColor = vec4(outputColor(vec3(clamp(specMask, 0.0, 1.0))), 1.0);
+          return;
+        } else if (uBodyDebugMode > 22.5 && uBodyDebugMode < 23.5) {
+          gl_FragColor = vec4(outputColor(clamp(specularAdd * 8.0, 0.0, 1.0)), 1.0);
+          return;
+        } else if (uBodyDebugMode > 16.5 && uBodyDebugMode < 17.5) {
+          gl_FragColor = vec4(outputColor(vec3(clamp(rim, 0.0, 1.0))), 1.0);
+          return;
+        } else if (uBodyDebugMode > 17.5 && uBodyDebugMode < 18.5) {
+          gl_FragColor = vec4(outputColor(clamp(rimAdd * 4.0, 0.0, 1.0)), 1.0);
+          return;
+        } else if (uBodyDebugMode > 18.5 && uBodyDebugMode < 19.5) {
+          gl_FragColor = vec4(outputColor(vec3(clamp(rimGate * 4.0, 0.0, 1.0))), 1.0);
+          return;
+        } else if (uBodyDebugMode > 19.5 && uBodyDebugMode < 20.5) {
+          gl_FragColor = vec4(outputColor(clamp(rimColor, 0.0, 1.0)), 1.0);
+          return;
+        } else if (uBodyDebugMode > 20.5 && uBodyDebugMode < 21.5) {
+          gl_FragColor = vec4(outputColor(vec3(clamp(rimScalar * 8.0, 0.0, 1.0))), 1.0);
+          return;
+        }
+        color += rimAdd;
+        color += specularAdd;
 
         color *= mix(vec3(1.0), uPartsAmbientColor, 0.06);
         color *= vec3(1.024, 0.998, 0.986);

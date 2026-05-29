@@ -192,6 +192,17 @@ root.innerHTML = `
             <option value="base_shadow">Base Shadow</option>
             <option value="ndotl_raw">NdotL Raw</option>
             <option value="h_b_adjusted_shadow">H.B Adjusted Shadow</option>
+            <option value="ambient_target">Ambient Target</option>
+            <option value="ambient_weight">Ambient Weight</option>
+            <option value="ambient_tint">Ambient Tint</option>
+            <option value="specular">Specular</option>
+            <option value="specular_mask">Specular Mask</option>
+            <option value="specular_add">Specular Add</option>
+            <option value="rim_raw">Rim Raw</option>
+            <option value="rim_add">Rim Add</option>
+            <option value="rim_gate">Rim Gate</option>
+            <option value="rim_color">Rim Color</option>
+            <option value="rim_scalar">Rim Scalar</option>
           </select>
         </label>
         <label>
@@ -241,6 +252,7 @@ root.innerHTML = `
             <option value="face_sdf">FaceSDF Shading</option>
             <option value="no_face_sdf">No FaceSDF</option>
             <option value="no_face_layers">No Face Layers</option>
+            <option value="outline_only">Outline Only</option>
             <option value="no_outline">No Outline</option>
             <option value="no_body_outline">No Body Outline</option>
             <option value="no_hair_outline">No Hair Outline</option>

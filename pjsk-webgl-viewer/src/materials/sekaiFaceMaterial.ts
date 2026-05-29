@@ -41,6 +41,7 @@ export function createSekaiFaceMaterial(initial: FaceMaterialUniforms) {
       uUseFaceShadowTex: { value: initial.faceShadowTex ? 1.0 : 0.0 },
       uLightDirection: { value: initial.lightDirection.clone().normalize() },
       uFaceRight: { value: new THREE.Vector3(1, 0, 0) },
+      uFaceUp: { value: new THREE.Vector3(0, 1, 0) },
       uFaceForward: { value: new THREE.Vector3(0, 0, 1) },
       uLightIntensity: { value: initial.lightIntensity },
       uAmbientIntensity: { value: initial.ambientIntensity },
@@ -98,6 +99,7 @@ export function createSekaiFaceMaterial(initial: FaceMaterialUniforms) {
       uniform float uUseFaceShadowTex;
       uniform vec3 uLightDirection;
       uniform vec3 uFaceRight;
+      uniform vec3 uFaceUp;
       uniform vec3 uFaceForward;
       uniform float uLightIntensity;
       uniform float uAmbientIntensity;
@@ -134,8 +136,9 @@ export function createSekaiFaceMaterial(initial: FaceMaterialUniforms) {
         if ((uFaceSdfEnabled > 0.5 || uFaceDebugMode > 0.5) && uUseShadowTex > 0.5 && uUseFaceShadowTex > 0.5) {
           vec3 shadowColor = texture2D(uShadowTex, vUv).rgb;
           shadowColor = mix(shadowColor, shadowColor * vec3(1.075, 0.930, 1.015), faceSkinMask * 0.75);
-          vec3 faceRight = normalize(uFaceRight);
           vec3 faceForward = normalize(uFaceForward);
+          vec3 faceRight = normalize(uFaceRight - faceForward * dot(uFaceRight, faceForward));
+          vec3 faceUp = normalize(uFaceUp - faceForward * dot(uFaceUp, faceForward) - faceRight * dot(uFaceUp, faceRight));
           vec3 lightDir = normalize(uLightDirection);
           if (uFaceDebugLightMode > 0.5) {
             if (uFaceDebugLightMode < 1.5) {
@@ -148,8 +151,8 @@ export function createSekaiFaceMaterial(initial: FaceMaterialUniforms) {
               lightDir = -faceForward;
             }
           }
-          vec2 rawFaceLight = vec2(dot(lightDir, faceRight), dot(lightDir, faceForward));
-          vec2 faceLight = rawFaceLight / max(length(rawFaceLight), 0.001);
+          vec3 tbnLight = vec3(dot(lightDir, faceRight), dot(lightDir, faceUp), dot(lightDir, faceForward));
+          vec2 faceLight = tbnLight.xz / max(length(tbnLight.xz), 0.001);
           float faceSide = faceLight.x;
           float faceFront = faceLight.y;
           vec2 sdfUv = vFaceShadowUv;
@@ -236,8 +239,10 @@ export function updateSekaiFaceMaterial(
 export function updateSekaiFaceBasis(
   material: THREE.ShaderMaterial,
   faceRight: THREE.Vector3,
+  faceUp: THREE.Vector3,
   faceForward: THREE.Vector3
 ) {
   material.uniforms.uFaceRight?.value.copy(faceRight).normalize();
+  material.uniforms.uFaceUp?.value.copy(faceUp).normalize();
   material.uniforms.uFaceForward?.value.copy(faceForward).normalize();
 }
