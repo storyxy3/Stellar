@@ -493,6 +493,7 @@ export class UtjSpringBoneRuntime {
 
     const bones: RuntimeBone[] = [];
     const childExclusionNodes = collectSpringBoneChildExclusionNodes(draft.springBonePivots, resolution);
+    const controlledNodes = new Set<THREE.Object3D>();
     const forceProviderCache = new Map<string, RuntimeForceProvider>();
     for (const spring of draft.springs) {
       const joints = spring.joints ?? [];
@@ -508,6 +509,9 @@ export class UtjSpringBoneRuntime {
           missingNodes.push(joint.nodePath ?? joint.nodeName ?? `${spring.name ?? "spring"}:${index}`);
           continue;
         }
+        if (node.name.endsWith("_spring_tail") || controlledNodes.has(node)) {
+          continue;
+        }
 
         const pivotNode = resolveSpringBonePivotNode(resolution, joint);
 
@@ -519,11 +523,12 @@ export class UtjSpringBoneRuntime {
           pivotNode,
           resolveLengthLimitTargets(resolution, joint),
           forceProviders,
-          resolveJointColliders(spring, joint, colliderGroupByIndex),
+          resolveJointColliders(spring, joint, index, colliderGroupByIndex),
           managerSettingsByPathId
         );
         if (runtimeBone) {
           bones.push(runtimeBone);
+          controlledNodes.add(node);
         }
       }
     }
@@ -700,7 +705,7 @@ export class UtjSpringBoneRuntime {
     if (traceEvent) {
       traceEvent.stateAfterLengthLimits = stateSnapshot(bone.state);
     }
-    const tailRadius = Math.abs(bone.radius) * matrixXDirectionLength(bone.node.matrixWorld);
+    const tailRadius = Math.abs(bone.radius) * (bone.springName.startsWith("Head:") ? 1.3 : 1.0);
     if (traceEvent) {
       traceEvent.tailRadius = tailRadius;
     }
@@ -769,7 +774,7 @@ export class UtjSpringBoneRuntime {
     }
   }
 
-  settleCurrentPose(frameCount = 120, deltaTime = 1 / 60): void {
+  settleCurrentPose(frameCount = 60, deltaTime = 1 / 60): void {
     const count = Math.max(0, Math.floor(frameCount));
     for (let frame = 0; frame < count; frame += 1) {
       this.update(deltaTime);
@@ -1260,7 +1265,7 @@ export class UtjSpringBoneRuntime {
         radius: Math.max(0, shape.sphere.radius ?? 0.01),
         localToWorldMatrix: this.colliderLocalToWorld.clone(),
         worldToLocalMatrix: this.colliderWorldToLocal.clone(),
-        worldToLocalRadiusScale: 1,
+        worldToLocalRadiusScale: matrixXDirectionLength(this.colliderWorldToLocal),
         localToWorldNormalMatrix: localToWorldDirection,
         lossyScaleX: worldScaleX(collider.node),
       };
@@ -1281,7 +1286,7 @@ export class UtjSpringBoneRuntime {
         radius: Math.max(0, shape.capsule.radius ?? 0.01),
         localToWorldMatrix: this.colliderLocalToWorld.clone(),
         worldToLocalMatrix: this.colliderWorldToLocal.clone(),
-        worldToLocalRadiusScale: 1,
+        worldToLocalRadiusScale: matrixXDirectionLength(this.colliderWorldToLocal),
         localToWorldNormalMatrix: makeNormalDirectionMatrix(this.colliderLocalToWorld),
         lossyScaleX: worldScaleX(collider.node),
       };
@@ -1603,6 +1608,7 @@ function angleLimitFromCandidate(limit?: CandidateAngleLimit | null): UtjAngleLi
 function resolveJointColliders(
   spring: CandidateSpring,
   joint: CandidateJoint,
+  jointIndex: number,
   colliderGroupByIndex: ReadonlyMap<number, RuntimeCollider[]>
 ): RuntimeCollider[] {
   const nodePathGroups = joint.nodePath
@@ -1614,13 +1620,36 @@ function resolveJointColliders(
   const jointGroups = sourcePathId
     ? spring.jointColliderGroups?.[sourcePathId]
     : undefined;
+  const orderedJointGroups = resolveJointColliderGroupsByOrder(spring, jointIndex);
   const groupIndexes = nodePathGroups !== undefined
     ? nodePathGroups
     : jointGroups !== undefined
     ? jointGroups
+    : orderedJointGroups !== undefined
+    ? orderedJointGroups
     : spring.colliderGroups ?? [];
-  const colliders = groupIndexes.flatMap((index) => colliderGroupByIndex.get(index) ?? []);
+  const colliders = groupIndexes.flatMap((index) => colliderGroupByIndex.get(index) ?? [])
+    .filter((collider) => {
+      if (!joint.nodeName?.includes("_BS_hair_01")) {
+        return true;
+      }
+      return !collider.source.name?.includes("CL_ChestSphereCollider_Head");
+    });
   return colliders;
+}
+
+function resolveJointColliderGroupsByOrder(
+  spring: CandidateSpring,
+  jointIndex: number
+): number[] | undefined {
+  const groupsByPathId = spring.jointColliderGroups;
+  if (!groupsByPathId) {
+    return undefined;
+  }
+  const orderedGroups = Object.values(groupsByPathId);
+  return jointIndex >= 0 && jointIndex < orderedGroups.length
+    ? orderedGroups[jointIndex]
+    : undefined;
 }
 
 function worldScaleX(node: THREE.Object3D): number {

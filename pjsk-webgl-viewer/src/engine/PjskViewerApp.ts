@@ -2162,6 +2162,7 @@ export class PjskViewerApp {
     this.utjSpringBoneEnabled = enabled;
     if (enabled) {
       this.currentUtjSpringBoneRuntime?.resetStateToCurrentPose();
+      this.currentUtjSpringBoneRuntime?.settleCurrentPose();
     } else {
       this.currentUtjSpringBoneRuntime?.resetPose();
     }
@@ -2183,6 +2184,7 @@ export class PjskViewerApp {
     this.applyCurrentFaceMotionFrame();
     this.syncLinkedHeadBones();
     this.currentUtjSpringBoneRuntime?.resetStateToCurrentPose();
+    this.currentUtjSpringBoneRuntime?.settleCurrentPose();
     this.applyAnimationPlaybackSettings();
   }
 

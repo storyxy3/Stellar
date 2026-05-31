@@ -481,7 +481,7 @@ export function checkPanelCollisionAndReact(
   collider: UtjPanelCollider
 ): UtjCollisionResult {
   const localTail = tailPosition.clone().applyMatrix4(collider.worldToLocalMatrix);
-  const localTailRadius = tailRadius * collider.worldToLocalRadiusScale;
+  const localTailRadius = tailRadius;
   if (localTail.z >= localTailRadius) {
     return noCollision(tailPosition);
   }
@@ -688,7 +688,7 @@ export function checkLocalSphereCollisionAndReact(
     status: localResult.status,
     tailPosition: localResult.tailPosition.clone().applyMatrix4(collider.localToWorldMatrix),
     hitNormal: transformDirection(
-      localResult.tailPosition.clone(),
+      localResult.hitNormal.clone(),
       collider.localToWorldNormalMatrix
     ),
   };
@@ -769,7 +769,7 @@ export function checkLocalCapsuleCollisionAndReact(
 ): UtjCollisionResult {
   const localHead = headPosition.clone().applyMatrix4(collider.worldToLocalMatrix);
   const localTail = tailPosition.clone().applyMatrix4(collider.worldToLocalMatrix);
-  const localTailRadius = tailRadius;
+  const localTailRadius = tailRadius * collider.worldToLocalRadiusScale;
   const localResult = checkLocalYAxisCapsuleCollisionAndReact(
     localHead,
     localTail,
@@ -1015,7 +1015,7 @@ export function computeUtjLocalRotation(
     .applyQuaternion(baseRotation.clone().invert());
   localTipDirection.multiplyScalar(1.0 / localTipDirection.length());
   const delta = new THREE.Quaternion().setFromUnitVectors(boneAxis.clone(), localTipDirection);
-  return delta.multiply(initialLocalRotation);
+  return initialLocalRotation.clone().multiply(delta);
 }
 
 function noCollision(tailPosition: THREE.Vector3): UtjCollisionResult {
