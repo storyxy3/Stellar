@@ -35,6 +35,8 @@ export type UtjSpringBoneCollisionInput = {
   colliders: readonly UtjCollider[];
   bounce: number;
   friction: number;
+  onColliderCheck?: (collider: UtjCollider, trace: UtjColliderCheckTrace) => void;
+  onCollision?: (collider: UtjCollider, result: UtjCollisionResult) => void;
 };
 
 export type UtjGroundCollisionInput = {
@@ -55,6 +57,9 @@ export type UtjSphereCollisionOptions = {
 export type UtjSphereCollider = {
   kind: "sphere";
   enabled?: boolean;
+  debugName?: string;
+  debugPath?: string;
+  debugSourcePathId?: number;
   radius: number;
   localOffset: THREE.Vector3;
   localToWorldMatrix: THREE.Matrix4;
@@ -67,6 +72,9 @@ export type UtjSphereCollider = {
 export type UtjCapsuleCollider = {
   kind: "capsule";
   enabled?: boolean;
+  debugName?: string;
+  debugPath?: string;
+  debugSourcePathId?: number;
   start: THREE.Vector3;
   end: THREE.Vector3;
   radius: number;
@@ -75,6 +83,9 @@ export type UtjCapsuleCollider = {
 export type UtjLocalCapsuleCollider = {
   kind: "capsuleLocal";
   enabled?: boolean;
+  debugName?: string;
+  debugPath?: string;
+  debugSourcePathId?: number;
   localStart: THREE.Vector3;
   localEnd: THREE.Vector3;
   radius: number;
@@ -88,6 +99,9 @@ export type UtjLocalCapsuleCollider = {
 export type UtjPanelCollider = {
   kind: "panel";
   enabled?: boolean;
+  debugName?: string;
+  debugPath?: string;
+  debugSourcePathId?: number;
   width: number;
   height: number;
   localToWorldMatrix: THREE.Matrix4;
@@ -107,6 +121,29 @@ export type UtjCollisionResult = {
   status: UtjColliderStatus;
   tailPosition: THREE.Vector3;
   hitNormal: THREE.Vector3;
+};
+
+export type UtjColliderTraceDetails = {
+  kind: UtjCollider["kind"];
+  localHeadPosition?: THREE.Vector3;
+  localTailPositionBefore?: THREE.Vector3;
+  localTailPositionAfter?: THREE.Vector3;
+  localTailRadius?: number;
+  localSphereOrigin?: THREE.Vector3;
+  localSphereRadius?: number;
+  localCapsuleStart?: THREE.Vector3;
+  localCapsuleEnd?: THREE.Vector3;
+  capsuleRadius?: number;
+  panelWidth?: number;
+  panelHeight?: number;
+};
+
+export type UtjColliderCheckTrace = {
+  status: UtjColliderStatus;
+  beforeTailPosition: THREE.Vector3;
+  afterTailPosition: THREE.Vector3;
+  hitNormal: THREE.Vector3;
+  details: UtjColliderTraceDetails;
 };
 
 export type UtjAngleLimit = {
@@ -263,6 +300,19 @@ export function checkUtjCollisions(
       input.tailRadius,
       input.springLength
     );
+    input.onColliderCheck?.(collider, {
+      status: result.status,
+      beforeTailPosition: state.currTipPos.clone(),
+      afterTailPosition: result.tailPosition.clone(),
+      hitNormal: result.hitNormal.clone(),
+      details: buildColliderTraceDetails(
+        collider,
+        input.headPosition,
+        state.currTipPos,
+        result.tailPosition,
+        input.tailRadius
+      ),
+    });
 
     if (result.status === UtjColliderStatus.NoCollision) {
       continue;
@@ -272,6 +322,7 @@ export function checkUtjCollisions(
     state.hitNormal.copy(result.hitNormal);
     finalHitNormal = result.hitNormal;
     finalStatus = result.status;
+    input.onCollision?.(collider, result);
   }
 
   if (finalHitNormal) {
@@ -285,6 +336,62 @@ export function checkUtjCollisions(
   }
 
   return finalStatus;
+}
+
+function buildColliderTraceDetails(
+  collider: UtjCollider,
+  headPosition: THREE.Vector3,
+  beforeTailPosition: THREE.Vector3,
+  afterTailPosition: THREE.Vector3,
+  tailRadius: number
+): UtjColliderTraceDetails {
+  if (collider.kind === "sphere") {
+    return {
+      kind: collider.kind,
+      localHeadPosition: headPosition.clone().applyMatrix4(collider.worldToLocalMatrix),
+      localTailPositionBefore: beforeTailPosition.clone().applyMatrix4(collider.worldToLocalMatrix),
+      localTailPositionAfter: afterTailPosition.clone().applyMatrix4(collider.worldToLocalMatrix),
+      localTailRadius: tailRadius,
+      localSphereOrigin: collider.localOffset.clone(),
+      localSphereRadius: collider.lossyScaleX * collider.radius,
+    };
+  }
+
+  if (collider.kind === "capsuleLocal") {
+    return {
+      kind: collider.kind,
+      localHeadPosition: headPosition.clone().applyMatrix4(collider.worldToLocalMatrix),
+      localTailPositionBefore: beforeTailPosition.clone().applyMatrix4(collider.worldToLocalMatrix),
+      localTailPositionAfter: afterTailPosition.clone().applyMatrix4(collider.worldToLocalMatrix),
+      localTailRadius: tailRadius,
+      localCapsuleStart: collider.localStart.clone(),
+      localCapsuleEnd: collider.localEnd.clone(),
+      capsuleRadius: collider.radius,
+    };
+  }
+
+  if (collider.kind === "panel") {
+    return {
+      kind: collider.kind,
+      localHeadPosition: headPosition.clone().applyMatrix4(collider.worldToLocalMatrix),
+      localTailPositionBefore: beforeTailPosition.clone().applyMatrix4(collider.worldToLocalMatrix),
+      localTailPositionAfter: afterTailPosition.clone().applyMatrix4(collider.worldToLocalMatrix),
+      localTailRadius: tailRadius * collider.worldToLocalRadiusScale,
+      panelWidth: collider.width,
+      panelHeight: collider.height,
+    };
+  }
+
+  return {
+    kind: collider.kind,
+    localHeadPosition: headPosition.clone(),
+    localTailPositionBefore: beforeTailPosition.clone(),
+    localTailPositionAfter: afterTailPosition.clone(),
+    localTailRadius: tailRadius,
+    localCapsuleStart: collider.start.clone(),
+    localCapsuleEnd: collider.end.clone(),
+    capsuleRadius: collider.radius,
+  };
 }
 
 export function checkUtjGroundCollision(

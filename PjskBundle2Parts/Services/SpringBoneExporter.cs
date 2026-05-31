@@ -17,6 +17,7 @@ public sealed class SpringBoneExporter
         "SpringSphereCollider",
         "SpringCapsuleCollider",
         "SpringPanelCollider",
+        "SpringBonePivot",
         "ExtraBone",
         "WindVolumeOneSelf",
         "SekaiCharacterHair",
@@ -118,6 +119,15 @@ public sealed class SpringBoneExporter
                 Raw: entry.Raw
             ))
             .ToList();
+        var springBonePivots = monoBehaviours
+            .Where(entry => string.Equals(entry.ScriptName, "SpringBonePivot", StringComparison.OrdinalIgnoreCase))
+            .Select(entry => new SpringMonoBehaviourEntry(
+                PathId: entry.Mono.m_PathID,
+                ScriptName: entry.ScriptName,
+                GameObject: ResolveGameObject(entry.Mono.m_GameObject),
+                Raw: entry.Raw
+            ))
+            .ToList();
         var extraBones = monoBehaviours
             .Where(entry => string.Equals(entry.ScriptName, "ExtraBone", StringComparison.OrdinalIgnoreCase))
             .Select(entry => BuildExtraBoneEntry(entry, objectRefsByPathId))
@@ -154,6 +164,7 @@ public sealed class SpringBoneExporter
             CapsuleColliders: capsuleColliders,
             PanelColliders: panelColliders,
             ForceProviders: forceProviders,
+            SpringBonePivots: springBonePivots,
             ExtraBones: extraBones,
             CharacterHair: characterHair,
             CharacterEye: characterEye,

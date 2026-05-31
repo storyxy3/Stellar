@@ -1973,6 +1973,8 @@ type CaptureConfig = {
   warmupFrames: number;
   warmupMode: "animation" | "runtime";
   utjSpringBoneEnabled: boolean;
+  utjTraceBones: string[];
+  utjTraceMaxEvents: number;
 };
 
 type CaptureWindow = Window & {
@@ -2004,6 +2006,12 @@ function readCaptureConfig(): CaptureConfig | null {
   const warmupModeParam = params.get("captureWarmupMode");
   const warmupMode = warmupModeParam === "runtime" ? "runtime" : "animation";
   const utjSpringBoneEnabled = params.get("utjSpringBoneEnabled") === "true";
+  const utjTraceBones = params
+    .getAll("utjTraceBone")
+    .flatMap((value) => value.split(","))
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const traceMaxEvents = Number(params.get("utjTraceMaxEvents") ?? "240");
   renderState.utjSpringBoneEnabled = utjSpringBoneEnabled;
   viewer.setUtjSpringBoneEnabled(utjSpringBoneEnabled);
 
@@ -2014,6 +2022,8 @@ function readCaptureConfig(): CaptureConfig | null {
     warmupFrames: Math.max(Math.trunc(Number.isFinite(warmupFrames) ? warmupFrames : 0), 0),
     warmupMode,
     utjSpringBoneEnabled,
+    utjTraceBones,
+    utjTraceMaxEvents: Math.max(Math.trunc(Number.isFinite(traceMaxEvents) ? traceMaxEvents : 240), 1),
   };
 }
 
@@ -2067,12 +2077,14 @@ async function prepareCaptureFrame(config: CaptureConfig) {
   renderAnimationControls();
   renderSpringBoneStatus();
   await waitForAnimationFrames(3);
+  lastSpringBoneSnapshot = viewer.getSpringBoneSnapshot();
   const captureWindow = getCaptureWindow();
   captureWindow.__PJSK_CAPTURE_SNAPSHOT__ = {
     phase: config.phase,
     animation: lastAnimationSnapshot,
     faceMotion: lastFaceMotionSnapshot,
     springBone: lastSpringBoneSnapshot,
+    utjSpringBoneTrace: viewer.getUtjSpringBoneTraceSnapshot(),
   };
   captureWindow.__PJSK_CAPTURE_READY__ = true;
   document.body.dataset.captureReady = "true";
@@ -2097,6 +2109,10 @@ async function bootstrapApp() {
     if (localAssetState.converterError) {
       throw new Error(localAssetState.converterError);
     }
+    viewer.setUtjSpringBoneTraceFilters(
+      captureConfig.utjTraceBones,
+      captureConfig.utjTraceMaxEvents
+    );
     await prepareCaptureFrame(captureConfig);
   } catch (error) {
     setCaptureError(error);

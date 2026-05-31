@@ -37,6 +37,9 @@ function parseArgs(argv) {
     warmupMode: "animation",
     yaw: "",
     utjSpringBone: false,
+    traceUtjBones: [],
+    traceUtjMaxEvents: 240,
+    traceOut: "",
     chromium: process.env.CHROMIUM || "chromium",
     build: false,
   };
@@ -75,6 +78,12 @@ function parseArgs(argv) {
       options.utjSpringBone = true;
     } else if (arg === "--no-utj-springbone") {
       options.utjSpringBone = false;
+    } else if (arg === "--trace-utj-bone") {
+      options.traceUtjBones.push(readValue());
+    } else if (arg === "--trace-utj-max-events") {
+      options.traceUtjMaxEvents = Number(readValue());
+    } else if (arg === "--trace-out") {
+      options.traceOut = readValue();
     } else if (arg === "--chromium") {
       options.chromium = readValue();
     } else if (arg === "--build") {
@@ -103,11 +112,13 @@ function parseArgs(argv) {
   options.timeoutMs = Math.max(Math.trunc(options.timeoutMs) || 45000, 5000);
   options.warmupMs = Math.max(Math.trunc(options.warmupMs) || 0, 0);
   options.warmupFrames = Math.max(Math.trunc(options.warmupFrames) || 0, 0);
+  options.traceUtjMaxEvents = Math.max(Math.trunc(options.traceUtjMaxEvents) || 240, 1);
   if (options.warmupMode !== "animation" && options.warmupMode !== "runtime") {
     throw new Error("--warmup-mode must be animation or runtime.");
   }
   options.input = path.resolve(options.input);
   options.out = path.resolve(options.out || path.join(process.cwd(), "capture.png"));
+  options.traceOut = options.traceOut ? path.resolve(options.traceOut) : "";
   return options;
 }
 
@@ -126,6 +137,10 @@ Options:
   --yaw <mode>         Character yaw mode: 0, 45, -45, 90, -90, 180
   --utj-springbone     Enable the UTJ runtime before capture. Default: off
   --no-utj-springbone  Keep the UTJ runtime disabled before capture
+  --trace-utj-bone <s> Trace UTJ stages for bones whose name/path contains this text
+  --trace-utj-max-events <n>
+                       Maximum retained UTJ trace events. Default: 240
+  --trace-out <json>   Write only snapshot.utjSpringBoneTrace to a JSON file
   --chromium <path>    Chromium executable. Default: chromium
   --build              Run npm run build before capture
 `);
@@ -473,6 +488,8 @@ async function capture(options) {
     `&captureWarmupFrames=${options.warmupFrames}` +
     `&captureWarmupMode=${encodeURIComponent(options.warmupMode)}` +
     `&utjSpringBoneEnabled=${options.utjSpringBone ? "true" : "false"}` +
+    `&utjTraceMaxEvents=${options.traceUtjMaxEvents}` +
+    options.traceUtjBones.map((filter) => `&utjTraceBone=${encodeURIComponent(filter)}`).join("") +
     (options.yaw ? `&characterYawMode=${encodeURIComponent(options.yaw)}` : "");
   const chromium = spawn(options.chromium, [
     "--headless=new",
@@ -517,8 +534,16 @@ async function capture(options) {
       fromSurface: true,
     });
     fs.writeFileSync(options.out, Buffer.from(image.data, "base64"));
+    if (options.traceOut) {
+      fs.mkdirSync(path.dirname(options.traceOut), { recursive: true });
+      fs.writeFileSync(
+        options.traceOut,
+        JSON.stringify(snapshot?.utjSpringBoneTrace ?? null, null, 2)
+      );
+    }
     console.log(JSON.stringify({
       output: options.out,
+      traceOutput: options.traceOut || null,
       input: options.input,
       phase: options.phase,
       width: options.width,

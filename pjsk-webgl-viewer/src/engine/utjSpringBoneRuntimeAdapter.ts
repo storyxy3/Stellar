@@ -11,6 +11,7 @@ import {
   updateUtjSpring,
   type UtjAngleLimit,
   type UtjCollider,
+  type UtjColliderCheckTrace,
   type UtjLengthLimitTarget,
   type UtjSpringBoneState,
 } from "./utjSpringBoneRuntime";
@@ -19,14 +20,23 @@ type JsonRecord = Record<string, unknown>;
 
 type Candidate = {
   vrmExtensionDraft?: {
+    springBonePivots?: CandidateSpringBonePivot[];
     colliders?: CandidateCollider[];
     colliderGroups?: CandidateColliderGroup[];
     springs?: CandidateSpring[];
   };
 };
 
+type CandidateSpringBonePivot = {
+  sourcePathId?: number;
+  scriptName?: string;
+  nodeName?: string | null;
+  nodePath?: string | null;
+};
+
 type CandidateCollider = {
   index?: number;
+  sourcePathId?: number;
   name?: string;
   enabled?: boolean;
   linkedRenderer?: {
@@ -83,6 +93,7 @@ type CandidateSpring = {
   joints?: CandidateJoint[];
   colliderGroups?: number[];
   jointColliderGroups?: Record<string, number[]>;
+  jointColliderGroupsByNodePath?: Record<string, number[]>;
 };
 
 type CandidateForceProvider = {
@@ -135,6 +146,14 @@ type RuntimeCollider = {
   node: THREE.Object3D;
 };
 
+type LastCollisionInfo = {
+  kind: string;
+  name: string | null;
+  path: string | null;
+  sourcePathId: number | null;
+  hitNormal: THREE.Vector3;
+};
+
 type RuntimeBone = {
   managerPathId: number | null;
   springName: string;
@@ -177,6 +196,7 @@ type RuntimeBone = {
   colliders: RuntimeCollider[];
   angleLimitForwardSign: number;
   lastCollisionStatus: number;
+  lastCollisionInfo: LastCollisionInfo | null;
   lastAngleLimitApplied: boolean;
 };
 
@@ -209,6 +229,7 @@ type RuntimeLengthLimitTarget = {
 
 type NodeResolution = {
   nodeByPath: Map<string, THREE.Object3D>;
+  aliasNodeByPath: Map<string, THREE.Object3D>;
   nodeByName: Map<string, THREE.Object3D[]>;
 };
 
@@ -228,6 +249,109 @@ type VectorSnapshot = {
   length: number;
 };
 
+type QuaternionSnapshot = {
+  x: number;
+  y: number;
+  z: number;
+  w: number;
+};
+
+type UtjSpringBoneStateSnapshot = {
+  currTipPos: VectorSnapshot;
+  prevTipPos: VectorSnapshot;
+  hitNormal: VectorSnapshot;
+  cachedPosition: VectorSnapshot;
+  cachedMovement: VectorSnapshot;
+};
+
+type UtjAngleLimitTrace = {
+  enabled: boolean;
+  hasPivot: boolean;
+  pivotName: string | null;
+  pivotPath: string | null;
+  vectorBefore: VectorSnapshot | null;
+  forward: VectorSnapshot | null;
+  back: VectorSnapshot | null;
+  down: VectorSnapshot | null;
+  yApplied: boolean;
+  zApplied: boolean;
+  afterY: VectorSnapshot | null;
+  afterZ: VectorSnapshot | null;
+  vectorAfter: VectorSnapshot | null;
+};
+
+export type UtjSpringBoneTraceEvent = {
+  sequence: number;
+  springName: string;
+  boneName: string;
+  bonePath: string;
+  managerPathId: number | null;
+  deltaTime: number;
+  dynamicRatio: number;
+  automaticUpdates: boolean;
+  enabled: boolean;
+  enableCollision: boolean;
+  enableAngleLimits: boolean;
+  enableLengthLimits: boolean;
+  colliderCount: number;
+  forceProviderCount: number;
+  headPosition: VectorSnapshot;
+  parentRotation: QuaternionSnapshot;
+  initialLocalRotation: QuaternionSnapshot;
+  skinAnimationLocalRotation: QuaternionSnapshot;
+  boneAxis: VectorSnapshot;
+  springLength: number;
+  radius: number;
+  tailRadius: number;
+  stiffnessForce: number;
+  dragForce: number;
+  springForce: VectorSnapshot;
+  gravity: VectorSnapshot;
+  externalForce: VectorSnapshot;
+  stateBefore: UtjSpringBoneStateSnapshot;
+  stateAfterCache: UtjSpringBoneStateSnapshot;
+  animatedTip: VectorSnapshot;
+  stateAfterUpdateSpring: UtjSpringBoneStateSnapshot;
+  stateAfterLengthLimits: UtjSpringBoneStateSnapshot;
+  groundHit: boolean;
+  stateAfterGround: UtjSpringBoneStateSnapshot;
+  collisionStatus: number;
+  collisionChecks: UtjColliderTraceSnapshot[];
+  stateAfterCollisions: UtjSpringBoneStateSnapshot;
+  angleLimit: UtjAngleLimitTrace;
+  stateAfterAngleLimits: UtjSpringBoneStateSnapshot;
+  finalLocalRotation: QuaternionSnapshot;
+};
+
+export type UtjColliderTraceSnapshot = {
+  kind: string;
+  name: string | null;
+  path: string | null;
+  sourcePathId: number | null;
+  enabled: boolean;
+  status: number;
+  beforeTailPosition: VectorSnapshot;
+  afterTailPosition: VectorSnapshot;
+  hitNormal: VectorSnapshot;
+  localHeadPosition: VectorSnapshot | null;
+  localTailPositionBefore: VectorSnapshot | null;
+  localTailPositionAfter: VectorSnapshot | null;
+  localTailRadius: number | null;
+  localSphereOrigin: VectorSnapshot | null;
+  localSphereRadius: number | null;
+  localCapsuleStart: VectorSnapshot | null;
+  localCapsuleEnd: VectorSnapshot | null;
+  capsuleRadius: number | null;
+  panelWidth: number | null;
+  panelHeight: number | null;
+};
+
+export type UtjSpringBoneTraceSnapshot = {
+  filters: string[];
+  eventCount: number;
+  events: UtjSpringBoneTraceEvent[];
+};
+
 export type UtjSpringBoneRuntimeSnapshot = {
   enabled: boolean;
   springCount: number;
@@ -238,20 +362,37 @@ export type UtjSpringBoneRuntimeSnapshot = {
   maxSkirtOffset: number;
   topOffsets: {
     name: string;
+    path: string;
     springName: string;
     offset: number;
     colliderCount: number;
     lastCollisionStatus: number;
+    lastCollisionColliderName: string | null;
+    lastCollisionColliderPath: string | null;
+    lastCollisionColliderKind: string | null;
+    lastCollisionColliderSourcePathId: number | null;
+    lastAngleLimitApplied: boolean;
     hasSpringForce: boolean;
     forceProviderCount: number;
+    stiffnessForce: number;
+    dynamicRatio: number;
+    animatedTipDelta: VectorSnapshot;
+    velocity: VectorSnapshot;
+    springForce: VectorSnapshot;
   }[];
   skirtOffsets: {
     name: string;
+    path: string;
     springName: string;
     offset: number;
     appliedRotationDegrees: number;
     colliderCount: number;
     lastCollisionStatus: number;
+    lastCollisionColliderName: string | null;
+    lastCollisionColliderPath: string | null;
+    lastCollisionColliderKind: string | null;
+    lastCollisionColliderSourcePathId: number | null;
+    lastCollisionHitNormal: VectorSnapshot | null;
     lastAngleLimitApplied: boolean;
     hasSpringForce: boolean;
     forceProviderCount: number;
@@ -292,6 +433,10 @@ export class UtjSpringBoneRuntime {
   private readonly localBonePosition = new THREE.Vector3();
   private readonly additionalDirection = new THREE.Vector3();
   private readonly debugAnimatedTip = new THREE.Vector3();
+  private traceFilters: string[] = [];
+  private traceMaxEvents = 240;
+  private traceSequence = 0;
+  private readonly traceEvents: UtjSpringBoneTraceEvent[] = [];
 
   private constructor(bones: RuntimeBone[], missingNodes: string[], skinnedBones: Set<THREE.Object3D>) {
     this.bones = bones;
@@ -324,7 +469,10 @@ export class UtjSpringBoneRuntime {
       if (typeof collider.index !== "number") {
         continue;
       }
-      const node = resolveNode(resolution, collider.nodePath, collider.nodeName);
+      const node = resolveNode(resolution, collider.nodePath, collider.nodeName, {
+        allowNameFallback: false,
+        allowSitBodyAlias: false,
+      });
       if (!node) {
         missingNodes.push(collider.nodePath ?? collider.nodeName ?? `collider:${collider.index}`);
         continue;
@@ -344,12 +492,12 @@ export class UtjSpringBoneRuntime {
     }
 
     const bones: RuntimeBone[] = [];
-    const childExclusionNodes = collectSpringBoneChildExclusionNodes(draft.springs, resolution);
+    const childExclusionNodes = collectSpringBoneChildExclusionNodes(draft.springBonePivots, resolution);
     const forceProviderCache = new Map<string, RuntimeForceProvider>();
     for (const spring of draft.springs) {
       const joints = spring.joints ?? [];
       const jointNodes = joints.map((joint) =>
-        resolveNode(resolution, joint.nodePath, joint.nodeName)
+        resolveSpringJointNode(resolution, joint)
       );
       const forceProviders = resolveForceProviders(resolution, spring, forceProviderCache);
 
@@ -361,7 +509,7 @@ export class UtjSpringBoneRuntime {
           continue;
         }
 
-        const pivotNode = resolveSpringBonePivotNode(resolution, joint, node);
+        const pivotNode = resolveSpringBonePivotNode(resolution, joint);
 
         const runtimeBone = createRuntimeBone(
           spring,
@@ -389,6 +537,26 @@ export class UtjSpringBoneRuntime {
 
   getControlledTrackNodeNames(): Set<string> {
     return new Set(this.bones.map((bone) => bone.node.name).filter(Boolean));
+  }
+
+  setTraceBoneFilters(filters: readonly string[], maxEvents = 240): void {
+    this.traceFilters = filters
+      .map((filter) => filter.trim().toLowerCase())
+      .filter(Boolean);
+    this.traceMaxEvents = Math.max(1, Math.trunc(maxEvents) || 240);
+    this.traceSequence = 0;
+    this.traceEvents.length = 0;
+  }
+
+  getTraceSnapshot(): UtjSpringBoneTraceSnapshot {
+    return {
+      filters: [...this.traceFilters],
+      eventCount: this.traceEvents.length,
+      events: this.traceEvents.map((event) => ({
+        ...event,
+        collisionChecks: event.collisionChecks.map((check) => ({ ...check })),
+      })),
+    };
   }
 
   update(deltaTime: number): void {
@@ -497,8 +665,18 @@ export class UtjSpringBoneRuntime {
   ): void {
     bone.node.parent?.getWorldQuaternion(this.parentRotation);
     bone.node.getWorldPosition(this.headPosition);
+    const shouldTrace = this.shouldTraceBone(bone);
+    const traceEvent = shouldTrace
+      ? this.createTraceEvent(bone, deltaTime, externalForce, dynamicRatio)
+      : null;
     this.captureSkinAnimationLocalRotation(bone);
+    if (traceEvent) {
+      traceEvent.skinAnimationLocalRotation = quaternionSnapshot(bone.skinAnimationLocalRotation);
+    }
     cacheUtjSpringBonePosition(bone.state, this.headPosition);
+    if (traceEvent) {
+      traceEvent.stateAfterCache = stateSnapshot(bone.state);
+    }
     updateUtjSpring(bone.state, {
       headPosition: this.headPosition,
       parentRotation: this.parentRotation,
@@ -514,9 +692,18 @@ export class UtjSpringBoneRuntime {
       externalForce,
       deltaTime,
     });
+    if (traceEvent) {
+      traceEvent.stateAfterUpdateSpring = stateSnapshot(bone.state);
+    }
 
     this.applyLengthLimits(bone, deltaTime);
+    if (traceEvent) {
+      traceEvent.stateAfterLengthLimits = stateSnapshot(bone.state);
+    }
     const tailRadius = Math.abs(bone.radius) * matrixXDirectionLength(bone.node.matrixWorld);
+    if (traceEvent) {
+      traceEvent.tailRadius = tailRadius;
+    }
     const groundHit = bone.collideWithGround
       ? checkUtjGroundCollision(bone.state, {
         headPosition: this.headPosition,
@@ -530,27 +717,140 @@ export class UtjSpringBoneRuntime {
         friction: bone.friction,
       })
       : false;
+    if (traceEvent) {
+      traceEvent.groundHit = groundHit;
+      traceEvent.stateAfterGround = stateSnapshot(bone.state);
+    }
+    bone.lastCollisionInfo = null;
+    const collisionChecks: UtjColliderTraceSnapshot[] = [];
+    const worldColliders = bone.enableCollision ? this.buildWorldColliders(bone.colliders) : [];
     bone.lastCollisionStatus = !groundHit && bone.enableCollision
       ? checkUtjCollisions(bone.state, {
         headPosition: this.headPosition,
         springLength: bone.springLength,
         tailRadius,
-        colliders: this.buildWorldColliders(bone.colliders),
+        colliders: worldColliders,
         bounce: bone.bounce,
         friction: bone.friction,
+        onColliderCheck: traceEvent
+          ? (collider, trace) => {
+            collisionChecks.push(colliderTraceSnapshot(collider, trace));
+          }
+          : undefined,
+        onCollision: (collider, result) => {
+          bone.lastCollisionInfo = {
+            kind: collider.kind,
+            name: collider.debugName ?? null,
+            path: collider.debugPath ?? null,
+            sourcePathId: collider.debugSourcePathId ?? null,
+            hitNormal: result.hitNormal.clone(),
+          };
+        },
       })
       : 0;
+    if (traceEvent) {
+      traceEvent.collisionChecks = collisionChecks;
+      traceEvent.collisionStatus = bone.lastCollisionStatus;
+      traceEvent.stateAfterCollisions = stateSnapshot(bone.state);
+    }
+    const angleLimitTrace = traceEvent ? createEmptyAngleLimitTrace(bone) : undefined;
     bone.lastAngleLimitApplied = bone.enableAngleLimits
-      ? this.applyAngleLimits(bone, deltaTime)
+      ? this.applyAngleLimits(bone, deltaTime, angleLimitTrace)
       : false;
+    if (traceEvent && angleLimitTrace) {
+      traceEvent.angleLimit = angleLimitTrace;
+      traceEvent.stateAfterAngleLimits = stateSnapshot(bone.state);
+    }
     this.resetInvalidTipPosition(bone);
     this.applyBoneRotation(bone, dynamicRatio);
+    if (traceEvent) {
+      traceEvent.finalLocalRotation = quaternionSnapshot(bone.node.quaternion);
+      this.pushTraceEvent(traceEvent);
+    }
   }
 
   settleCurrentPose(frameCount = 120, deltaTime = 1 / 60): void {
     const count = Math.max(0, Math.floor(frameCount));
     for (let frame = 0; frame < count; frame += 1) {
       this.update(deltaTime);
+    }
+  }
+
+  private shouldTraceBone(bone: RuntimeBone): boolean {
+    if (this.traceFilters.length === 0) {
+      return false;
+    }
+    const name = bone.node.name.toLowerCase();
+    const path = getObjectPath(bone.node).toLowerCase();
+    const springName = bone.springName.toLowerCase();
+    return this.traceFilters.some((filter) =>
+      name.includes(filter) ||
+      path.includes(filter) ||
+      springName.includes(filter)
+    );
+  }
+
+  private createTraceEvent(
+    bone: RuntimeBone,
+    deltaTime: number,
+    externalForce: THREE.Vector3,
+    dynamicRatio: number
+  ): UtjSpringBoneTraceEvent {
+    return {
+      sequence: this.traceSequence,
+      springName: bone.springName,
+      boneName: bone.node.name,
+      bonePath: getObjectPath(bone.node),
+      managerPathId: bone.managerPathId,
+      deltaTime,
+      dynamicRatio,
+      automaticUpdates: bone.automaticUpdates,
+      enabled: bone.enabled,
+      enableCollision: bone.enableCollision,
+      enableAngleLimits: bone.enableAngleLimits,
+      enableLengthLimits: bone.enableLengthLimits,
+      colliderCount: bone.colliders.length,
+      forceProviderCount: bone.forceProviders.length,
+      headPosition: vectorSnapshot(this.headPosition),
+      parentRotation: quaternionSnapshot(this.parentRotation),
+      initialLocalRotation: quaternionSnapshot(bone.initialLocalRotation),
+      skinAnimationLocalRotation: quaternionSnapshot(bone.skinAnimationLocalRotation),
+      boneAxis: vectorSnapshot(bone.boneAxis),
+      springLength: bone.springLength,
+      radius: bone.radius,
+      tailRadius: 0,
+      stiffnessForce: bone.stiffnessForce,
+      dragForce: bone.dragForce,
+      springForce: vectorSnapshot(bone.springForce),
+      gravity: vectorSnapshot(bone.gravity),
+      externalForce: vectorSnapshot(externalForce),
+      stateBefore: stateSnapshot(bone.state),
+      stateAfterCache: stateSnapshot(bone.state),
+      animatedTip: vectorSnapshot(computeAnimatedTipPosition({
+        headPosition: this.headPosition,
+        parentRotation: this.parentRotation,
+        initialLocalRotation: bone.initialLocalRotation,
+        boneAxis: bone.boneAxis,
+        springLength: bone.springLength,
+      })),
+      stateAfterUpdateSpring: stateSnapshot(bone.state),
+      stateAfterLengthLimits: stateSnapshot(bone.state),
+      groundHit: false,
+      stateAfterGround: stateSnapshot(bone.state),
+      collisionStatus: 0,
+      collisionChecks: [],
+      stateAfterCollisions: stateSnapshot(bone.state),
+      angleLimit: createEmptyAngleLimitTrace(bone),
+      stateAfterAngleLimits: stateSnapshot(bone.state),
+      finalLocalRotation: quaternionSnapshot(bone.node.quaternion),
+    };
+  }
+
+  private pushTraceEvent(event: UtjSpringBoneTraceEvent): void {
+    this.traceSequence += 1;
+    this.traceEvents.push({ ...event });
+    while (this.traceEvents.length > this.traceMaxEvents) {
+      this.traceEvents.shift();
     }
   }
 
@@ -730,7 +1030,11 @@ export class UtjSpringBoneRuntime {
     });
   }
 
-  private applyAngleLimits(bone: RuntimeBone, deltaTime: number): boolean {
+  private applyAngleLimits(
+    bone: RuntimeBone,
+    deltaTime: number,
+    trace?: UtjAngleLimitTrace
+  ): boolean {
     if (!bone.yAngleLimit && !bone.zAngleLimit) {
       return false;
     }
@@ -746,10 +1050,20 @@ export class UtjSpringBoneRuntime {
     const forward = new THREE.Vector3(bone.angleLimitForwardSign, 0, 0).transformDirection(pivot.matrixWorld);
     const back = new THREE.Vector3(0, 0, -1).transformDirection(pivot.matrixWorld);
     const down = new THREE.Vector3(0, -1, 0).transformDirection(pivot.matrixWorld);
+    if (trace) {
+      trace.enabled = true;
+      trace.hasPivot = true;
+      trace.pivotName = pivot.name || null;
+      trace.pivotPath = getObjectPath(pivot) || null;
+      trace.vectorBefore = vectorSnapshot(this.angleVector);
+      trace.forward = vectorSnapshot(forward);
+      trace.back = vectorSnapshot(back);
+      trace.down = vectorSnapshot(down);
+    }
 
     let constrained = false;
     if (bone.yAngleLimit) {
-      constrained = constrainUtjAngleLimit({
+      const yConstrained = constrainUtjAngleLimit({
         basisSide: down,
         basisUp: back,
         basisForward: forward,
@@ -757,11 +1071,16 @@ export class UtjSpringBoneRuntime {
         deltaTime,
         limit: bone.yAngleLimit,
         vector: this.angleVector,
-      }) || constrained;
+      });
+      if (trace) {
+        trace.yApplied = yConstrained;
+        trace.afterY = vectorSnapshot(this.angleVector);
+      }
+      constrained = yConstrained || constrained;
     }
 
     if (bone.zAngleLimit) {
-      constrained = constrainUtjAngleLimit({
+      const zConstrained = constrainUtjAngleLimit({
         basisSide: back,
         basisUp: down,
         basisForward: forward,
@@ -769,10 +1088,18 @@ export class UtjSpringBoneRuntime {
         deltaTime,
         limit: bone.zAngleLimit,
         vector: this.angleVector,
-      }) || constrained;
+      });
+      if (trace) {
+        trace.zApplied = zConstrained;
+        trace.afterZ = vectorSnapshot(this.angleVector);
+      }
+      constrained = zConstrained || constrained;
     }
 
     bone.state.currTipPos.copy(bone.state.cachedPosition).add(this.angleVector);
+    if (trace) {
+      trace.vectorAfter = vectorSnapshot(this.angleVector);
+    }
     return constrained;
   }
 
@@ -799,6 +1126,8 @@ export class UtjSpringBoneRuntime {
       }));
       const offset = this.debugAnimatedTip.distanceTo(bone.state.currTipPos);
       const name = bone.node.name.toLowerCase();
+      const animatedTipDelta = bone.state.currTipPos.clone().sub(this.debugAnimatedTip);
+      const velocity = bone.state.currTipPos.clone().sub(bone.state.prevTipPos);
       if (name.includes("sleeve")) {
         maxSleeveOffset = Math.max(maxSleeveOffset, offset);
       }
@@ -812,18 +1141,28 @@ export class UtjSpringBoneRuntime {
       }
       topOffsets.push({
         name: bone.node.name,
+        path: getObjectPath(bone.node),
         springName: bone.springName,
         offset,
         colliderCount: bone.colliders.length,
         lastCollisionStatus: bone.lastCollisionStatus,
+        lastCollisionColliderName: bone.lastCollisionInfo?.name ?? null,
+        lastCollisionColliderPath: bone.lastCollisionInfo?.path ?? null,
+        lastCollisionColliderKind: bone.lastCollisionInfo?.kind ?? null,
+        lastCollisionColliderSourcePathId: bone.lastCollisionInfo?.sourcePathId ?? null,
+        lastAngleLimitApplied: bone.lastAngleLimitApplied,
         hasSpringForce: bone.springForce.lengthSq() > 0.00000001,
         forceProviderCount: bone.forceProviders.length,
+        stiffnessForce: bone.stiffnessForce,
+        dynamicRatio: bone.dynamicRatio,
+        animatedTipDelta: vectorSnapshot(animatedTipDelta),
+        velocity: vectorSnapshot(velocity),
+        springForce: vectorSnapshot(bone.springForce),
       });
       if (name.includes("skirt")) {
-        const animatedTipDelta = bone.state.currTipPos.clone().sub(this.debugAnimatedTip);
-        const velocity = bone.state.currTipPos.clone().sub(bone.state.prevTipPos);
         skirtOffsets.push({
           name: bone.node.name,
+          path: getObjectPath(bone.node),
           springName: bone.springName,
           offset,
           appliedRotationDegrees: THREE.MathUtils.radToDeg(
@@ -831,6 +1170,13 @@ export class UtjSpringBoneRuntime {
           ),
           colliderCount: bone.colliders.length,
           lastCollisionStatus: bone.lastCollisionStatus,
+          lastCollisionColliderName: bone.lastCollisionInfo?.name ?? null,
+          lastCollisionColliderPath: bone.lastCollisionInfo?.path ?? null,
+          lastCollisionColliderKind: bone.lastCollisionInfo?.kind ?? null,
+          lastCollisionColliderSourcePathId: bone.lastCollisionInfo?.sourcePathId ?? null,
+          lastCollisionHitNormal: bone.lastCollisionInfo
+            ? vectorSnapshot(bone.lastCollisionInfo.hitNormal)
+            : null,
           lastAngleLimitApplied: bone.lastAngleLimitApplied,
           hasSpringForce: bone.springForce.lengthSq() > 0.00000001,
           forceProviderCount: bone.forceProviders.length,
@@ -907,6 +1253,9 @@ export class UtjSpringBoneRuntime {
       return {
         kind: "sphere",
         enabled: componentEnabled,
+        debugName: collider.source.name ?? collider.node.name,
+        debugPath: collider.source.nodePath ?? getObjectPath(collider.node),
+        debugSourcePathId: collider.source.sourcePathId,
         localOffset: new THREE.Vector3(0, 0, 0),
         radius: Math.max(0, shape.sphere.radius ?? 0.01),
         localToWorldMatrix: this.colliderLocalToWorld.clone(),
@@ -924,6 +1273,9 @@ export class UtjSpringBoneRuntime {
       return {
         kind: "capsuleLocal",
         enabled: rendererGatedEnabled,
+        debugName: collider.source.name ?? collider.node.name,
+        debugPath: collider.source.nodePath ?? getObjectPath(collider.node),
+        debugSourcePathId: collider.source.sourcePathId,
         localStart: new THREE.Vector3(0, 0, 0),
         localEnd: vectorFromArray(shape.capsule.tail),
         radius: Math.max(0, shape.capsule.radius ?? 0.01),
@@ -942,6 +1294,9 @@ export class UtjSpringBoneRuntime {
       return {
         kind: "panel",
         enabled: rendererGatedEnabled,
+        debugName: collider.source.name ?? collider.node.name,
+        debugPath: collider.source.nodePath ?? getObjectPath(collider.node),
+        debugSourcePathId: collider.source.sourcePathId,
         width: Math.max(0, shape.panel.width ?? 0),
         height: Math.max(0, shape.panel.height ?? 0),
         localToWorldMatrix: this.colliderLocalToWorld.clone(),
@@ -962,6 +1317,75 @@ function vectorSnapshot(vector: THREE.Vector3): VectorSnapshot {
     y: vector.y,
     z: vector.z,
     length: vector.length(),
+  };
+}
+
+function nullableVectorSnapshot(vector?: THREE.Vector3): VectorSnapshot | null {
+  return vector ? vectorSnapshot(vector) : null;
+}
+
+function quaternionSnapshot(quaternion: THREE.Quaternion): QuaternionSnapshot {
+  return {
+    x: quaternion.x,
+    y: quaternion.y,
+    z: quaternion.z,
+    w: quaternion.w,
+  };
+}
+
+function stateSnapshot(state: UtjSpringBoneState): UtjSpringBoneStateSnapshot {
+  return {
+    currTipPos: vectorSnapshot(state.currTipPos),
+    prevTipPos: vectorSnapshot(state.prevTipPos),
+    hitNormal: vectorSnapshot(state.hitNormal),
+    cachedPosition: vectorSnapshot(state.cachedPosition),
+    cachedMovement: vectorSnapshot(state.cachedMovement),
+  };
+}
+
+function createEmptyAngleLimitTrace(bone: RuntimeBone): UtjAngleLimitTrace {
+  return {
+    enabled: bone.enableAngleLimits,
+    hasPivot: Boolean(bone.pivotNode),
+    pivotName: bone.pivotNode?.name || null,
+    pivotPath: bone.pivotNode ? getObjectPath(bone.pivotNode) || null : null,
+    vectorBefore: null,
+    forward: null,
+    back: null,
+    down: null,
+    yApplied: false,
+    zApplied: false,
+    afterY: null,
+    afterZ: null,
+    vectorAfter: null,
+  };
+}
+
+function colliderTraceSnapshot(
+  collider: UtjCollider,
+  trace: UtjColliderCheckTrace
+): UtjColliderTraceSnapshot {
+  return {
+    kind: collider.kind,
+    name: collider.debugName ?? null,
+    path: collider.debugPath ?? null,
+    sourcePathId: collider.debugSourcePathId ?? null,
+    enabled: collider.enabled !== false,
+    status: trace.status,
+    beforeTailPosition: vectorSnapshot(trace.beforeTailPosition),
+    afterTailPosition: vectorSnapshot(trace.afterTailPosition),
+    hitNormal: vectorSnapshot(trace.hitNormal),
+    localHeadPosition: nullableVectorSnapshot(trace.details.localHeadPosition),
+    localTailPositionBefore: nullableVectorSnapshot(trace.details.localTailPositionBefore),
+    localTailPositionAfter: nullableVectorSnapshot(trace.details.localTailPositionAfter),
+    localTailRadius: trace.details.localTailRadius ?? null,
+    localSphereOrigin: nullableVectorSnapshot(trace.details.localSphereOrigin),
+    localSphereRadius: trace.details.localSphereRadius ?? null,
+    localCapsuleStart: nullableVectorSnapshot(trace.details.localCapsuleStart),
+    localCapsuleEnd: nullableVectorSnapshot(trace.details.localCapsuleEnd),
+    capsuleRadius: trace.details.capsuleRadius ?? null,
+    panelWidth: trace.details.panelWidth ?? null,
+    panelHeight: trace.details.panelHeight ?? null,
   };
 }
 
@@ -1035,6 +1459,7 @@ function createRuntimeBone(
     colliders,
     angleLimitForwardSign,
     lastCollisionStatus: 0,
+    lastCollisionInfo: null,
     lastAngleLimitApplied: false,
   };
 }
@@ -1136,18 +1561,31 @@ function resolveLengthLimitTargets(
   joint: CandidateJoint
 ): THREE.Object3D[] {
   return (joint.lengthLimitTargets ?? [])
-    .map((target) => resolveNode(resolution, target.nodePath, target.nodeName))
+    .map((target) => resolveNode(resolution, target.nodePath, target.nodeName, {
+      allowNameFallback: false,
+      allowSitBodyAlias: false,
+    }))
     .filter((node): node is THREE.Object3D => Boolean(node));
+}
+
+function resolveSpringJointNode(
+  resolution: NodeResolution,
+  joint: CandidateJoint
+): THREE.Object3D | null {
+  return resolveNode(resolution, joint.nodePath, joint.nodeName, {
+    allowNameFallback: false,
+    allowSitBodyAlias: false,
+  });
 }
 
 function resolveSpringBonePivotNode(
   resolution: NodeResolution,
-  joint: CandidateJoint,
-  node: THREE.Object3D
-): THREE.Object3D {
-  return resolveNode(resolution, joint.pivotNodePath, joint.pivotNodeName)
-    ?? node.parent
-    ?? node;
+  joint: CandidateJoint
+): THREE.Object3D | null {
+  return resolveNode(resolution, joint.pivotNodePath, joint.pivotNodeName, {
+    allowNameFallback: false,
+    allowSitBodyAlias: false,
+  });
 }
 
 function angleLimitFromCandidate(limit?: CandidateAngleLimit | null): UtjAngleLimit | null {
@@ -1167,13 +1605,18 @@ function resolveJointColliders(
   joint: CandidateJoint,
   colliderGroupByIndex: ReadonlyMap<number, RuntimeCollider[]>
 ): RuntimeCollider[] {
+  const nodePathGroups = joint.nodePath
+    ? spring.jointColliderGroupsByNodePath?.[joint.nodePath]
+    : undefined;
   const sourcePathId = typeof joint.sourcePathId === "number"
     ? String(joint.sourcePathId)
     : null;
   const jointGroups = sourcePathId
     ? spring.jointColliderGroups?.[sourcePathId]
     : undefined;
-  const groupIndexes = jointGroups !== undefined
+  const groupIndexes = nodePathGroups !== undefined
+    ? nodePathGroups
+    : jointGroups !== undefined
     ? jointGroups
     : spring.colliderGroups ?? [];
   const colliders = groupIndexes.flatMap((index) => colliderGroupByIndex.get(index) ?? []);
@@ -1245,16 +1688,17 @@ function getUtjObjectDepth(node: THREE.Object3D): number {
 }
 
 function collectSpringBoneChildExclusionNodes(
-  springs: readonly CandidateSpring[] | undefined,
+  pivots: readonly CandidateSpringBonePivot[] | undefined,
   resolution: NodeResolution
 ): Set<THREE.Object3D> {
   const nodes = new Set<THREE.Object3D>();
-  for (const spring of springs ?? []) {
-    for (const joint of spring.joints ?? []) {
-      const pivotNode = resolveNode(resolution, joint.pivotNodePath, joint.pivotNodeName);
-      if (pivotNode) {
-        nodes.add(pivotNode);
-      }
+  for (const pivot of pivots ?? []) {
+    const pivotNode = resolveNode(resolution, pivot.nodePath, pivot.nodeName, {
+      allowNameFallback: false,
+      allowSitBodyAlias: false,
+    });
+    if (pivotNode) {
+      nodes.add(pivotNode);
     }
   }
   return nodes;
@@ -1300,6 +1744,7 @@ function computeUtjChildPosition(
 
 function buildNodeResolution(root: THREE.Object3D): NodeResolution {
   const nodeByPath = new Map<string, THREE.Object3D>();
+  const aliasNodeByPath = new Map<string, THREE.Object3D>();
   const nodeByName = new Map<string, THREE.Object3D[]>();
 
   root.traverse((node) => {
@@ -1309,12 +1754,17 @@ function buildNodeResolution(root: THREE.Object3D): NodeResolution {
       nodeByName.set(node.name, byName);
     }
 
-    for (const path of buildNodePaths(root, node)) {
-      nodeByPath.set(path, node);
+    const path = getObjectPath(node, root);
+    if (!path) {
+      return;
+    }
+    nodeByPath.set(path, node);
+    if (path.startsWith("body/")) {
+      aliasNodeByPath.set(`sit_body/${path.slice("body/".length)}`, node);
     }
   });
 
-  return { nodeByPath, nodeByName };
+  return { nodeByPath, aliasNodeByPath, nodeByName };
 }
 
 function collectSkinnedBones(root: THREE.Object3D): Set<THREE.Object3D> {
@@ -1329,18 +1779,6 @@ function collectSkinnedBones(root: THREE.Object3D): Set<THREE.Object3D> {
     }
   });
   return bones;
-}
-
-function buildNodePaths(root: THREE.Object3D, node: THREE.Object3D): string[] {
-  const path = getObjectPath(node, root);
-  if (!path) {
-    return [];
-  }
-  const paths = [path];
-  if (path.startsWith("body/")) {
-    paths.push(`sit_body/${path.slice("body/".length)}`);
-  }
-  return paths;
 }
 
 function getObjectPath(node: THREE.Object3D, stopAt?: THREE.Object3D): string {
@@ -1358,28 +1796,33 @@ function getObjectPath(node: THREE.Object3D, stopAt?: THREE.Object3D): string {
 function resolveNode(
   resolution: NodeResolution,
   sourcePath?: string | null,
-  sourceName?: string | null
+  sourceName?: string | null,
+  options: { allowNameFallback?: boolean; allowSitBodyAlias?: boolean } = {}
 ): THREE.Object3D | null {
-  for (const candidate of enumeratePathCandidates(sourcePath)) {
-    const node = resolution.nodeByPath.get(candidate);
+  for (const candidate of enumeratePathCandidates(sourcePath, options)) {
+    const node = resolution.nodeByPath.get(candidate) ??
+      (options.allowSitBodyAlias === false ? undefined : resolution.aliasNodeByPath.get(candidate));
     if (node) {
       return node;
     }
   }
 
-  if (sourceName) {
+  if (options.allowNameFallback !== false && sourceName) {
     return resolution.nodeByName.get(sourceName)?.[0] ?? null;
   }
   return null;
 }
 
-function enumeratePathCandidates(sourcePath?: string | null): string[] {
+function enumeratePathCandidates(
+  sourcePath?: string | null,
+  options: { allowNameFallback?: boolean; allowSitBodyAlias?: boolean } = {}
+): string[] {
   if (!sourcePath) {
     return [];
   }
 
   const paths = [sourcePath];
-  if (sourcePath.startsWith("sit_body/")) {
+  if (options.allowSitBodyAlias !== false && sourcePath.startsWith("sit_body/")) {
     paths.push(`body/${sourcePath.slice("sit_body/".length)}`);
   }
 

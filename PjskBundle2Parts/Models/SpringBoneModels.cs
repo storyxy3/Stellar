@@ -13,6 +13,7 @@ public sealed record SpringBoneExport(
     IReadOnlyList<SpringColliderEntry> CapsuleColliders,
     IReadOnlyList<SpringColliderEntry> PanelColliders,
     IReadOnlyList<SpringMonoBehaviourEntry> ForceProviders,
+    IReadOnlyList<SpringMonoBehaviourEntry> SpringBonePivots,
     IReadOnlyList<SpringExtraBoneEntry> ExtraBones,
     SpringCharacterHairEntry? CharacterHair,
     SpringCharacterEyeEntry? CharacterEye,
@@ -152,9 +153,18 @@ public sealed record VrmSpringBoneNormalizationProfile(
 
 public sealed record VrmSpringBoneExtensionDraft(
     [property: JsonPropertyName("specVersion")] string SpecVersion,
+    [property: JsonPropertyName("springBonePivots")] IReadOnlyList<VrmSpringBonePivotCandidate> SpringBonePivots,
     [property: JsonPropertyName("colliders")] IReadOnlyList<VrmSpringBoneColliderCandidate> Colliders,
     [property: JsonPropertyName("colliderGroups")] IReadOnlyList<VrmSpringBoneColliderGroupCandidate> ColliderGroups,
     [property: JsonPropertyName("springs")] IReadOnlyList<VrmSpringBoneSpringCandidate> Springs
+);
+
+public sealed record VrmSpringBonePivotCandidate(
+    [property: JsonPropertyName("partKind")] string PartKind,
+    [property: JsonPropertyName("sourcePathId")] long SourcePathId,
+    [property: JsonPropertyName("scriptName")] string ScriptName,
+    [property: JsonPropertyName("nodeName")] string? NodeName,
+    [property: JsonPropertyName("nodePath")] string? NodePath
 );
 
 public sealed record VrmSpringBonePartSummary(
@@ -251,7 +261,8 @@ public sealed record VrmSpringBoneSpringCandidate(
     [property: JsonPropertyName("centerPath")] string? CenterPath,
     [property: JsonPropertyName("joints")] IReadOnlyList<VrmSpringBoneJointCandidate> Joints,
     [property: JsonPropertyName("colliderGroups")] IReadOnlyList<int> ColliderGroups,
-    [property: JsonPropertyName("jointColliderGroups")] IReadOnlyDictionary<long, IReadOnlyList<int>> JointColliderGroups
+    [property: JsonPropertyName("jointColliderGroups")] IReadOnlyDictionary<long, IReadOnlyList<int>> JointColliderGroups,
+    [property: JsonPropertyName("jointColliderGroupsByNodePath")] IReadOnlyDictionary<string, IReadOnlyList<int>> JointColliderGroupsByNodePath
 );
 
 public sealed record VrmSpringBoneForceProviderCandidate(

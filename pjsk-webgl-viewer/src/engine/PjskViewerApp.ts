@@ -26,6 +26,7 @@ import { loadGltfAnimations, loadGltfPart } from "./loadGltfPart";
 import {
   UtjSpringBoneRuntime,
   type UtjSpringBoneRuntimeSnapshot,
+  type UtjSpringBoneTraceSnapshot,
 } from "./utjSpringBoneRuntimeAdapter";
 import { SekaiExtraBoneRuntime } from "./sekaiExtraBoneRuntime";
 
@@ -2084,6 +2085,14 @@ export class PjskViewerApp {
       Boolean(this.currentVrmSpringBoneManager),
       this.currentUtjSpringBoneRuntime?.getSnapshot(this.utjSpringBoneEnabled) ?? null
     );
+  }
+
+  setUtjSpringBoneTraceFilters(filters: readonly string[], maxEvents?: number) {
+    this.currentUtjSpringBoneRuntime?.setTraceBoneFilters(filters, maxEvents);
+  }
+
+  getUtjSpringBoneTraceSnapshot(): UtjSpringBoneTraceSnapshot | null {
+    return this.currentUtjSpringBoneRuntime?.getTraceSnapshot() ?? null;
   }
 
   getAnimationSnapshot(): AnimationPlaybackSnapshot {

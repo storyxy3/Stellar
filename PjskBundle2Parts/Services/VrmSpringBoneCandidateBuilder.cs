@@ -21,11 +21,14 @@ public sealed class VrmSpringBoneCandidateBuilder
     public VrmSpringBoneCandidate Build(CombinedSpringBoneExport raw)
     {
         var warnings = new List<string>();
+        var springBonePivots = new List<VrmSpringBonePivotCandidate>();
         var colliders = new List<VrmSpringBoneColliderCandidate>();
         var colliderGroups = new List<VrmSpringBoneColliderGroupCandidate>();
         var springs = new List<VrmSpringBoneSpringCandidate>();
         var colliderIndexByKey = new Dictionary<SpringColliderKey, int>();
 
+        AddSpringBonePivots(raw.Body, springBonePivots);
+        AddSpringBonePivots(raw.Head, springBonePivots);
         AddColliders(raw.Body, colliders, colliderIndexByKey, warnings);
         AddColliders(raw.Head, colliders, colliderIndexByKey, warnings);
         var allForceProviders = raw.Body.ForceProviders
@@ -68,6 +71,7 @@ public sealed class VrmSpringBoneCandidateBuilder
             ),
             VrmExtensionDraft: new VrmSpringBoneExtensionDraft(
                 SpecVersion: "VRMC_springBone-1.0-draft-candidate",
+                SpringBonePivots: springBonePivots,
                 Colliders: colliders,
                 ColliderGroups: colliderGroups,
                 Springs: springs
@@ -79,6 +83,23 @@ public sealed class VrmSpringBoneCandidateBuilder
             },
             Warnings: warnings
         );
+    }
+
+    private static void AddSpringBonePivots(
+        SpringBoneExport part,
+        List<VrmSpringBonePivotCandidate> springBonePivots
+    )
+    {
+        foreach (var pivot in part.SpringBonePivots)
+        {
+            springBonePivots.Add(new VrmSpringBonePivotCandidate(
+                PartKind: part.PartKind,
+                SourcePathId: pivot.PathId,
+                ScriptName: pivot.ScriptName,
+                NodeName: pivot.GameObject?.Name,
+                NodePath: pivot.GameObject?.TransformPath
+            ));
+        }
     }
 
     private static void AddColliders(
@@ -179,6 +200,7 @@ public sealed class VrmSpringBoneCandidateBuilder
             foreach (var chain in BuildChains(managerBones))
             {
                 var jointColliderGroups = new Dictionary<long, IReadOnlyList<int>>();
+                var jointColliderGroupsByNodePath = new Dictionary<string, IReadOnlyList<int>>(StringComparer.Ordinal);
                 var springColliderGroups = new SortedSet<int>();
                 var joints = new List<VrmSpringBoneJointCandidate>();
 
@@ -215,11 +237,21 @@ public sealed class VrmSpringBoneCandidateBuilder
                             SourceColliderPathIds: colliderPathIds
                         ));
                         springColliderGroups.Add(groupIndex);
-                        jointColliderGroups[bone.PathId] = new[] { groupIndex };
+                        SetJointColliderGroups(
+                            jointColliderGroups,
+                            jointColliderGroupsByNodePath,
+                            bone,
+                            new[] { groupIndex }
+                        );
                     }
                     else
                     {
-                        jointColliderGroups[bone.PathId] = Array.Empty<int>();
+                        SetJointColliderGroups(
+                            jointColliderGroups,
+                            jointColliderGroupsByNodePath,
+                            bone,
+                            Array.Empty<int>()
+                        );
                     }
 
                     joints.Add(BuildJoint(bone));
@@ -255,9 +287,15 @@ public sealed class VrmSpringBoneCandidateBuilder
 
                     colliderGroups.Add(runtimeColliderFlagGroup);
                     springColliderGroups.Add(runtimeColliderFlagGroup.Index);
-                    jointColliderGroups[bone.PathId] = jointColliderGroups[bone.PathId]
+                    var updatedJointGroups = jointColliderGroups[bone.PathId]
                         .Concat(new[] { runtimeColliderFlagGroup.Index })
                         .ToList();
+                    SetJointColliderGroups(
+                        jointColliderGroups,
+                        jointColliderGroupsByNodePath,
+                        bone,
+                        updatedJointGroups
+                    );
                 }
 
                 var springIndex = springs.Count;
@@ -288,12 +326,28 @@ public sealed class VrmSpringBoneCandidateBuilder
                     CenterPath: manager.GameObject?.TransformPath,
                     Joints: joints,
                     ColliderGroups: springColliderGroups.ToList(),
-                    JointColliderGroups: jointColliderGroups
+                    JointColliderGroups: jointColliderGroups,
+                    JointColliderGroupsByNodePath: jointColliderGroupsByNodePath
                 ));
             }
         }
 
         return springs.Count - springCountBefore;
+    }
+
+    private static void SetJointColliderGroups(
+        Dictionary<long, IReadOnlyList<int>> jointColliderGroups,
+        Dictionary<string, IReadOnlyList<int>> jointColliderGroupsByNodePath,
+        SpringBoneEntry bone,
+        IReadOnlyList<int> groups
+    )
+    {
+        jointColliderGroups[bone.PathId] = groups;
+        var nodePath = bone.GameObject?.TransformPath;
+        if (!string.IsNullOrWhiteSpace(nodePath))
+        {
+            jointColliderGroupsByNodePath[nodePath] = groups;
+        }
     }
 
     private static IReadOnlyList<SpringBoneEntry> ResolveRuntimeManagerBones(
@@ -370,6 +424,7 @@ public sealed class VrmSpringBoneCandidateBuilder
             .ToList();
         var sourceColliders = colliderSourcePart.CapsuleColliders
             .Concat(colliderSourcePart.SphereColliders)
+            .Where(collider => collider.GameObject?.ActiveInHierarchy != false)
             .Where(collider => MatchesRuntimeColliderFlag(collider, matchedBindings))
             .ToList();
         var colliderIndexes = sourceColliders
