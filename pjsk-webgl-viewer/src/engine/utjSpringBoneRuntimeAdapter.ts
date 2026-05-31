@@ -739,7 +739,10 @@ export class UtjSpringBoneRuntime {
     pivot.updateMatrixWorld(true);
     this.angleVector.copy(bone.state.currTipPos).sub(bone.state.cachedPosition);
 
-    const forward = new THREE.Vector3(-1, 0, 0).transformDirection(pivot.matrixWorld);
+    // UTJ's decompiled angle limit uses pivot.Left (-X) as the neutral forward.
+    // Exported GLB spring chains are stored on +X, so this is the world-space
+    // equivalent of flipping local X before and after ConstrainVector.
+    const forward = new THREE.Vector3(1, 0, 0).transformDirection(pivot.matrixWorld);
     const back = new THREE.Vector3(0, 0, -1).transformDirection(pivot.matrixWorld);
     const down = new THREE.Vector3(0, -1, 0).transformDirection(pivot.matrixWorld);
 
