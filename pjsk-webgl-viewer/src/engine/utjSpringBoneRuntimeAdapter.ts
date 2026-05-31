@@ -92,6 +92,7 @@ type CandidateForceProvider = {
   nodePath?: string | null;
   activeSelf?: boolean | null;
   activeInHierarchy?: boolean | null;
+  springManagerPathId?: number | null;
   raw?: JsonRecord | null;
 };
 
@@ -104,6 +105,7 @@ type CandidateJoint = {
   pivotNodePath?: string | null;
   hitRadius?: number;
   rawStiffnessForce?: number | null;
+  rawDragForce?: number | null;
   rawAngularStiffness?: number | null;
   rawSpringConstant?: number | null;
   rawWindInfluence?: number | null;
@@ -134,6 +136,7 @@ type RuntimeCollider = {
 };
 
 type RuntimeBone = {
+  managerPathId: number | null;
   springName: string;
   automaticUpdates: boolean;
   enabled: boolean;
@@ -155,6 +158,7 @@ type RuntimeBone = {
   boneAxis: THREE.Vector3;
   springLength: number;
   dynamicRatio: number;
+  isAnimated: boolean;
   simulationFrameRate: number;
   slowMotionScale: number;
   bounce: number;
@@ -179,7 +183,12 @@ type RuntimeForceProvider = RuntimeWindVolumeOneSelf;
 
 type RuntimeWindVolumeOneSelf = {
   kind: "WindVolumeOneSelf";
+  sourcePathId: number | null;
   node: THREE.Object3D;
+  springManagerPathId: number | null;
+  isActive: boolean;
+  dynamicRatio: number;
+  simulationFrameRate: number;
   weight: number;
   strength: number;
   period: number;
@@ -334,12 +343,14 @@ export class UtjSpringBoneRuntime {
     }
 
     const bones: RuntimeBone[] = [];
-    const springBoneNodes = new Set<THREE.Object3D>();
+    const springBoneNodes = collectSpringBoneNodes(draft.springs, resolution);
+    const forceProviderCache = new Map<string, RuntimeForceProvider>();
     for (const spring of draft.springs) {
       const joints = spring.joints ?? [];
       const jointNodes = joints.map((joint) =>
         resolveNode(resolution, joint.nodePath, joint.nodeName)
       );
+      const forceProviders = resolveForceProviders(resolution, spring, forceProviderCache);
 
       for (let index = 0; index < joints.length; index += 1) {
         const joint = joints[index];
@@ -349,7 +360,6 @@ export class UtjSpringBoneRuntime {
           continue;
         }
 
-        springBoneNodes.add(node);
         const pivotNode = resolveNode(resolution, joint.pivotNodePath, joint.pivotNodeName);
 
         const runtimeBone = createRuntimeBone(
@@ -359,7 +369,7 @@ export class UtjSpringBoneRuntime {
           computeUtjChildPosition(node, springBoneNodes),
           pivotNode,
           resolveLengthLimitTargets(resolution, joint),
-          resolveForceProviders(resolution, spring),
+          forceProviders,
           resolveJointColliders(spring, joint, colliderGroupByIndex),
           managerSettingsByPathId
         );
@@ -385,6 +395,20 @@ export class UtjSpringBoneRuntime {
       this.preUpdateColliders();
     }
 
+    const windLateUpdateProviders = this.collectWindLateUpdateProviders();
+    const windLateUpdateManagerIds = new Set(
+      windLateUpdateProviders
+        .filter((provider) => provider.isActive)
+        .map((provider) => provider.springManagerPathId)
+        .filter((managerPathId): managerPathId is number => managerPathId !== null)
+    );
+    const windSumEnabledManagerIds = new Set(
+      windLateUpdateProviders
+        .filter((provider) => !provider.isActive)
+        .map((provider) => provider.springManagerPathId)
+        .filter((managerPathId): managerPathId is number => managerPathId !== null)
+    );
+
     for (const bone of this.bones) {
       const dt = calcUtjManagerTimeStep(deltaTime, bone.simulationFrameRate, bone.slowMotionScale);
       if (!bone.automaticUpdates) {
@@ -395,63 +419,131 @@ export class UtjSpringBoneRuntime {
       }
       bone.node.parent?.getWorldQuaternion(this.parentRotation);
       bone.node.getWorldPosition(this.headPosition);
-      this.captureSkinAnimationLocalRotation(bone);
       if (bone.isPaused) {
         this.applyBoneRotation(bone);
         continue;
       }
-      if (!bone.isSumOfForcesOnBone) {
+      const windManagerControlsSum = bone.managerPathId !== null &&
+        windSumEnabledManagerIds.has(bone.managerPathId);
+      const managerSumsForces = windManagerControlsSum ? true : bone.isSumOfForcesOnBone;
+      if (!managerSumsForces ||
+        (bone.managerPathId !== null && windLateUpdateManagerIds.has(bone.managerPathId))) {
         continue;
       }
-      cacheUtjSpringBonePosition(bone.state, this.headPosition);
-      updateUtjSpring(bone.state, {
+      this.updateBoneSpringAndRotation(
+        bone,
+        dt,
+        this.computeExternalForce(bone, deltaTime),
+        bone.dynamicRatio
+      );
+    }
+
+    for (const provider of windLateUpdateProviders) {
+      if (!provider.isActive) {
+        continue;
+      }
+      this.updateWindVolumeOneSelfLateUpdate(provider, deltaTime);
+    }
+  }
+
+  private collectWindLateUpdateProviders(): RuntimeWindVolumeOneSelf[] {
+    const providers = new Map<string, RuntimeWindVolumeOneSelf>();
+    for (const bone of this.bones) {
+      for (const provider of bone.forceProviders) {
+        if (provider.springManagerPathId === null) {
+          continue;
+        }
+        const key = provider.sourcePathId !== null
+          ? `path:${provider.sourcePathId}`
+          : `node:${provider.node.uuid}:${provider.springManagerPathId}`;
+        if (!providers.has(key)) {
+          providers.set(key, provider);
+        }
+      }
+    }
+    return [...providers.values()];
+  }
+
+  private updateWindVolumeOneSelfLateUpdate(
+    provider: RuntimeWindVolumeOneSelf,
+    deltaTime: number
+  ): void {
+    const managerPathId = provider.springManagerPathId;
+    if (managerPathId === null) {
+      return;
+    }
+    const dt = provider.simulationFrameRate > 0 ? 1.0 / provider.simulationFrameRate : deltaTime;
+    for (const bone of this.bones) {
+      if (bone.managerPathId !== managerPathId) {
+        continue;
+      }
+      this.computeWindVolumeOneSelfForce(provider, bone, deltaTime);
+      this.externalForce.copy(bone.gravity).add(this.providerForce);
+      this.updateBoneSpringAndRotation(
+        bone,
+        dt,
+        this.externalForce,
+        bone.isAnimated ? provider.dynamicRatio : 1.0
+      );
+    }
+  }
+
+  private updateBoneSpringAndRotation(
+    bone: RuntimeBone,
+    deltaTime: number,
+    externalForce: THREE.Vector3,
+    dynamicRatio: number
+  ): void {
+    bone.node.parent?.getWorldQuaternion(this.parentRotation);
+    bone.node.getWorldPosition(this.headPosition);
+    this.captureSkinAnimationLocalRotation(bone);
+    cacheUtjSpringBonePosition(bone.state, this.headPosition);
+    updateUtjSpring(bone.state, {
+      headPosition: this.headPosition,
+      parentRotation: this.parentRotation,
+      initialLocalRotation: bone.initialLocalRotation,
+      boneAxis: bone.boneAxis,
+      lengthFallbackDirection: bone.boneAxis.clone().applyQuaternion(
+        bone.node.getWorldQuaternion(new THREE.Quaternion())
+      ),
+      springLength: bone.springLength,
+      stiffnessForce: bone.stiffnessForce,
+      dragForce: bone.dragForce,
+      springForce: bone.springForce,
+      externalForce,
+      deltaTime,
+    });
+
+    this.applyLengthLimits(bone, deltaTime);
+    const tailRadius = Math.abs(bone.radius) * matrixXDirectionLength(bone.node.matrixWorld);
+    const groundHit = bone.collideWithGround
+      ? checkUtjGroundCollision(bone.state, {
         headPosition: this.headPosition,
-        parentRotation: this.parentRotation,
-        initialLocalRotation: bone.initialLocalRotation,
-        boneAxis: bone.boneAxis,
+        springLength: bone.springLength,
+        tailRadius,
+        groundHeight: bone.groundHeight,
         lengthFallbackDirection: bone.boneAxis.clone().applyQuaternion(
           bone.node.getWorldQuaternion(new THREE.Quaternion())
         ),
+        bounce: bone.bounce,
+        friction: bone.friction,
+      })
+      : false;
+    bone.lastCollisionStatus = !groundHit && bone.enableCollision
+      ? checkUtjCollisions(bone.state, {
+        headPosition: this.headPosition,
         springLength: bone.springLength,
-        stiffnessForce: bone.stiffnessForce,
-        dragForce: bone.dragForce,
-        springForce: bone.springForce,
-        externalForce: this.computeExternalForce(bone, deltaTime),
-        deltaTime: dt,
-      });
-
-      this.applyLengthLimits(bone, dt);
-      const tailRadius = Math.max(0, bone.radius) * worldScaleX(bone.node);
-      const groundHit = bone.collideWithGround
-        ? checkUtjGroundCollision(bone.state, {
-          headPosition: this.headPosition,
-          springLength: bone.springLength,
-          tailRadius,
-          groundHeight: bone.groundHeight,
-          lengthFallbackDirection: bone.boneAxis.clone().applyQuaternion(
-            bone.node.getWorldQuaternion(new THREE.Quaternion())
-          ),
-          bounce: bone.bounce,
-          friction: bone.friction,
-        })
-        : false;
-      bone.lastCollisionStatus = !groundHit && bone.enableCollision
-        ? checkUtjCollisions(bone.state, {
-          headPosition: this.headPosition,
-          springLength: bone.springLength,
-          tailRadius,
-          colliders: this.buildWorldColliders(bone.colliders),
-          bounce: bone.bounce,
-          friction: bone.friction,
-        })
-        : 0;
-      bone.lastAngleLimitApplied = bone.enableAngleLimits
-        ? this.applyAngleLimits(bone, dt)
-        : false;
-      this.resetInvalidTipPosition(bone);
-
-      this.applyBoneRotation(bone);
-    }
+        tailRadius,
+        colliders: this.buildWorldColliders(bone.colliders),
+        bounce: bone.bounce,
+        friction: bone.friction,
+      })
+      : 0;
+    bone.lastAngleLimitApplied = bone.enableAngleLimits
+      ? this.applyAngleLimits(bone, deltaTime)
+      : false;
+    this.resetInvalidTipPosition(bone);
+    this.applyBoneRotation(bone, dynamicRatio);
   }
 
   settleCurrentPose(frameCount = 120, deltaTime = 1 / 60): void {
@@ -481,7 +573,7 @@ export class UtjSpringBoneRuntime {
     bone.state.prevTipPos.copy(this.debugAnimatedTip);
   }
 
-  private applyBoneRotation(bone: RuntimeBone): void {
+  private applyBoneRotation(bone: RuntimeBone, dynamicRatio = bone.dynamicRatio): void {
     this.resetInvalidTipPosition(bone);
     this.localRotation.copy(
       computeUtjLocalRotation(
@@ -495,7 +587,7 @@ export class UtjSpringBoneRuntime {
     bone.node.quaternion.copy(lerpQuaternionNormalized(
       bone.skinAnimationLocalRotation,
       this.localRotation,
-      bone.dynamicRatio
+      dynamicRatio
     ));
     bone.lastAppliedLocalRotation.copy(bone.node.quaternion);
     bone.hasAppliedLocalRotation = true;
@@ -621,7 +713,7 @@ export class UtjSpringBoneRuntime {
   }
 
   private applyLengthLimits(bone: RuntimeBone, deltaTime: number): void {
-    if (!bone.enableLengthLimits || bone.lengthLimitTargets.length === 0 || bone.springConstant === 0) {
+    if (!bone.enableLengthLimits || bone.lengthLimitTargets.length === 0) {
       return;
     }
 
@@ -798,7 +890,8 @@ export class UtjSpringBoneRuntime {
 
   private createWorldCollider(collider: RuntimeCollider): UtjCollider | null {
     const shape = collider.source.shape;
-    const enabled = collider.source.enabled !== false &&
+    const componentEnabled = collider.source.enabled !== false;
+    const rendererGatedEnabled = componentEnabled &&
       collider.source.linkedRendererEnabled !== false;
 
     if (shape?.sphere) {
@@ -809,7 +902,7 @@ export class UtjSpringBoneRuntime {
       const localToWorldDirection = makeNormalDirectionMatrix(this.colliderLocalToWorld);
       return {
         kind: "sphere",
-        enabled,
+        enabled: componentEnabled,
         localOffset: new THREE.Vector3(0, 0, 0),
         radius: Math.max(0, shape.sphere.radius ?? 0.01),
         localToWorldMatrix: this.colliderLocalToWorld.clone(),
@@ -826,7 +919,7 @@ export class UtjSpringBoneRuntime {
       this.colliderWorldToLocal.copy(collider.node.matrixWorld).invert();
       return {
         kind: "capsuleLocal",
-        enabled,
+        enabled: rendererGatedEnabled,
         localStart: new THREE.Vector3(0, 0, 0),
         localEnd: vectorFromArray(shape.capsule.tail),
         radius: Math.max(0, shape.capsule.radius ?? 0.01),
@@ -844,7 +937,7 @@ export class UtjSpringBoneRuntime {
       this.colliderWorldToLocal.copy(collider.node.matrixWorld).invert();
       return {
         kind: "panel",
-        enabled,
+        enabled: rendererGatedEnabled,
         width: Math.max(0, shape.panel.width ?? 0),
         height: Math.max(0, shape.panel.height ?? 0),
         localToWorldMatrix: this.colliderLocalToWorld.clone(),
@@ -886,15 +979,17 @@ function createRuntimeBone(
   const initialLocalRotation = node.quaternion.clone();
   const localTipPosition = node.worldToLocal(tailPosition.clone());
   const boneAxis = localTipPosition.lengthSq() <= 0.00001 * 0.00001
-    ? new THREE.Vector3(1, 0, 0)
+    ? new THREE.Vector3(0, 0, 0)
     : localTipPosition.normalize();
   const lengthLimitTargets = lengthLimitTargetNodes.map((targetNode) => ({
     node: targetNode,
     initialLength: targetNode.getWorldPosition(new THREE.Vector3()).distanceTo(tailPosition),
   }));
   const managerSettings = resolveManagerSettings(spring, managerSettingsByPathId);
+  const isAnimated = isBoneAnimated(joint, node, managerSettings);
 
   return {
+    managerPathId: typeof spring.managerPathId === "number" ? spring.managerPathId : null,
     springName: spring.name ?? "spring",
     automaticUpdates: spring.automaticUpdates !== false,
     enabled: spring.enabled !== false && joint.enabled !== false,
@@ -915,19 +1010,20 @@ function createRuntimeBone(
     hasAppliedLocalRotation: false,
     boneAxis,
     springLength,
-    dynamicRatio: resolveBoneDynamicRatio(joint, node, managerSettings),
+    dynamicRatio: isAnimated ? managerSettings.dynamicRatio : 1.0,
+    isAnimated,
     simulationFrameRate: managerSettings.simulationFrameRate,
     slowMotionScale: managerSettings.slowMotionScale,
     bounce: managerSettings.bounce,
     friction: managerSettings.friction,
-    radius: Math.max(0, joint.hitRadius ?? 0.02),
-    stiffnessForce: Math.max(0, joint.rawStiffnessForce ?? 300),
-    dragForce: THREE.MathUtils.clamp(joint.dragForce ?? 0.4, 0, 1),
+    radius: Math.max(0, joint.hitRadius ?? 0.05),
+    stiffnessForce: joint.rawStiffnessForce ?? 300,
+    dragForce: joint.rawDragForce ?? joint.dragForce ?? 0.4,
     springForce: vectorFromRaw(joint.rawSpringForce),
     windInfluence: Math.max(0, joint.rawWindInfluence ?? 1),
-    springConstant: Math.max(0, joint.rawSpringConstant ?? 0.5),
+    springConstant: joint.rawSpringConstant ?? 0.5,
     lengthLimitTargets,
-    angularStiffness: Math.max(0, joint.rawAngularStiffness ?? 0),
+    angularStiffness: Math.max(0, joint.rawAngularStiffness ?? 100),
     pivotNode,
     yAngleLimit: angleLimitFromCandidate(joint.rawAngleLimits?.y),
     zAngleLimit: angleLimitFromCandidate(joint.rawAngleLimits?.z),
@@ -939,11 +1035,36 @@ function createRuntimeBone(
 
 function resolveForceProviders(
   resolution: NodeResolution,
-  spring: CandidateSpring
+  spring: CandidateSpring,
+  cache: Map<string, RuntimeForceProvider>
 ): RuntimeForceProvider[] {
   return (spring.forceProviders ?? [])
-    .map((provider) => createForceProvider(resolution, provider))
+    .map((provider) => {
+      const key = forceProviderCacheKey(provider);
+      const cached = key ? cache.get(key) : undefined;
+      if (cached) {
+        return cached;
+      }
+      const runtimeProvider = createForceProvider(resolution, provider);
+      if (runtimeProvider && key) {
+        cache.set(key, runtimeProvider);
+      }
+      return runtimeProvider;
+    })
     .filter((provider): provider is RuntimeForceProvider => Boolean(provider));
+}
+
+function forceProviderCacheKey(provider: CandidateForceProvider): string | null {
+  if (typeof provider.sourcePathId === "number") {
+    return `path:${provider.sourcePathId}`;
+  }
+  if (provider.nodePath) {
+    return `nodePath:${provider.nodePath}`;
+  }
+  if (provider.nodeName) {
+    return `nodeName:${provider.nodeName}`;
+  }
+  return null;
 }
 
 function createForceProvider(
@@ -964,9 +1085,20 @@ function createForceProvider(
   if (provider.activeInHierarchy === false || provider.activeSelf === false) {
     return null;
   }
+  const dynamicRatio = readFiniteNumber(raw.dynamicRatio ?? raw.DynamicRatio);
+  const simulationFrameRate = readFiniteNumber(raw.simulationFrameRate ?? raw.SimulationFrameRate);
   return {
     kind: "WindVolumeOneSelf",
+    sourcePathId: typeof provider.sourcePathId === "number" ? provider.sourcePathId : null,
     node,
+    springManagerPathId: readFiniteNumber(provider.springManagerPathId) ??
+      readRawObjectPathId(raw, "<SpringManager>k__BackingField") ??
+      readRawObjectPathId(raw, "_SpringManager_k__BackingField") ??
+      readRawObjectPathId(raw, "SpringManager") ??
+      readRawObjectPathId(raw, "springManager"),
+    isActive: readRawBoolean(raw, "isActive", false),
+    dynamicRatio: THREE.MathUtils.clamp(dynamicRatio ?? 0.5, 0, 1),
+    simulationFrameRate: Math.max(0, simulationFrameRate ?? 60),
     weight: readRawNumber(raw, "weight", 0),
     strength: readRawNumber(raw, "strength", 0),
     period: readRawNumber(raw, "period", 0),
@@ -1021,18 +1153,15 @@ function resolveJointColliders(
 
 function worldScaleX(node: THREE.Object3D): number {
   const scale = node.getWorldScale(new THREE.Vector3());
-  return Math.max(Math.abs(scale.x), 0.00001);
+  return scale.x;
 }
 
 function matrixXDirectionLength(matrix: THREE.Matrix4): number {
   const elements = matrix.elements;
-  return Math.max(
-    Math.sqrt(
-      elements[0] * elements[0] +
-      elements[1] * elements[1] +
-      elements[2] * elements[2]
-    ),
-    0.00001
+  return Math.sqrt(
+    elements[0] * elements[0] +
+    elements[1] * elements[1] +
+    elements[2] * elements[2]
   );
 }
 
@@ -1086,6 +1215,22 @@ function getUtjObjectDepth(node: THREE.Object3D): number {
   return depth;
 }
 
+function collectSpringBoneNodes(
+  springs: readonly CandidateSpring[] | undefined,
+  resolution: NodeResolution
+): Set<THREE.Object3D> {
+  const nodes = new Set<THREE.Object3D>();
+  for (const spring of springs ?? []) {
+    for (const joint of spring.joints ?? []) {
+      const node = resolveNode(resolution, joint.nodePath, joint.nodeName);
+      if (node) {
+        nodes.add(node);
+      }
+    }
+  }
+  return nodes;
+}
+
 function computeUtjChildPosition(
   node: THREE.Object3D,
   springBoneNodes: ReadonlySet<THREE.Object3D>
@@ -1093,7 +1238,7 @@ function computeUtjChildPosition(
   node.updateMatrixWorld(true);
   const headPosition = node.getWorldPosition(new THREE.Vector3());
   const right = new THREE.Vector3(1, 0, 0).transformDirection(node.matrixWorld);
-  const fallback = headPosition.clone().addScaledVector(right, 0.1);
+  const fallback = headPosition.clone().addScaledVector(right, -0.1);
   const validChildren = node.children.filter((child) => !springBoneNodes.has(child));
 
   if (validChildren.length === 0) {
@@ -1116,7 +1261,7 @@ function computeUtjChildPosition(
 
   const direction = averagePosition.sub(headPosition);
   if (direction.lengthSq() <= 0.00000001) {
-    return headPosition.clone().addScaledVector(new THREE.Vector3(1, 0, 0), averageDistance);
+    return headPosition.clone();
   }
   return headPosition.clone().addScaledVector(direction.normalize(), averageDistance);
 }
@@ -1247,6 +1392,11 @@ function readRawBoolean(raw: JsonRecord, key: string, fallback: boolean): boolea
   return fallback;
 }
 
+function readRawObjectPathId(raw: JsonRecord, key: string): number | null {
+  const value = asRecord(raw[key] ?? raw[key[0].toUpperCase() + key.slice(1)]);
+  return readFiniteNumber(value?.m_PathID ?? value?.m_pathID ?? value?.pathId);
+}
+
 function calcUtjManagerTimeStep(
   unityDeltaTime: number,
   simulationFrameRate: number,
@@ -1284,8 +1434,8 @@ function addManagerSettingsFromPart(part: JsonRecord | null, result: Map<number,
       animatedBoneNames: new Set<string>(),
       simulationFrameRate: readFiniteNumber(raw?.simulationFrameRate ?? raw?.SimulationFrameRate) ?? 60,
       slowMotionScale: readFiniteNumber(raw?.slowMotionScale ?? raw?.SlowMotionScale) ?? 1,
-      bounce: THREE.MathUtils.clamp(readFiniteNumber(raw?.bounce ?? raw?.Bounce) ?? 0, 0, 1),
-      friction: THREE.MathUtils.clamp(readFiniteNumber(raw?.friction ?? raw?.Friction) ?? 1, 0, 1),
+      bounce: readFiniteNumber(raw?.bounce ?? raw?.Bounce) ?? 0,
+      friction: readFiniteNumber(raw?.friction ?? raw?.Friction) ?? 1,
     });
   }
 }
@@ -1332,18 +1482,16 @@ function resolveManagerSettings(
   };
 }
 
-function resolveBoneDynamicRatio(
+function isBoneAnimated(
   joint: CandidateJoint,
   node: THREE.Object3D,
   settings: ManagerSettings
-): number {
+): boolean {
   if (settings.animatedBoneNames.size === 0) {
-    return 1.0;
+    return false;
   }
   return settings.animatedBoneNames.has(node.name) ||
-    (typeof joint.nodeName === "string" && settings.animatedBoneNames.has(joint.nodeName))
-    ? settings.dynamicRatio
-    : 1.0;
+    (typeof joint.nodeName === "string" && settings.animatedBoneNames.has(joint.nodeName));
 }
 
 function readStringSet(value: unknown): ReadonlySet<string> {

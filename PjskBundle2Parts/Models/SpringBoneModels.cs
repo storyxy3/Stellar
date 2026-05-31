@@ -261,6 +261,8 @@ public sealed record VrmSpringBoneForceProviderCandidate(
     [property: JsonPropertyName("nodePath")] string? NodePath,
     [property: JsonPropertyName("activeSelf")] bool? ActiveSelf,
     [property: JsonPropertyName("activeInHierarchy")] bool? ActiveInHierarchy,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("springManagerPathId")] long? SpringManagerPathId,
     [property: JsonPropertyName("raw")] JsonObject Raw
 );
 
@@ -279,6 +281,7 @@ public sealed record VrmSpringBoneJointCandidate(
     [property: JsonPropertyName("gravityDir")] float[] GravityDir,
     [property: JsonPropertyName("enabled")] bool Enabled,
     [property: JsonPropertyName("rawStiffnessForce")] float? RawStiffnessForce,
+    [property: JsonPropertyName("rawDragForce")] float? RawDragForce,
     [property: JsonPropertyName("rawSpringForce")] SpringVector3? RawSpringForce,
     [property: JsonPropertyName("rawWindInfluence")] float? RawWindInfluence,
     [property: JsonPropertyName("rawAngularStiffness")] float? RawAngularStiffness,

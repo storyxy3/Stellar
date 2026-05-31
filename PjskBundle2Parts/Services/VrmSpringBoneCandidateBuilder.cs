@@ -6,7 +6,7 @@ namespace PjskBundle2Parts.Services;
 public sealed class VrmSpringBoneCandidateBuilder
 {
     private const float DefaultColliderRadius = 0.01f;
-    private const float DefaultJointRadius = 0.02f;
+    private const float DefaultJointRadius = 0.05f;
     private const float DefaultCapsuleHeight = 0.05f;
     private static readonly RuntimeColliderFlagBinding[] RuntimeColliderFlagBindings =
     {
@@ -278,8 +278,8 @@ public sealed class VrmSpringBoneCandidateBuilder
                     DynamicRatio: Clamp01(ReadFloat(manager.Raw, "dynamicRatio") ?? 0.5f),
                     SimulationFrameRate: Math.Max(0, ReadInt(manager.Raw, "simulationFrameRate") ?? 60),
                     SlowMotionScale: ReadFloat(manager.Raw, "slowMotionScale") ?? 1f,
-                    Bounce: Clamp01(ReadFloat(manager.Raw, "bounce") ?? 0f),
-                    Friction: Clamp01(ReadFloat(manager.Raw, "friction") ?? 1f),
+                    Bounce: ReadFloat(manager.Raw, "bounce") ?? 0f,
+                    Friction: ReadFloat(manager.Raw, "friction") ?? 1f,
                     AnimatedBoneNames: ReadStringList(manager.Raw, "animatedBoneNames"),
                     RawGravity: ReadVector3(manager.Raw, "gravity"),
                     ForceProviders: BuildForceProviders(part, fallbackForceProviders, manager),
@@ -459,6 +459,7 @@ public sealed class VrmSpringBoneCandidateBuilder
             GravityDir: gravityDir,
             Enabled: ReadBool(bone.Raw, "m_Enabled") ?? true,
             RawStiffnessForce: bone.StiffnessForce,
+            RawDragForce: bone.DragForce,
             RawSpringForce: bone.SpringForce,
             RawWindInfluence: bone.WindInfluence,
             RawAngularStiffness: ReadFloat(bone.Raw, "angularStiffness"),
@@ -483,12 +484,9 @@ public sealed class VrmSpringBoneCandidateBuilder
         SpringMonoBehaviourEntry manager
     )
     {
-        var providersByPathId = part.ForceProviders.ToDictionary(provider => provider.PathId);
-        var providerPathIds = ReadObjectPathIds(manager.Raw, "forceProviders").ToList();
-        var providers = providerPathIds.Count > 0
-            ? providerPathIds.Select(pathId => providersByPathId.TryGetValue(pathId, out var provider) ? provider : null)
-            : fallbackForceProviders;
-        return providers
+        _ = part;
+        _ = manager;
+        return fallbackForceProviders
             .Where(provider => provider is not null)
             .Cast<SpringMonoBehaviourEntry>()
             .Select(provider => new VrmSpringBoneForceProviderCandidate(
@@ -498,9 +496,29 @@ public sealed class VrmSpringBoneCandidateBuilder
                 NodePath: provider.GameObject?.TransformPath,
                 ActiveSelf: provider.GameObject?.ActiveSelf,
                 ActiveInHierarchy: provider.GameObject?.ActiveInHierarchy,
+                SpringManagerPathId: ReadWindVolumeSpringManagerPathId(provider.Raw),
                 Raw: provider.Raw
             ))
             .ToList();
+    }
+
+    private static long? ReadWindVolumeSpringManagerPathId(JsonObject raw)
+    {
+        foreach (var key in new[]
+                 {
+                     "<SpringManager>k__BackingField",
+                     "_SpringManager_k__BackingField",
+                     "SpringManager",
+                     "springManager",
+                 })
+        {
+            var pathId = ReadObjectPathId(raw, key);
+            if (pathId is not null)
+            {
+                return pathId;
+            }
+        }
+        return null;
     }
 
     private static VrmSpringBoneObjectRefCandidate? ToCandidateObjectRef(SpringObjectRef? source)
@@ -690,6 +708,16 @@ public sealed class VrmSpringBoneCandidateBuilder
                 yield return pathId;
             }
         }
+    }
+
+    private static long? ReadObjectPathId(JsonObject raw, string key)
+    {
+        if (!TryGetProperty(raw, key, out var value) || value is not JsonObject obj)
+        {
+            return null;
+        }
+        var pathId = ReadLong(obj, "m_PathID") ?? 0;
+        return pathId != 0 ? pathId : null;
     }
 
     private static VrmSpringBoneAxisLimitCandidate? ReadAxisLimit(

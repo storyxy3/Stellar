@@ -60,13 +60,6 @@ public sealed class SpringBoneExporter
             .Where(pathId => pathId is not null)
             .Select(pathId => pathId!.Value)
             .ToHashSet();
-        var managerReferencedForceProviderPathIds = allMonoBehaviours
-            .Where(entry => string.Equals(entry.ScriptName, "SpringManager", StringComparison.OrdinalIgnoreCase))
-            .SelectMany(entry => ReadObjectArray(entry.Raw, "forceProviders"))
-            .Select(value => ResolveObjectRef(value, objectRefsByPathId)?.PathId)
-            .Where(pathId => pathId is not null)
-            .Select(pathId => pathId!.Value)
-            .ToHashSet();
         var monoBehaviours = allMonoBehaviours
             .Where(entry => SpringScriptNames.Contains(entry.ScriptName))
             .ToList();
@@ -113,13 +106,8 @@ public sealed class SpringBoneExporter
             .Where(entry => string.Equals(entry.ScriptName, "SpringPanelCollider", StringComparison.OrdinalIgnoreCase))
             .Select(entry => BuildSpringColliderEntry(entry, objectRefsByPathId, rendererEnabledByPathId))
             .ToList();
-        var forceProviderEntries = managerReferencedForceProviderPathIds.Count > 0
-            ? managerReferencedForceProviderPathIds
-                .Select(pathId => monoByPathId.TryGetValue(pathId, out var entry) ? entry : null)
-                .Where(entry => entry is not null)
-                .Cast<SpringMonoRaw>()
-            : allMonoBehaviours
-                .Where(entry => string.Equals(entry.ScriptName, "WindVolumeOneSelf", StringComparison.OrdinalIgnoreCase));
+        var forceProviderEntries = allMonoBehaviours
+            .Where(entry => string.Equals(entry.ScriptName, "WindVolumeOneSelf", StringComparison.OrdinalIgnoreCase));
         var forceProviders = forceProviderEntries
             .Where(entry => entry is not null)
             .Cast<SpringMonoRaw>()

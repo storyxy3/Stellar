@@ -228,7 +228,7 @@ export function fixBoneLength(
 }
 
 export function applyUtjLengthLimits(input: UtjApplyLengthLimitsInput): void {
-  if (input.targets.length === 0 || input.springConstant === 0) {
+  if (input.targets.length === 0) {
     return;
   }
 
@@ -407,10 +407,12 @@ export function checkPanelCollisionAndReact(
       }
     } else if (Math.abs(localTail.y) > halfHeight) {
       const edgeY = localTail.y >= 0 ? halfHeight : -halfHeight;
-      const normal = normalizeOrFallback(
-        new THREE.Vector3(0, localTail.y - edgeY, localTail.z),
-        new THREE.Vector3(0, 0, 1)
-      );
+      const normal = new THREE.Vector3(0, localTail.y - edgeY, localTail.z);
+      if (normal.lengthSq() <= EPSILON * EPSILON) {
+        normal.set(0, 0, 0);
+      } else {
+        normal.normalize();
+      }
       localResult.set(
         localTail.x + normal.x * localTailRadius,
         edgeY + normal.y * localTailRadius,
@@ -419,10 +421,12 @@ export function checkPanelCollisionAndReact(
       status = UtjColliderStatus.TailCollision;
     } else {
       const edgeX = localTail.x >= 0 ? halfWidth : -halfWidth;
-      const normal = normalizeOrFallback(
-        new THREE.Vector3(localTail.x - edgeX, 0, localTail.z),
-        new THREE.Vector3(0, 0, 1)
-      );
+      const normal = new THREE.Vector3(localTail.x - edgeX, 0, localTail.z);
+      if (normal.lengthSq() <= EPSILON * EPSILON) {
+        normal.set(0, 0, 0);
+      } else {
+        normal.normalize();
+      }
       localResult.set(
         edgeX + normal.x * localTailRadius,
         localTail.y + normal.y * localTailRadius,
@@ -464,6 +468,7 @@ export function checkCollisionWithAlignedPlaneAndReact(
 
   const headUp = getAxis(localHeadPosition, upAxis);
   if (headUp + localLength <= localTailRadius) {
+    localTailPosition.copy(localHeadPosition);
     setAxis(localTailPosition, upAxis, headUp + localLength);
     return UtjColliderStatus.HeadIsEmbedded;
   }
@@ -478,9 +483,10 @@ export function checkCollisionWithAlignedPlaneAndReact(
     const sideScale = Math.sqrt(localLength * localLength - height * height) / sideLength;
     setAxis(localTailPosition, sideA, getAxis(localHeadPosition, sideA) + a * sideScale);
     setAxis(localTailPosition, sideB, getAxis(localHeadPosition, sideB) + b * sideScale);
+    setAxis(localTailPosition, upAxis, localTailRadius);
+  } else {
+    localTailPosition.copy(localHeadPosition);
   }
-
-  setAxis(localTailPosition, upAxis, localTailRadius);
   return UtjColliderStatus.TailCollision;
 }
 
@@ -710,7 +716,7 @@ export function checkLocalYAxisCapsuleCollisionAndReact(
       capsuleRadius,
       Math.abs(lossyScaleX) * capsuleRadius,
       {
-        headEmbeddedFallback: new THREE.Vector3(1, 0, 0),
+        headEmbeddedFallback: new THREE.Vector3(0, 0, 0),
         noIntersectionStatus: UtjColliderStatus.TailCollision,
       }
     );
@@ -741,7 +747,7 @@ export function checkLocalCylinderCollisionAndReact(
   }
 
   const xzLength = Math.sqrt(xzLengthSq);
-  const normalX = xzLength > EPSILON ? localTailPosition.x / xzLength : 1.0;
+  const normalX = xzLength > EPSILON ? localTailPosition.x / xzLength : 0.0;
   const normalZ = xzLength > EPSILON ? localTailPosition.z / xzLength : 0.0;
   const tailPosition = new THREE.Vector3(
     radiusB * normalX,
@@ -820,7 +826,7 @@ export function applyUtjCollisionVelocityResponse(
   const normalVelocity = normal.clone().multiplyScalar(velocity.dot(normal));
   const tangentVelocity = velocity.sub(normalVelocity);
   const correctedVelocity = tangentVelocity
-    .multiplyScalar(Math.max(0, 1.0 - friction))
+    .multiplyScalar(1.0 - friction)
     .sub(normalVelocity.multiplyScalar(bounce));
   if (correctedVelocity.lengthSq() <= 0.0001) {
     state.prevTipPos.copy(state.currTipPos);
@@ -847,12 +853,21 @@ export function constrainUtjAngleLimit(input: UtjConstrainVectorInput): boolean 
   const sideForward = vector.clone().sub(upComponent);
   const sideForwardLength = sideForward.length();
   const sideForwardDirection = sideForward.multiplyScalar(1.0 / sideForwardLength);
-  const sideDot = THREE.MathUtils.clamp(input.basisSide.dot(sideForwardDirection), -1, 1);
+  const rawSideDot = input.basisSide.dot(sideForwardDirection);
+  const sideDotMax = Number.isNaN(rawSideDot) ? 1.0 : Math.min(rawSideDot, 1.0);
+  const sideDot = rawSideDot < -1.0 ? -1.0 : sideDotMax;
   const angle = Math.asin(sideDot) * 57.296;
   const easedAngle = angle - angle * input.springStrength * input.deltaTime * input.deltaTime;
-  const clampedAngle = THREE.MathUtils.clamp(easedAngle, input.limit.min, input.limit.max);
+  const easedAtMostMax = easedAngle <= input.limit.max ? easedAngle : input.limit.max;
+  const clampedAngle = easedAngle < input.limit.min ? input.limit.min : easedAtMostMax;
   const bound = clampedAngle >= 0 ? input.limit.max : input.limit.min;
-  const ratio = Math.abs(bound) <= 0.0001 ? 0 : THREE.MathUtils.clamp(clampedAngle / bound, 0, 1);
+  let ratio = 0;
+  if (bound < -0.0001 || bound > 0.0001) {
+    const rawRatio = clampedAngle / bound;
+    if (rawRatio >= 0) {
+      ratio = Math.min(rawRatio, 1.0);
+    }
+  }
   const limitedAngle = bound * ratio;
   const radians = limitedAngle * 0.017453;
   const limitedSideForward = input.basisSide
