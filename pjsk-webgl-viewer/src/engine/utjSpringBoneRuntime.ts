@@ -217,7 +217,7 @@ export function fixBoneLength(
 ): void {
   const direction = tailPosition.clone().sub(headPosition);
   const distance = direction.length();
-  if (distance <= EPSILON) {
+  if (distance <= SPRING_LENGTH_EPSILON) {
     direction.copy(fallbackDirection).normalize();
     result.copy(headPosition).addScaledVector(direction, minLength);
     return;

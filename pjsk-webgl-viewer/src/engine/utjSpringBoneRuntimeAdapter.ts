@@ -175,6 +175,7 @@ type RuntimeBone = {
   yAngleLimit: UtjAngleLimit | null;
   zAngleLimit: UtjAngleLimit | null;
   colliders: RuntimeCollider[];
+  angleLimitForwardSign: number;
   lastCollisionStatus: number;
   lastAngleLimitApplied: boolean;
 };
@@ -343,7 +344,7 @@ export class UtjSpringBoneRuntime {
     }
 
     const bones: RuntimeBone[] = [];
-    const springBoneNodes = collectSpringBoneNodes(draft.springs, resolution);
+    const childExclusionNodes = collectSpringBoneChildExclusionNodes(draft.springs, resolution);
     const forceProviderCache = new Map<string, RuntimeForceProvider>();
     for (const spring of draft.springs) {
       const joints = spring.joints ?? [];
@@ -360,13 +361,13 @@ export class UtjSpringBoneRuntime {
           continue;
         }
 
-        const pivotNode = resolveNode(resolution, joint.pivotNodePath, joint.pivotNodeName);
+        const pivotNode = resolveSpringBonePivotNode(resolution, joint, node);
 
         const runtimeBone = createRuntimeBone(
           spring,
           joint,
           node,
-          computeUtjChildPosition(node, springBoneNodes),
+          computeUtjChildPosition(node, childExclusionNodes),
           pivotNode,
           resolveLengthLimitTargets(resolution, joint),
           forceProviders,
@@ -734,15 +735,15 @@ export class UtjSpringBoneRuntime {
       return false;
     }
 
-    const pivot = bone.pivotNode ?? bone.node.parent ?? bone.node;
+    const pivot = bone.pivotNode;
+    if (!pivot) {
+      return false;
+    }
 
     pivot.updateMatrixWorld(true);
     this.angleVector.copy(bone.state.currTipPos).sub(bone.state.cachedPosition);
 
-    // UTJ's decompiled angle limit uses pivot.Left (-X) as the neutral forward.
-    // Exported GLB spring chains are stored on +X, so this is the world-space
-    // equivalent of flipping local X before and after ConstrainVector.
-    const forward = new THREE.Vector3(1, 0, 0).transformDirection(pivot.matrixWorld);
+    const forward = new THREE.Vector3(bone.angleLimitForwardSign, 0, 0).transformDirection(pivot.matrixWorld);
     const back = new THREE.Vector3(0, 0, -1).transformDirection(pivot.matrixWorld);
     const down = new THREE.Vector3(0, -1, 0).transformDirection(pivot.matrixWorld);
 
@@ -990,6 +991,7 @@ function createRuntimeBone(
   }));
   const managerSettings = resolveManagerSettings(spring, managerSettingsByPathId);
   const isAnimated = isBoneAnimated(joint, node, managerSettings);
+  const angleLimitForwardSign = computeAngleLimitForwardSign(pivotNode, direction);
 
   return {
     managerPathId: typeof spring.managerPathId === "number" ? spring.managerPathId : null,
@@ -1031,9 +1033,23 @@ function createRuntimeBone(
     yAngleLimit: angleLimitFromCandidate(joint.rawAngleLimits?.y),
     zAngleLimit: angleLimitFromCandidate(joint.rawAngleLimits?.z),
     colliders,
+    angleLimitForwardSign,
     lastCollisionStatus: 0,
     lastAngleLimitApplied: false,
   };
+}
+
+function computeAngleLimitForwardSign(
+  pivotNode: THREE.Object3D | null,
+  worldDirection: THREE.Vector3
+): number {
+  if (!pivotNode || worldDirection.lengthSq() <= 0.00000001) {
+    return -1;
+  }
+  pivotNode.updateMatrixWorld(true);
+  const pivotRotation = pivotNode.getWorldQuaternion(new THREE.Quaternion()).invert();
+  const pivotLocalDirection = worldDirection.clone().normalize().applyQuaternion(pivotRotation);
+  return pivotLocalDirection.x >= 0 ? 1 : -1;
 }
 
 function resolveForceProviders(
@@ -1122,6 +1138,16 @@ function resolveLengthLimitTargets(
   return (joint.lengthLimitTargets ?? [])
     .map((target) => resolveNode(resolution, target.nodePath, target.nodeName))
     .filter((node): node is THREE.Object3D => Boolean(node));
+}
+
+function resolveSpringBonePivotNode(
+  resolution: NodeResolution,
+  joint: CandidateJoint,
+  node: THREE.Object3D
+): THREE.Object3D {
+  return resolveNode(resolution, joint.pivotNodePath, joint.pivotNodeName)
+    ?? node.parent
+    ?? node;
 }
 
 function angleLimitFromCandidate(limit?: CandidateAngleLimit | null): UtjAngleLimit | null {
@@ -1218,16 +1244,16 @@ function getUtjObjectDepth(node: THREE.Object3D): number {
   return depth;
 }
 
-function collectSpringBoneNodes(
+function collectSpringBoneChildExclusionNodes(
   springs: readonly CandidateSpring[] | undefined,
   resolution: NodeResolution
 ): Set<THREE.Object3D> {
   const nodes = new Set<THREE.Object3D>();
   for (const spring of springs ?? []) {
     for (const joint of spring.joints ?? []) {
-      const node = resolveNode(resolution, joint.nodePath, joint.nodeName);
-      if (node) {
-        nodes.add(node);
+      const pivotNode = resolveNode(resolution, joint.pivotNodePath, joint.pivotNodeName);
+      if (pivotNode) {
+        nodes.add(pivotNode);
       }
     }
   }
@@ -1236,13 +1262,16 @@ function collectSpringBoneNodes(
 
 function computeUtjChildPosition(
   node: THREE.Object3D,
-  springBoneNodes: ReadonlySet<THREE.Object3D>
+  childExclusionNodes: ReadonlySet<THREE.Object3D>
 ): THREE.Vector3 {
   node.updateMatrixWorld(true);
   const headPosition = node.getWorldPosition(new THREE.Vector3());
   const right = new THREE.Vector3(1, 0, 0).transformDirection(node.matrixWorld);
   const fallback = headPosition.clone().addScaledVector(right, -0.1);
-  const validChildren = node.children.filter((child) => !springBoneNodes.has(child));
+  const validChildren = node.children.filter((child) =>
+    !childExclusionNodes.has(child) &&
+    !child.name.endsWith("_spring_tail")
+  );
 
   if (validChildren.length === 0) {
     return fallback;
@@ -1463,8 +1492,7 @@ function resolveManagerSettings(
   const slowMotionScale = readFiniteNumber(spring.slowMotionScale) ?? settings?.slowMotionScale ?? 1;
   const bounce = readFiniteNumber(spring.bounce) ?? settings?.bounce ?? 0;
   const friction = readFiniteNumber(spring.friction) ?? settings?.friction ?? 1;
-  // SetupSpringBone calls UpdateBoneIsAnimatedStates with an empty List<string>.
-  const animatedBoneNames = new Set<string>();
+  const animatedBoneNames = readStringSet(spring.animatedBoneNames);
   if (typeof spring.dynamicRatio === "number" && Number.isFinite(spring.dynamicRatio)) {
     return {
       dynamicRatio: THREE.MathUtils.clamp(spring.dynamicRatio, 0, 1),
@@ -1493,8 +1521,23 @@ function isBoneAnimated(
   if (settings.animatedBoneNames.size === 0) {
     return false;
   }
-  return settings.animatedBoneNames.has(node.name) ||
-    (typeof joint.nodeName === "string" && settings.animatedBoneNames.has(joint.nodeName));
+  return containsAnimatedBoneName(node.name, settings.animatedBoneNames) ||
+    (typeof joint.nodeName === "string" && containsAnimatedBoneName(joint.nodeName, settings.animatedBoneNames));
+}
+
+function containsAnimatedBoneName(
+  nodeName: string,
+  animatedBoneNames: ReadonlySet<string>
+): boolean {
+  if (animatedBoneNames.has(nodeName)) {
+    return true;
+  }
+  for (const animatedBoneName of animatedBoneNames) {
+    if (animatedBoneName.length > 0 && nodeName.includes(animatedBoneName)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function readStringSet(value: unknown): ReadonlySet<string> {

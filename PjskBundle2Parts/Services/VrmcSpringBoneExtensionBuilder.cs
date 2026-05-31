@@ -46,7 +46,9 @@ public sealed class VrmcSpringBoneExtensionBuilder
             nodes.Add(new JsonObject
             {
                 ["name"] = tailName,
-                ["translation"] = new JsonArray(0.01f, 0f, 0f),
+                // Matches UTJ.SpringBone.ComputeChildPosition's no-child fallback:
+                // localTransform.position - localTransform.right * 0.1.
+                ["translation"] = new JsonArray(-0.1f, 0f, 0f),
                 ["rotation"] = new JsonArray(0f, 0f, 0f, 1f),
                 ["scale"] = new JsonArray(1f, 1f, 1f),
             });
