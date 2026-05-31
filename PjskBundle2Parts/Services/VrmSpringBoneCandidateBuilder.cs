@@ -8,6 +8,15 @@ public sealed class VrmSpringBoneCandidateBuilder
     private const float DefaultColliderRadius = 0.01f;
     private const float DefaultJointRadius = 0.02f;
     private const float DefaultCapsuleHeight = 0.05f;
+    private static readonly RuntimeColliderFlagBinding[] RuntimeColliderFlagBindings =
+    {
+        new(0x01, "Hip", "CL_Hip"),
+        new(0x02, "Chest", "CL_Chest"),
+        new(0x04, "L_Arm", "CL_Left_Arm"),
+        new(0x08, "R_Arm", "CL_Right_Arm"),
+        new(0x10, "L_Elbow", "CL_Left_Elbow"),
+        new(0x20, "R_Elbow", "CL_Right_Elbow"),
+    };
 
     public VrmSpringBoneCandidate Build(CombinedSpringBoneExport raw)
     {
@@ -19,11 +28,15 @@ public sealed class VrmSpringBoneCandidateBuilder
 
         AddColliders(raw.Body, colliders, colliderIndexByKey, warnings);
         AddColliders(raw.Head, colliders, colliderIndexByKey, warnings);
+        var allForceProviders = raw.Body.ForceProviders
+            .Concat(raw.Head.ForceProviders)
+            .ToList();
 
         var bodySpringCount = AddSprings(
             raw.Body,
             colliderIndexByKey,
             null,
+            allForceProviders,
             colliderGroups,
             springs,
             warnings
@@ -32,6 +45,7 @@ public sealed class VrmSpringBoneCandidateBuilder
             raw.Head,
             colliderIndexByKey,
             raw.Body,
+            allForceProviders,
             colliderGroups,
             springs,
             warnings
@@ -96,10 +110,17 @@ public sealed class VrmSpringBoneCandidateBuilder
             );
         }
 
-        if (part.PanelColliders.Count > 0)
+        foreach (var collider in part.PanelColliders)
         {
+            AddCollider(
+                part.PartKind,
+                collider,
+                BuildPanelShape(collider),
+                colliders,
+                colliderIndexByKey
+            );
             warnings.Add(
-                $"{part.PartKind}: SpringPanelCollider is present but VRM springBone has no direct panel collider shape; panel colliders were not mapped."
+                $"{part.PartKind}: SpringPanelCollider {BuildObjectName(collider.GameObject, collider.ScriptName, collider.PathId)} was preserved for PJSK runtime; VRMC_springBone has no direct panel collider shape."
             );
         }
     }
@@ -126,6 +147,10 @@ public sealed class VrmSpringBoneCandidateBuilder
             Name: $"{partKind}:{name}",
             SourcePathId: collider.PathId,
             ScriptName: collider.ScriptName,
+            Enabled: (ReadBool(collider.Raw, "m_Enabled") ?? true) &&
+                collider.LinkedRendererEnabled != false,
+            LinkedRenderer: ToCandidateObjectRef(collider.LinkedRenderer),
+            LinkedRendererEnabled: collider.LinkedRendererEnabled,
             Node: null,
             NodeName: collider.GameObject?.Name,
             NodePath: collider.GameObject?.TransformPath,
@@ -138,6 +163,7 @@ public sealed class VrmSpringBoneCandidateBuilder
         SpringBoneExport part,
         IReadOnlyDictionary<SpringColliderKey, int> colliderIndexByKey,
         SpringBoneExport? bodyPartForInferredColliders,
+        IReadOnlyList<SpringMonoBehaviourEntry> fallbackForceProviders,
         List<VrmSpringBoneColliderGroupCandidate> colliderGroups,
         List<VrmSpringBoneSpringCandidate> springs,
         List<string> warnings
@@ -148,21 +174,7 @@ public sealed class VrmSpringBoneCandidateBuilder
 
         foreach (var manager in part.Managers)
         {
-            var managerBones = ReadObjectPathIds(manager.Raw, "springBones")
-                .Select(pathId =>
-                {
-                    if (bonesByPathId.TryGetValue(pathId, out var bone))
-                    {
-                        return bone;
-                    }
-                    warnings.Add(
-                        $"{part.PartKind}: SpringManager {manager.PathId} references missing SpringBone PathID {pathId}."
-                    );
-                    return null;
-                })
-                .Where(bone => bone is not null)
-                .Cast<SpringBoneEntry>()
-                .ToList();
+            var managerBones = ResolveRuntimeManagerBones(part, manager, bonesByPathId, warnings);
 
             foreach (var chain in BuildChains(managerBones))
             {
@@ -172,7 +184,7 @@ public sealed class VrmSpringBoneCandidateBuilder
 
                 foreach (var bone in chain.Bones)
                 {
-                    var colliderPathIds = ReadColliderPathIds(bone.Raw).Distinct().ToList();
+                    var colliderPathIds = ReadColliderPathIds(bone.Raw).ToList();
                     var colliderIndexes = new List<int>();
 
                     foreach (var colliderPathId in colliderPathIds)
@@ -218,31 +230,34 @@ public sealed class VrmSpringBoneCandidateBuilder
                     continue;
                 }
 
-                var inferredColliderGroup = BuildInferredHeadHairColliderGroup(
-                    part,
-                    chain,
-                    bodyPartForInferredColliders,
-                    colliderIndexByKey,
-                    colliderGroups.Count,
-                    warnings
-                );
-                if (inferredColliderGroup is not null)
+                foreach (var bone in chain.Bones)
                 {
-                    colliderGroups.Add(inferredColliderGroup);
-                    springColliderGroups.Add(inferredColliderGroup.Index);
-                    foreach (var bone in chain.Bones)
+                    var flag = ReadInt(bone.Raw, "colliderFlag") ?? 0;
+                    if (flag == 0)
                     {
-                        var flag = ReadInt(bone.Raw, "colliderFlag") ?? 0;
-                        if (flag == 0)
-                        {
-                            continue;
-                        }
-
-                        jointColliderGroups[bone.PathId] = jointColliderGroups[bone.PathId]
-                            .Concat(new[] { inferredColliderGroup.Index })
-                            .Distinct()
-                            .ToList();
+                        continue;
                     }
+
+                    var runtimeColliderFlagGroup = BuildRuntimeColliderFlagGroup(
+                        part,
+                        chain,
+                        bone,
+                        flag,
+                        bodyPartForInferredColliders,
+                        colliderIndexByKey,
+                        colliderGroups.Count,
+                        warnings
+                    );
+                    if (runtimeColliderFlagGroup is null)
+                    {
+                        continue;
+                    }
+
+                    colliderGroups.Add(runtimeColliderFlagGroup);
+                    springColliderGroups.Add(runtimeColliderFlagGroup.Index);
+                    jointColliderGroups[bone.PathId] = jointColliderGroups[bone.PathId]
+                        .Concat(new[] { runtimeColliderFlagGroup.Index })
+                        .ToList();
                 }
 
                 var springIndex = springs.Count;
@@ -251,6 +266,23 @@ public sealed class VrmSpringBoneCandidateBuilder
                     Name: $"{part.PartKind}:{chain.RootName}",
                     PartKind: part.PartKind,
                     SourceManagerPathId: manager.PathId,
+                    Enabled: ReadBool(manager.Raw, "m_Enabled") ?? true,
+                    AutomaticUpdates: ReadBool(manager.Raw, "automaticUpdates") ?? true,
+                    EnableLengthLimits: ReadBool(manager.Raw, "enableLengthLimits") ?? true,
+                    EnableAngleLimits: ReadBool(manager.Raw, "enableAngleLimits") ?? true,
+                    EnableCollision: ReadBool(manager.Raw, "enableCollision") ?? true,
+                    CollideWithGround: ReadBool(manager.Raw, "collideWithGround") ?? true,
+                    GroundHeight: ReadFloat(manager.Raw, "groundHeight") ?? 0f,
+                    IsSumOfForcesOnBone: ReadBool(manager.Raw, "isSumOfForcesOnBone") ?? true,
+                    IsPaused: ReadBool(manager.Raw, "isPaused") ?? false,
+                    DynamicRatio: Clamp01(ReadFloat(manager.Raw, "dynamicRatio") ?? 0.5f),
+                    SimulationFrameRate: Math.Max(0, ReadInt(manager.Raw, "simulationFrameRate") ?? 60),
+                    SlowMotionScale: ReadFloat(manager.Raw, "slowMotionScale") ?? 1f,
+                    Bounce: Clamp01(ReadFloat(manager.Raw, "bounce") ?? 0f),
+                    Friction: Clamp01(ReadFloat(manager.Raw, "friction") ?? 1f),
+                    AnimatedBoneNames: ReadStringList(manager.Raw, "animatedBoneNames"),
+                    RawGravity: ReadVector3(manager.Raw, "gravity"),
+                    ForceProviders: BuildForceProviders(part, fallbackForceProviders, manager),
                     Center: null,
                     CenterName: manager.GameObject?.Name,
                     CenterPath: manager.GameObject?.TransformPath,
@@ -264,109 +296,123 @@ public sealed class VrmSpringBoneCandidateBuilder
         return springs.Count - springCountBefore;
     }
 
-    private static VrmSpringBoneColliderGroupCandidate? BuildInferredHeadHairColliderGroup(
+    private static IReadOnlyList<SpringBoneEntry> ResolveRuntimeManagerBones(
+        SpringBoneExport part,
+        SpringMonoBehaviourEntry manager,
+        IReadOnlyDictionary<long, SpringBoneEntry> bonesByPathId,
+        List<string> warnings
+    )
+    {
+        var managerPath = manager.GameObject?.TransformPath;
+        if (!string.IsNullOrWhiteSpace(managerPath))
+        {
+            var runtimeBones = part.Bones
+                .Where(bone => IsSameOrDescendant(bone.GameObject?.TransformPath, managerPath))
+                .OrderBy(bone => PathDepth(bone.GameObject?.TransformPath))
+                .ThenBy(bone => bone.GameObject?.TransformPath, StringComparer.Ordinal)
+                .ToList();
+
+            if (runtimeBones.Count == 0)
+            {
+                warnings.Add(
+                    $"{part.PartKind}: SpringManager {manager.PathId} has no SpringBone under {managerPath}; runtime FindSpringBones(true) would return none."
+                );
+            }
+
+            return runtimeBones;
+        }
+
+        warnings.Add(
+            $"{part.PartKind}: SpringManager {manager.PathId} has no transform path; falling back to serialized springBones."
+        );
+        return ReadSerializedManagerBones(part, manager, bonesByPathId, warnings);
+    }
+
+    private static IReadOnlyList<SpringBoneEntry> ReadSerializedManagerBones(
+        SpringBoneExport part,
+        SpringMonoBehaviourEntry manager,
+        IReadOnlyDictionary<long, SpringBoneEntry> bonesByPathId,
+        List<string> warnings
+    )
+    {
+        return ReadObjectPathIds(manager.Raw, "springBones")
+            .Select(pathId =>
+            {
+                if (bonesByPathId.TryGetValue(pathId, out var bone))
+                {
+                    return bone;
+                }
+                warnings.Add(
+                    $"{part.PartKind}: SpringManager {manager.PathId} references missing SpringBone PathID {pathId}."
+                );
+                return null;
+            })
+            .Where(bone => bone is not null)
+            .Cast<SpringBoneEntry>()
+            .ToList();
+    }
+
+    private static VrmSpringBoneColliderGroupCandidate? BuildRuntimeColliderFlagGroup(
         SpringBoneExport part,
         SpringBoneChain chain,
+        SpringBoneEntry bone,
+        int colliderFlag,
         SpringBoneExport? bodyPart,
         IReadOnlyDictionary<SpringColliderKey, int> colliderIndexByKey,
         int groupIndex,
         List<string> warnings
     )
     {
-        if (!string.Equals(part.PartKind, "Head", StringComparison.OrdinalIgnoreCase) ||
-            bodyPart is null ||
-            !chain.Bones.Any(IsHairSpringBone))
-        {
-            return null;
-        }
+        var colliderSourcePart = bodyPart ?? part;
 
-        var colliderFlag = chain.Bones
-            .Select(bone => ReadInt(bone.Raw, "colliderFlag") ?? 0)
-            .Aggregate(0, (current, flag) => current | flag);
-        if (colliderFlag == 0)
-        {
-            return null;
-        }
-
-        var sourceColliders = bodyPart.SphereColliders
-            .Concat(bodyPart.CapsuleColliders)
-            .Where(collider => MatchesInferredHeadHairCollider(collider, colliderFlag))
+        var matchedBindings = RuntimeColliderFlagBindings
+            .Where(binding => (colliderFlag & binding.Mask) != 0)
+            .ToList();
+        var sourceColliders = colliderSourcePart.CapsuleColliders
+            .Concat(colliderSourcePart.SphereColliders)
+            .Where(collider => MatchesRuntimeColliderFlag(collider, matchedBindings))
             .ToList();
         var colliderIndexes = sourceColliders
             .Select(collider => colliderIndexByKey.TryGetValue(
-                new SpringColliderKey(bodyPart.PartKind, collider.PathId),
+                new SpringColliderKey(colliderSourcePart.PartKind, collider.PathId),
                 out var index)
                     ? index
                     : (int?)null)
             .Where(index => index is not null)
             .Select(index => index!.Value)
-            .Distinct()
             .ToList();
 
         if (colliderIndexes.Count == 0)
         {
+            var prefixes = string.Join(", ", matchedBindings.Select(binding => binding.Prefix));
             warnings.Add(
-                $"{part.PartKind}: Spring chain {chain.RootName} has colliderFlag {colliderFlag}, but no body colliders matched the inferred upper-body collision set."
+                $"{part.PartKind}: Spring chain {chain.RootName} has colliderFlag {colliderFlag}, but no body colliders matched runtime CL_* prefixes [{prefixes}]."
             );
             return null;
         }
 
         var sourcePathIds = sourceColliders
             .Select(collider => collider.PathId)
-            .Distinct()
             .ToList();
-        var sourceSpringBonePathId = chain.Bones
-            .FirstOrDefault(bone => (ReadInt(bone.Raw, "colliderFlag") ?? 0) != 0)
-            ?.PathId ?? 0;
 
         return new VrmSpringBoneColliderGroupCandidate(
             Index: groupIndex,
-            Name: $"{part.PartKind}:{chain.RootName}:colliderFlag:{colliderFlag}:body_upper",
-            PartKind: bodyPart.PartKind,
-            SourceSpringBonePathId: sourceSpringBonePathId,
+            Name: $"{part.PartKind}:{chain.RootName}:{BuildObjectName(bone.GameObject, bone.ScriptName, bone.PathId)}:colliderFlag:{colliderFlag}:runtime_body",
+            PartKind: colliderSourcePart.PartKind,
+            SourceSpringBonePathId: bone.PathId,
             Colliders: colliderIndexes,
             SourceColliderPathIds: sourcePathIds
         );
     }
 
-    private static bool IsHairSpringBone(SpringBoneEntry bone)
-    {
-        return ContainsOrdinalIgnoreCase(bone.GameObject?.Name, "hair") ||
-            ContainsOrdinalIgnoreCase(bone.PivotNode?.Name, "hair") ||
-            ContainsOrdinalIgnoreCase(bone.GameObject?.TransformPath, "hair") ||
-            ContainsOrdinalIgnoreCase(bone.PivotNode?.TransformPath, "hair");
-    }
-
-    private static bool MatchesInferredHeadHairCollider(
+    private static bool MatchesRuntimeColliderFlag(
         SpringColliderEntry collider,
-        int colliderFlag
+        IReadOnlyList<RuntimeColliderFlagBinding> matchedBindings
     )
     {
         var name = collider.GameObject?.Name ?? string.Empty;
-        var path = collider.GameObject?.TransformPath ?? string.Empty;
-        if (!path.StartsWith("body/Position/PositionOffset/Hip/", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        var isCoreUpperBody =
-            string.Equals(name, "CL_ChestSphereCollider", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(name, "CL_ChestSphereCollider_Top", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(name, "CL_ChestSphereCollider_Head", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(name, "CL_ChestSphereCollider_Center", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(name, "CL_SpineSphereCollider", StringComparison.OrdinalIgnoreCase);
-        var isLeftUpperBody =
-            ContainsOrdinalIgnoreCase(name, "CL_ChestSphereCollider_L") ||
-            ContainsOrdinalIgnoreCase(name, "CL_Left_ArmCapsuleCollider") ||
-            ContainsOrdinalIgnoreCase(name, "CL_Left_ElbowCapsuleCollider");
-        var isRightUpperBody =
-            ContainsOrdinalIgnoreCase(name, "CL_ChestSphereCollider_R") ||
-            ContainsOrdinalIgnoreCase(name, "CL_Right_ArmCapsuleCollider") ||
-            ContainsOrdinalIgnoreCase(name, "CL_Right_ElbowCapsuleCollider");
-
-        return ((colliderFlag & 2) != 0 && isCoreUpperBody) ||
-            ((colliderFlag & 4) != 0 && isLeftUpperBody) ||
-            ((colliderFlag & 8) != 0 && isRightUpperBody);
+        return matchedBindings.Any(binding =>
+            name.StartsWith(binding.Prefix, StringComparison.OrdinalIgnoreCase));
     }
 
     private static VrmSpringBonePartSummary BuildPartSummary(
@@ -414,13 +460,59 @@ public sealed class VrmSpringBoneCandidateBuilder
             Enabled: ReadBool(bone.Raw, "m_Enabled") ?? true,
             RawStiffnessForce: bone.StiffnessForce,
             RawSpringForce: bone.SpringForce,
+            RawWindInfluence: bone.WindInfluence,
             RawAngularStiffness: ReadFloat(bone.Raw, "angularStiffness"),
             RawSpringConstant: ReadFloat(bone.Raw, "SpringConstant"),
+            LengthLimitTargets: bone.LengthLimitTargets
+                .Select(target => new VrmSpringBoneLengthLimitTargetCandidate(
+                    NodeName: target.Name,
+                    NodePath: target.TransformPath,
+                    SourcePathId: target.PathId
+                ))
+                .ToList(),
             RawAngleLimits: new VrmSpringBoneAngleLimitsCandidate(
                 Y: ReadAxisLimit(bone.Raw, "yAngleLimits"),
                 Z: ReadAxisLimit(bone.Raw, "zAngleLimits")
             )
         );
+    }
+
+    private static IReadOnlyList<VrmSpringBoneForceProviderCandidate> BuildForceProviders(
+        SpringBoneExport part,
+        IReadOnlyList<SpringMonoBehaviourEntry> fallbackForceProviders,
+        SpringMonoBehaviourEntry manager
+    )
+    {
+        var providersByPathId = part.ForceProviders.ToDictionary(provider => provider.PathId);
+        var providerPathIds = ReadObjectPathIds(manager.Raw, "forceProviders").ToList();
+        var providers = providerPathIds.Count > 0
+            ? providerPathIds.Select(pathId => providersByPathId.TryGetValue(pathId, out var provider) ? provider : null)
+            : fallbackForceProviders;
+        return providers
+            .Where(provider => provider is not null)
+            .Cast<SpringMonoBehaviourEntry>()
+            .Select(provider => new VrmSpringBoneForceProviderCandidate(
+                SourcePathId: provider.PathId,
+                ScriptName: provider.ScriptName,
+                NodeName: provider.GameObject?.Name,
+                NodePath: provider.GameObject?.TransformPath,
+                ActiveSelf: provider.GameObject?.ActiveSelf,
+                ActiveInHierarchy: provider.GameObject?.ActiveInHierarchy,
+                Raw: provider.Raw
+            ))
+            .ToList();
+    }
+
+    private static VrmSpringBoneObjectRefCandidate? ToCandidateObjectRef(SpringObjectRef? source)
+    {
+        return source is null
+            ? null
+            : new VrmSpringBoneObjectRefCandidate(
+                FileId: source.FileId,
+                PathId: source.PathId,
+                Name: source.Name,
+                TransformPath: source.TransformPath
+            );
     }
 
     private static IReadOnlyList<SpringBoneChain> BuildChains(
@@ -524,7 +616,8 @@ public sealed class VrmSpringBoneCandidateBuilder
                 Offset: ToArray(collider.Center),
                 Radius: MathF.Max(0f, collider.Radius ?? DefaultColliderRadius)
             ),
-            Capsule: null
+            Capsule: null,
+            Panel: null
         );
     }
 
@@ -539,6 +632,21 @@ public sealed class VrmSpringBoneCandidateBuilder
                 Offset: ToArray(collider.Center),
                 Radius: MathF.Max(0f, collider.Radius ?? DefaultColliderRadius),
                 Tail: new[] { 0f, height, 0f }
+            ),
+            Panel: null
+        );
+    }
+
+    private static VrmSpringBoneColliderShapeCandidate BuildPanelShape(
+        SpringColliderEntry collider
+    )
+    {
+        return new VrmSpringBoneColliderShapeCandidate(
+            Sphere: null,
+            Capsule: null,
+            Panel: new VrmSpringBonePanelColliderCandidate(
+                Width: MathF.Max(0f, ReadFloat(collider.Raw, "width") ?? collider.Radius ?? 0f),
+                Height: MathF.Max(0f, ReadFloat(collider.Raw, "height") ?? collider.Height ?? 0f)
             )
         );
     }
@@ -613,6 +721,37 @@ public sealed class VrmSpringBoneCandidateBuilder
             return result;
         }
         return null;
+    }
+
+    private static SpringVector3? ReadVector3(JsonObject obj, string key)
+    {
+        if (!TryGetProperty(obj, key, out var value) || value is not JsonObject vector)
+        {
+            return null;
+        }
+
+        var x = ReadFloat(vector, "x") ?? ReadFloat(vector, "X");
+        var y = ReadFloat(vector, "y") ?? ReadFloat(vector, "Y");
+        var z = ReadFloat(vector, "z") ?? ReadFloat(vector, "Z");
+        return x is null || y is null || z is null
+            ? null
+            : new SpringVector3(x.Value, y.Value, z.Value);
+    }
+
+    private static IReadOnlyList<string> ReadStringList(JsonObject obj, string key)
+    {
+        if (!TryGetProperty(obj, key, out var value) || value is not JsonArray array)
+        {
+            return Array.Empty<string>();
+        }
+
+        return array
+            .Select(item => item?.GetValueKind() == System.Text.Json.JsonValueKind.String
+                ? item.GetValue<string>()
+                : null)
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Cast<string>()
+            .ToList();
     }
 
     private static bool? ReadBool(JsonObject obj, string key)
@@ -692,9 +831,9 @@ public sealed class VrmSpringBoneCandidateBuilder
         return null;
     }
 
-    private static bool ContainsOrdinalIgnoreCase(string? source, string value)
+    private static float Clamp01(float value)
     {
-        return source?.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0;
+        return value < 0f ? 0f : value > 1f ? 1f : value;
     }
 
     private static string? ParentPath(string? path)
@@ -755,6 +894,8 @@ public sealed class VrmSpringBoneCandidateBuilder
     }
 
     private sealed record SpringColliderKey(string PartKind, long PathId);
+
+    private sealed record RuntimeColliderFlagBinding(int Mask, string Label, string Prefix);
 
     private sealed record SpringBoneChain(
         string RootPath,

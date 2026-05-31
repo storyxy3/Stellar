@@ -12,6 +12,7 @@ public sealed record SpringBoneExport(
     IReadOnlyList<SpringColliderEntry> SphereColliders,
     IReadOnlyList<SpringColliderEntry> CapsuleColliders,
     IReadOnlyList<SpringColliderEntry> PanelColliders,
+    IReadOnlyList<SpringMonoBehaviourEntry> ForceProviders,
     IReadOnlyList<SpringExtraBoneEntry> ExtraBones,
     SpringCharacterHairEntry? CharacterHair,
     SpringCharacterEyeEntry? CharacterEye,
@@ -28,7 +29,9 @@ public sealed record SpringObjectRef(
     int FileId,
     long PathId,
     string? Name,
-    string? TransformPath
+    string? TransformPath,
+    bool? ActiveSelf = null,
+    bool? ActiveInHierarchy = null
 );
 
 public sealed record SpringMonoBehaviourEntry(
@@ -46,7 +49,9 @@ public sealed record SpringBoneEntry(
     float? Radius,
     float? StiffnessForce,
     float? DragForce,
+    float? WindInfluence,
     SpringVector3? SpringForce,
+    IReadOnlyList<SpringObjectRef> LengthLimitTargets,
     IReadOnlyList<SpringObjectRef> Colliders,
     JsonObject Raw
 );
@@ -55,6 +60,8 @@ public sealed record SpringColliderEntry(
     long PathId,
     string ScriptName,
     SpringObjectRef? GameObject,
+    SpringObjectRef? LinkedRenderer,
+    bool? LinkedRendererEnabled,
     float? Radius,
     float? Height,
     SpringVector3? Center,
@@ -166,17 +173,30 @@ public sealed record VrmSpringBoneColliderCandidate(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("sourcePathId")] long SourcePathId,
     [property: JsonPropertyName("scriptName")] string ScriptName,
+    [property: JsonPropertyName("enabled")] bool Enabled,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("linkedRenderer")] VrmSpringBoneObjectRefCandidate? LinkedRenderer,
+    [property: JsonPropertyName("linkedRendererEnabled")] bool? LinkedRendererEnabled,
     [property: JsonPropertyName("node")] int? Node,
     [property: JsonPropertyName("nodeName")] string? NodeName,
     [property: JsonPropertyName("nodePath")] string? NodePath,
     [property: JsonPropertyName("shape")] VrmSpringBoneColliderShapeCandidate Shape
 );
 
+public sealed record VrmSpringBoneObjectRefCandidate(
+    [property: JsonPropertyName("fileId")] int FileId,
+    [property: JsonPropertyName("pathId")] long PathId,
+    [property: JsonPropertyName("name")] string? Name,
+    [property: JsonPropertyName("transformPath")] string? TransformPath
+);
+
 public sealed record VrmSpringBoneColliderShapeCandidate(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     [property: JsonPropertyName("sphere")] VrmSpringBoneSphereColliderCandidate? Sphere,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    [property: JsonPropertyName("capsule")] VrmSpringBoneCapsuleColliderCandidate? Capsule
+    [property: JsonPropertyName("capsule")] VrmSpringBoneCapsuleColliderCandidate? Capsule,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("panel")] VrmSpringBonePanelColliderCandidate? Panel
 );
 
 public sealed record VrmSpringBoneSphereColliderCandidate(
@@ -188,6 +208,11 @@ public sealed record VrmSpringBoneCapsuleColliderCandidate(
     [property: JsonPropertyName("offset")] float[] Offset,
     [property: JsonPropertyName("radius")] float Radius,
     [property: JsonPropertyName("tail")] float[] Tail
+);
+
+public sealed record VrmSpringBonePanelColliderCandidate(
+    [property: JsonPropertyName("width")] float Width,
+    [property: JsonPropertyName("height")] float Height
 );
 
 public sealed record VrmSpringBoneColliderGroupCandidate(
@@ -204,12 +229,39 @@ public sealed record VrmSpringBoneSpringCandidate(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("partKind")] string PartKind,
     [property: JsonPropertyName("managerPathId")] long SourceManagerPathId,
+    [property: JsonPropertyName("enabled")] bool Enabled,
+    [property: JsonPropertyName("automaticUpdates")] bool AutomaticUpdates,
+    [property: JsonPropertyName("enableLengthLimits")] bool EnableLengthLimits,
+    [property: JsonPropertyName("enableAngleLimits")] bool EnableAngleLimits,
+    [property: JsonPropertyName("enableCollision")] bool EnableCollision,
+    [property: JsonPropertyName("collideWithGround")] bool CollideWithGround,
+    [property: JsonPropertyName("groundHeight")] float GroundHeight,
+    [property: JsonPropertyName("isSumOfForcesOnBone")] bool IsSumOfForcesOnBone,
+    [property: JsonPropertyName("isPaused")] bool IsPaused,
+    [property: JsonPropertyName("dynamicRatio")] float DynamicRatio,
+    [property: JsonPropertyName("simulationFrameRate")] int SimulationFrameRate,
+    [property: JsonPropertyName("slowMotionScale")] float SlowMotionScale,
+    [property: JsonPropertyName("bounce")] float Bounce,
+    [property: JsonPropertyName("friction")] float Friction,
+    [property: JsonPropertyName("animatedBoneNames")] IReadOnlyList<string> AnimatedBoneNames,
+    [property: JsonPropertyName("rawGravity")] SpringVector3? RawGravity,
+    [property: JsonPropertyName("forceProviders")] IReadOnlyList<VrmSpringBoneForceProviderCandidate> ForceProviders,
     [property: JsonPropertyName("center")] int? Center,
     [property: JsonPropertyName("centerName")] string? CenterName,
     [property: JsonPropertyName("centerPath")] string? CenterPath,
     [property: JsonPropertyName("joints")] IReadOnlyList<VrmSpringBoneJointCandidate> Joints,
     [property: JsonPropertyName("colliderGroups")] IReadOnlyList<int> ColliderGroups,
     [property: JsonPropertyName("jointColliderGroups")] IReadOnlyDictionary<long, IReadOnlyList<int>> JointColliderGroups
+);
+
+public sealed record VrmSpringBoneForceProviderCandidate(
+    [property: JsonPropertyName("sourcePathId")] long SourcePathId,
+    [property: JsonPropertyName("scriptName")] string ScriptName,
+    [property: JsonPropertyName("nodeName")] string? NodeName,
+    [property: JsonPropertyName("nodePath")] string? NodePath,
+    [property: JsonPropertyName("activeSelf")] bool? ActiveSelf,
+    [property: JsonPropertyName("activeInHierarchy")] bool? ActiveInHierarchy,
+    [property: JsonPropertyName("raw")] JsonObject Raw
 );
 
 public sealed record VrmSpringBoneJointCandidate(
@@ -228,9 +280,17 @@ public sealed record VrmSpringBoneJointCandidate(
     [property: JsonPropertyName("enabled")] bool Enabled,
     [property: JsonPropertyName("rawStiffnessForce")] float? RawStiffnessForce,
     [property: JsonPropertyName("rawSpringForce")] SpringVector3? RawSpringForce,
+    [property: JsonPropertyName("rawWindInfluence")] float? RawWindInfluence,
     [property: JsonPropertyName("rawAngularStiffness")] float? RawAngularStiffness,
     [property: JsonPropertyName("rawSpringConstant")] float? RawSpringConstant,
+    [property: JsonPropertyName("lengthLimitTargets")] IReadOnlyList<VrmSpringBoneLengthLimitTargetCandidate> LengthLimitTargets,
     [property: JsonPropertyName("rawAngleLimits")] VrmSpringBoneAngleLimitsCandidate RawAngleLimits
+);
+
+public sealed record VrmSpringBoneLengthLimitTargetCandidate(
+    [property: JsonPropertyName("nodeName")] string? NodeName,
+    [property: JsonPropertyName("nodePath")] string? NodePath,
+    [property: JsonPropertyName("sourcePathId")] long SourcePathId
 );
 
 public sealed record VrmSpringBoneAngleLimitsCandidate(

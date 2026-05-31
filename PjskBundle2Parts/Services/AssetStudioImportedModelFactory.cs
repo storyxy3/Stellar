@@ -58,6 +58,32 @@ public sealed class AssetStudioImportedModelFactory
         return imported;
     }
 
+    public IReadOnlyList<ImportedTexture> CreateImportedTextures(string bundlePath)
+    {
+        using var readableBundle = new SekaiBundleDecryptor().PrepareReadableBundle(bundlePath);
+        var manager = new AssetsManager();
+        manager.Options.CustomUnityVersion = new UnityVersion(SekaiUnityVersion);
+        manager.SetAssetFilter(ClassIDType.Texture2D);
+        manager.LoadFilesAndFolders(readableBundle.Path);
+
+        var textures = manager.AssetsFileList
+            .SelectMany(file => file.Objects)
+            .OfType<Texture2D>()
+            .Select(texture =>
+            {
+                using var stream = texture.ConvertToStream(ImageFormat.Png, true);
+                return stream is null
+                    ? null
+                    : new ImportedTexture(stream, $"{texture.m_Name}.png");
+            })
+            .Where(texture => texture is not null)
+            .Select(texture => texture!)
+            .DistinctBy(texture => texture.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        NormalizeTextureOrientation(textures);
+        return textures;
+    }
+
     private static void NormalizeTextureOrientation(IReadOnlyList<ImportedTexture> textures)
     {
         foreach (var texture in textures)

@@ -116,12 +116,32 @@ if (resolvedCharacter3dCostume?.HeadTextureFallbackPath is not null)
     headTextureFallback = modelFactory.CreateImportedModel(fallbackInput);
     plan = plan with
     {
-        HeadManifestTemplate = FillMissingHeadLayerTextures(
-            plan.HeadManifestTemplate,
-            importedHead,
-            headTextureFallback
-        ),
+            HeadManifestTemplate = FillMissingHeadLayerTextures(
+                plan.HeadManifestTemplate,
+                importedHead,
+                headTextureFallback
+            ),
     };
+}
+if (HasMissingHeadLayerTextures(plan.HeadManifestTemplate))
+{
+    foreach (var fallbackTexturePath in ResolveDefaultHeadLayerTextureFallbackPaths(headInput.ResolvedBundlePath))
+    {
+        var fallbackTextures = modelFactory.CreateImportedTextures(fallbackTexturePath);
+        plan = plan with
+        {
+            HeadManifestTemplate = FillMissingHeadLayerTexturesFromTextures(
+                plan.HeadManifestTemplate,
+                importedHead,
+                fallbackTextures
+            ),
+        };
+
+        if (!HasMissingHeadLayerTextures(plan.HeadManifestTemplate))
+        {
+            break;
+        }
+    }
 }
 var importedAccessory = accessoryInput is not null
     ? modelFactory.CreateImportedModel(accessoryInput, SelectAccessoryRootName(accessoryInventory))
@@ -146,6 +166,7 @@ var characterEmission = emitter.EmitCharacter(
     plan.HeadManifestTemplate,
     importedBody,
     importedHead,
+    vrmSpringBoneCandidate,
     importedAccessory,
     resolvedCharacter3dCostume?.AccessoryAttachNode
 );
@@ -342,14 +363,15 @@ static async Task WriteJsonAsync<T>(string path, T payload)
 
 static string? ResolveDefaultCostumeSettingMotionPath(string assetRoot, int characterId)
 {
-    var candidate = Path.Combine(
-        Path.GetFullPath(assetRoot),
-        "character",
-        "motion",
-        "costume_setting",
-        $"{characterId:00}_00.bundle"
-    );
-    return File.Exists(candidate) ? candidate : null;
+    var root = Path.GetFullPath(assetRoot);
+    var fileName = $"{characterId:00}_00.bundle";
+    var candidates = new[]
+    {
+        Path.Combine(root, "character", "motion", "costume_setting", fileName),
+        Path.Combine(root, "motion", "costume_setting", fileName),
+        Path.Combine(root, "costume_setting", fileName),
+    };
+    return candidates.FirstOrDefault(File.Exists);
 }
 
 static BodyAssetManifest UpdateBodyManifest(
@@ -413,6 +435,44 @@ static HeadAssetManifest FillMissingHeadLayerTextures(
         : manifest;
 }
 
+static HeadAssetManifest FillMissingHeadLayerTexturesFromTextures(
+    HeadAssetManifest manifest,
+    IImported importedHead,
+    IReadOnlyList<ImportedTexture> fallbackTextures
+)
+{
+    var changed = false;
+    var materials = manifest.FaceMaterials
+        .Select(slot =>
+        {
+            if (
+                !string.IsNullOrWhiteSpace(slot.MainTex) ||
+                slot.MaterialKind is not ("eye" or "eyelight")
+            )
+            {
+                return slot;
+            }
+
+            var fallbackTexture = FindFallbackHeadLayerTextureFromTextures(fallbackTextures, slot.MaterialKind);
+            if (fallbackTexture is null)
+            {
+                return slot;
+            }
+
+            AddImportedTextureIfMissing(importedHead.TextureList, fallbackTexture);
+            changed = true;
+            return slot with
+            {
+                MainTex = Path.GetFileNameWithoutExtension(fallbackTexture.Name),
+            };
+        })
+        .ToList();
+
+    return changed
+        ? manifest with { FaceMaterials = materials }
+        : manifest;
+}
+
 static ImportedTexture? FindFallbackHeadLayerTexture(
     IImported fallbackHead,
     string materialKind
@@ -448,6 +508,20 @@ static ImportedTexture? FindFallbackHeadLayerTexture(
     });
 }
 
+static ImportedTexture? FindFallbackHeadLayerTextureFromTextures(
+    IReadOnlyList<ImportedTexture> fallbackTextures,
+    string materialKind
+)
+{
+    return fallbackTextures.FirstOrDefault(texture =>
+    {
+        var name = texture.Name.ToLowerInvariant();
+        return materialKind == "eyelight"
+            ? name.Contains("tex_ehl_")
+            : name.Contains("tex_eye_");
+    });
+}
+
 static void AddImportedTextureIfMissing(
     List<ImportedTexture> destination,
     ImportedTexture source
@@ -461,6 +535,33 @@ static void AddImportedTextureIfMissing(
 
     using var stream = new MemoryStream(source.Data);
     destination.Add(new ImportedTexture(stream, source.Name));
+}
+
+static bool HasMissingHeadLayerTextures(HeadAssetManifest manifest)
+{
+    return manifest.FaceMaterials.Any(slot =>
+        string.IsNullOrWhiteSpace(slot.MainTex) &&
+        slot.MaterialKind is "eye" or "eyelight");
+}
+
+static IReadOnlyList<string> ResolveDefaultHeadLayerTextureFallbackPaths(string headBundlePath)
+{
+    var directory = Path.GetDirectoryName(headBundlePath);
+    if (string.IsNullOrWhiteSpace(directory))
+    {
+        return Array.Empty<string>();
+    }
+
+    return new[] { "0001.bundle", "0001_mc.bundle" }
+        .Select(fileName => Path.Combine(directory, fileName))
+        .Where(path =>
+            File.Exists(path) &&
+            !string.Equals(
+                Path.GetFullPath(path),
+                Path.GetFullPath(headBundlePath),
+                StringComparison.OrdinalIgnoreCase
+            ))
+        .ToList();
 }
 
 static HeadAssetManifest UpdateHeadManifest(

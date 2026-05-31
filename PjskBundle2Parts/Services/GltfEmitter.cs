@@ -70,6 +70,7 @@ public sealed class GltfEmitter
         HeadAssetManifest headManifest,
         IImported bodyImported,
         IImported headImported,
+        VrmSpringBoneCandidate? springBoneCandidate = null,
         IImported? accessoryImported = null,
         string? accessoryAttachNodeName = null
     )
@@ -170,7 +171,8 @@ public sealed class GltfEmitter
             bodyPathByName,
             bodyNodeMap,
             headNodeMap,
-            headLogicalPathByImportedPath
+            headLogicalPathByImportedPath,
+            springBoneCandidate
         );
 
         var scene = new SceneBuilder();
@@ -1207,7 +1209,8 @@ public sealed class GltfEmitter
         IReadOnlyDictionary<string, string> bodyPathByName,
         Dictionary<string, NodeBuilder> bodyNodeMap,
         Dictionary<string, NodeBuilder> headNodeMap,
-        Dictionary<string, string> headLogicalPathByImportedPath
+        Dictionary<string, string> headLogicalPathByImportedPath,
+        VrmSpringBoneCandidate? springBoneCandidate
     )
     {
         var remap = headManifest.Assembly.BoneRemap ?? new Dictionary<string, string>();
@@ -1286,6 +1289,83 @@ public sealed class GltfEmitter
                 remap
             );
         }
+
+        foreach (var path in EnumerateHeadSpringBoneFramePaths(springBoneCandidate))
+        {
+            var frame = headImported.RootFrame.FindFrameByPath(path);
+            if (frame is null)
+            {
+                continue;
+            }
+
+            EnsureMergedHeadFrame(
+                frame,
+                headAttachPath,
+                bodyHeadPath,
+                bodyHeadNode,
+                bodyFrameMap,
+                bodyPathByName,
+                bodyNodeMap,
+                headNodeMap,
+                headLogicalPathByImportedPath,
+                remap
+            );
+        }
+    }
+
+    private static IEnumerable<string> EnumerateHeadSpringBoneFramePaths(
+        VrmSpringBoneCandidate? springBoneCandidate
+    )
+    {
+        if (springBoneCandidate is null)
+        {
+            yield break;
+        }
+
+        foreach (var spring in springBoneCandidate.VrmExtensionDraft.Springs)
+        {
+            foreach (var provider in spring.ForceProviders)
+            {
+                if (TryGetHeadImportedPath(provider.NodePath, out var providerPath))
+                {
+                    yield return providerPath;
+                }
+            }
+
+            foreach (var joint in spring.Joints)
+            {
+                if (TryGetHeadImportedPath(joint.NodePath, out var jointPath))
+                {
+                    yield return jointPath;
+                }
+                if (TryGetHeadImportedPath(joint.PivotNodePath, out var pivotPath))
+                {
+                    yield return pivotPath;
+                }
+
+                foreach (var target in joint.LengthLimitTargets)
+                {
+                    if (TryGetHeadImportedPath(target.NodePath, out var targetPath))
+                    {
+                        yield return targetPath;
+                    }
+                }
+            }
+        }
+    }
+
+    private static bool TryGetHeadImportedPath(string? logicalPath, out string importedPath)
+    {
+        importedPath = string.Empty;
+        const string facePrefix = "face/";
+        if (string.IsNullOrWhiteSpace(logicalPath) ||
+            !logicalPath.StartsWith(facePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        importedPath = logicalPath[facePrefix.Length..];
+        return !string.IsNullOrWhiteSpace(importedPath);
     }
 
     private static IEnumerable<ImportedFrame> EnumerateFrames(ImportedFrame frame)

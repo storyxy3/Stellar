@@ -20,15 +20,20 @@ import {
   type FaceMotionPlaybackSnapshot,
   type FaceMotionSet,
   type MaterialBindingMode,
-  type BodyDebugMode,
   type PartImportSnapshot,
-  type RuntimeDebugSnapshot,
   type RuntimeCombinedCharacterAsset,
-  type FaceSdfDebugMode,
-  type FaceSdfDebugLightMode,
-  type RenderIsolationMode,
   type SpringBoneRuntimeSnapshot,
 } from "./engine/PjskViewerApp";
+import {
+  characterYawDegreesByMode,
+  defaultAnimationState,
+  defaultRenderState,
+  toonShadowSmoothByMode,
+  valueShadowInfluenceByMode,
+  type CharacterYawMode,
+  type ToonShadowSmoothMode,
+  type ValueShadowInfluenceMode,
+} from "./config/viewerConfig";
 
 const root = document.querySelector<HTMLDivElement>("#app");
 
@@ -40,54 +45,11 @@ const previewState = { ...previewLightDefaults };
 const assemblyState = cloneAssemblyState(sampleCatalog.defaultAssembly);
 let lastImportSnapshot: PartImportSnapshot | null = null;
 let importRun = 0;
-let lastRuntimeDebug: RuntimeDebugSnapshot | null = null;
 let lastAnimationSnapshot: AnimationPlaybackSnapshot | null = null;
 let lastFaceMotionSnapshot: FaceMotionPlaybackSnapshot | null = null;
 let lastSpringBoneSnapshot: SpringBoneRuntimeSnapshot | null = null;
-type ToonShadowSmoothMode = "auto" | "hard" | "w003" | "w005" | "w008" | "w012";
-type ValueShadowInfluenceMode = "0" | "0.25" | "0.5" | "1";
-type CharacterYawMode = "0" | "45" | "-45" | "90" | "-90" | "180";
-const toonShadowSmoothByMode: Record<ToonShadowSmoothMode, number | null> = {
-  auto: null,
-  hard: 0.001,
-  w003: 0.03,
-  w005: 0.05,
-  w008: 0.08,
-  w012: 0.12,
-};
-const valueShadowInfluenceByMode: Record<ValueShadowInfluenceMode, number> = {
-  "0": 0,
-  "0.25": 0.25,
-  "0.5": 0.5,
-  "1": 1,
-};
-const characterYawDegreesByMode: Record<CharacterYawMode, number> = {
-  "0": 0,
-  "45": 45,
-  "-45": -45,
-  "90": 90,
-  "-90": -90,
-  "180": 180,
-};
-const renderState = {
-  materialBindingMode: "manifest" as MaterialBindingMode,
-  bodyDebugMode: "off" as BodyDebugMode,
-  toonShadowSmoothMode: "auto" as ToonShadowSmoothMode,
-  valueShadowInfluenceMode: "1" as ValueShadowInfluenceMode,
-  characterYawMode: "0" as CharacterYawMode,
-  faceSdfDebugMode: "off" as FaceSdfDebugMode,
-  faceSdfDebugLightMode: "scene" as FaceSdfDebugLightMode,
-  renderIsolationMode: "normal" as RenderIsolationMode,
-  faceMotionEnabled: true,
-  bodyHeadTracksEnabled: true,
-};
-const animationState = {
-  selectedMotionUrl: "",
-  selectedLoopUrl: "",
-  speed: 1,
-  paused: false,
-  seekTime: 0,
-};
+const renderState = { ...defaultRenderState };
+const animationState = { ...defaultAnimationState };
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -136,6 +98,7 @@ const localAssetState = {
   converterEmbeddedFaceMotionData: null as FaceMotionSet | null,
   converterEmbeddedLightMotionData: null as LightMotionSet | null,
   converterLightControllerPreview: null as LightControllerPreview | null,
+  converterBaseUrl: null as string | null,
   converterError: "" as string,
 };
 
@@ -177,35 +140,6 @@ root.innerHTML = `
           </select>
         </label>
         <label>
-          <span>Body Debug</span>
-          <select data-render-key="bodyDebugMode">
-            <option value="off" selected>Off</option>
-            <option value="skin">Skin Mask</option>
-            <option value="neck">Neck Plane</option>
-            <option value="contact">Contact Shadow</option>
-            <option value="h_r">H.R Raw</option>
-            <option value="h_g">H.G Raw</option>
-            <option value="h_b">H.B Raw</option>
-            <option value="h_a">H Alpha</option>
-            <option value="vertex_r">Vertex R</option>
-            <option value="vertex_g">Vertex G</option>
-            <option value="base_shadow">Base Shadow</option>
-            <option value="ndotl_raw">NdotL Raw</option>
-            <option value="h_b_adjusted_shadow">H.B Adjusted Shadow</option>
-            <option value="ambient_target">Ambient Target</option>
-            <option value="ambient_weight">Ambient Weight</option>
-            <option value="ambient_tint">Ambient Tint</option>
-            <option value="specular">Specular</option>
-            <option value="specular_mask">Specular Mask</option>
-            <option value="specular_add">Specular Add</option>
-            <option value="rim_raw">Rim Raw</option>
-            <option value="rim_add">Rim Add</option>
-            <option value="rim_gate">Rim Gate</option>
-            <option value="rim_color">Rim Color</option>
-            <option value="rim_scalar">Rim Scalar</option>
-          </select>
-        </label>
-        <label>
           <span>Shadow Smooth</span>
           <select data-render-key="toonShadowSmoothMode">
             <option value="auto" selected>Auto</option>
@@ -226,55 +160,16 @@ root.innerHTML = `
           </select>
         </label>
         <label>
-          <span>FaceSDF Debug</span>
-          <select data-render-key="faceSdfDebugMode">
-            <option value="off" selected>Off</option>
-            <option value="sdf">Raw SDF</option>
-            <option value="mask">Mask</option>
-            <option value="limit">Limit</option>
-            <option value="basis">Basis</option>
-          </select>
-        </label>
-        <label>
-          <span>FaceSDF Light</span>
-          <select data-render-key="faceSdfDebugLightMode">
-            <option value="scene" selected>Scene Light</option>
-            <option value="front">Front</option>
-            <option value="left">Left</option>
-            <option value="right">Right</option>
-            <option value="back">Back</option>
-          </select>
-        </label>
-        <label>
-          <span>Render Isolation</span>
-          <select data-render-key="renderIsolationMode">
-            <option value="normal" selected>Normal Preview</option>
-            <option value="face_sdf">FaceSDF Shading</option>
-            <option value="no_face_sdf">No FaceSDF</option>
-            <option value="no_face_layers">No Face Layers</option>
-            <option value="outline_only">Outline Only</option>
-            <option value="no_outline">No Outline</option>
-            <option value="no_body_outline">No Body Outline</option>
-            <option value="no_hair_outline">No Hair Outline</option>
-            <option value="no_face_outline">No Face Outline</option>
-          </select>
-        </label>
-        <label>
           <span>Model Yaw</span>
           <select data-render-key="characterYawMode">
             <option value="0" selected>0 deg</option>
             <option value="45">+45 deg</option>
             <option value="-45">-45 deg</option>
             <option value="90">+90 deg</option>
-            <option value="-90">-90 deg</option>
-            <option value="180">180 deg</option>
+          <option value="-90">-90 deg</option>
+          <option value="180">180 deg</option>
           </select>
         </label>
-        <div class="callout">
-          Use this to separate two classes of bugs:
-          if GLB Original looks correct, converter output is fine and runtime rebinding is wrong.
-          If both look wrong, the converter material emission is wrong.
-        </div>
       </section>
 
       <section class="group controls">
@@ -302,6 +197,10 @@ root.innerHTML = `
         <label>
           <span>Head/Neck Tracks</span>
           <input id="body-head-tracks-enabled" type="checkbox" checked />
+        </label>
+        <label>
+          <span>UTJ SpringBone</span>
+          <input id="utj-springbone-enabled" type="checkbox" />
         </label>
         <label>
           <span>Seek Time</span>
@@ -332,13 +231,6 @@ root.innerHTML = `
           <pre id="assembly-json"></pre>
         </details>
       </section>
-
-      <section class="group foldout">
-        <details>
-          <summary><h2>Runtime Debug</h2></summary>
-          <pre id="runtime-debug"></pre>
-        </details>
-      </section>
     </aside>
 
     <main class="stage-wrap">
@@ -358,19 +250,11 @@ if (!viewerHost) {
 
 const viewer = new PjskViewerApp(viewerHost, previewState);
 viewer.setMaterialBindingMode(renderState.materialBindingMode);
-viewer.setBodyDebugMode(renderState.bodyDebugMode);
 viewer.setToonShadowPreview(
   toonShadowSmoothByMode[renderState.toonShadowSmoothMode],
   valueShadowInfluenceByMode[renderState.valueShadowInfluenceMode]
 );
-viewer.setFaceSdfDebugMode(renderState.faceSdfDebugMode);
-viewer.setFaceSdfDebugLightMode(renderState.faceSdfDebugLightMode);
-viewer.setRenderIsolationMode(renderState.renderIsolationMode);
 viewer.setCharacterYawDegrees(characterYawDegreesByMode[renderState.characterYawMode]);
-viewer.onCameraDebugChange(() => {
-  lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
-  renderImportSummary();
-});
 
 function copyBodyAsset(base: BodyAssetManifest): BodyAssetManifest {
   return {
@@ -776,7 +660,9 @@ function findConverterUrl(path: string | undefined) {
       return url;
     }
   }
-  return null;
+  return localAssetState.converterBaseUrl
+    ? resolveConverterBaseUrl(localAssetState.converterBaseUrl, normalized)
+    : null;
 }
 
 function resolveConverterPath(path: string | undefined) {
@@ -784,6 +670,20 @@ function resolveConverterPath(path: string | undefined) {
     return path;
   }
   return findConverterUrl(path) ?? path;
+}
+
+function resolveConverterBaseUrl(baseUrl: string, relativePath: string) {
+  const base = new URL(baseUrl, window.location.href);
+  if (!base.pathname.endsWith("/")) {
+    base.pathname = `${base.pathname}/`;
+  }
+  const normalized = relativePath
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .split("/")
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+  return new URL(normalized, base).toString();
 }
 
 function normalizeRuntimeBodyManifest(raw: unknown): BodyAssetManifest {
@@ -1180,6 +1080,7 @@ async function parseConverterFolder(files: File[]) {
   localAssetState.converterEmbeddedFaceMotionData = null;
   localAssetState.converterEmbeddedLightMotionData = null;
   localAssetState.converterLightControllerPreview = null;
+  localAssetState.converterBaseUrl = null;
   applyLightControllerPreview(null);
   localAssetState.converterError = "";
 
@@ -1255,6 +1156,135 @@ async function parseConverterFolder(files: File[]) {
         localAssetState.converterBodyManifest;
     }
     return;
+  } catch (error) {
+    localAssetState.converterError =
+      error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function fetchRuntimeJson(url: string) {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Failed to load ${url}: HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+async function findExistingConverterUrl(baseUrl: string, relativePaths: string[]) {
+  for (const relativePath of relativePaths) {
+    const url = resolveConverterBaseUrl(baseUrl, relativePath);
+    try {
+      const response = await fetch(url, { method: "HEAD", cache: "no-store" });
+      if (response.ok) {
+        return { relativePath, url };
+      }
+    } catch {
+      // Some static hosts do not support HEAD cleanly; try the next candidate.
+    }
+  }
+  return null;
+}
+
+async function parseConverterBaseUrl(baseUrl: string) {
+  localAssetState.converterFiles = [];
+  for (const url of new Set(localAssetState.converterUrlByPath.values())) {
+    URL.revokeObjectURL(url);
+  }
+  localAssetState.converterUrlByPath.clear();
+  localAssetState.converterDisplayNameByUrl.clear();
+  localAssetState.converterBodyManifest = null;
+  localAssetState.converterHeadManifest = null;
+  localAssetState.converterRuntimeExtension = null;
+  localAssetState.converterCombinedCharacter = null;
+  localAssetState.converterCombinedFile = null;
+  localAssetState.converterBodyMotionPath = null;
+  localAssetState.converterBodyMotionUrl = null;
+  localAssetState.converterEmbeddedFaceMotionData = null;
+  localAssetState.converterEmbeddedLightMotionData = null;
+  localAssetState.converterLightControllerPreview = null;
+  localAssetState.converterBaseUrl = baseUrl;
+  applyLightControllerPreview(null);
+  localAssetState.converterError = "";
+
+  try {
+    const runtimeUrl = resolveConverterBaseUrl(
+      baseUrl,
+      "pjsk-sekai-runtime.extension.json"
+    );
+    const combined = await findExistingConverterUrl(baseUrl, [
+      "character/character.vrm",
+      "character/character.vrm-candidate.glb",
+      "character/character.vrm-core.glb",
+      "character/character.springbone.glb",
+      "character/character.glb",
+      "character.vrm",
+      "character.vrm-candidate.glb",
+      "character.vrm-core.glb",
+      "character.springbone.glb",
+      "character.glb",
+    ]);
+    if (!combined) {
+      throw new Error(
+        "Converter output must contain character/character.vrm or a known character GLB."
+      );
+    }
+
+    const runtime = normalizeRuntimeExtension(
+      await fetchRuntimeJson(runtimeUrl)
+    );
+    localAssetState.converterRuntimeExtension = runtime.extension;
+    const runtimePreview = readRuntimePreviewLight(runtime.extension);
+    if (runtimePreview) {
+      Object.assign(previewState, runtimePreview);
+      viewer.updatePreviewLight(previewState);
+    }
+
+    const bodyMotionPath = readEmbeddedBodyMotionPath(runtime.extension);
+    const bodyMotionUrl = bodyMotionPath
+      ? findConverterUrl(bodyMotionPath)
+      : null;
+    localAssetState.converterBodyMotionPath = bodyMotionPath;
+    localAssetState.converterBodyMotionUrl = bodyMotionUrl;
+    if (bodyMotionUrl && bodyMotionPath) {
+      localAssetState.converterDisplayNameByUrl.set(
+        bodyMotionUrl,
+        bodyMotionPath.split("/").pop() ?? bodyMotionPath
+      );
+    }
+
+    const embeddedFaceMotion = readEmbeddedFaceMotion(runtime.extension);
+    localAssetState.converterEmbeddedFaceMotionData = embeddedFaceMotion;
+    localAssetState.converterEmbeddedLightMotionData =
+      readEmbeddedLightMotion(runtime.extension);
+    localAssetState.converterLightControllerPreview =
+      buildLightControllerPreview(localAssetState.converterEmbeddedLightMotionData);
+    applyLightControllerPreview(localAssetState.converterLightControllerPreview);
+    if (embeddedFaceMotion) {
+      localAssetState.faceMotionData = embeddedFaceMotion;
+      localAssetState.faceMotionError = "";
+    }
+
+    localAssetState.converterCombinedCharacter = {
+      id: `runtime-${runtime.bodyAsset.characterId ?? "unknown"}-${combined.relativePath}`,
+      displayName: `Runtime ${combined.relativePath.split("/").pop() ?? combined.relativePath}`,
+      meshUrl: combined.url,
+      bodyAsset: runtime.bodyAsset,
+      headAsset: runtime.headAsset,
+      runtimeExtension: runtime.extension,
+    };
+    localAssetState.converterBodyManifest = runtime.bodyAsset;
+    localAssetState.converterHeadManifest = runtime.headAsset;
+    if (bodyMotionUrl) {
+      localAssetState.converterBodyManifest = {
+        ...localAssetState.converterBodyManifest,
+        source: {
+          ...localAssetState.converterBodyManifest.source,
+          animationUrls: [bodyMotionUrl],
+        },
+      };
+      localAssetState.converterCombinedCharacter.bodyAsset =
+        localAssetState.converterBodyManifest;
+    }
   } catch (error) {
     localAssetState.converterError =
       error instanceof Error ? error.message : String(error);
@@ -1455,6 +1485,9 @@ function renderAnimationControls(loading = false) {
   const bodyHeadTracksEnabled = document.querySelector<HTMLInputElement>(
     "#body-head-tracks-enabled"
   );
+  const utjSpringBoneEnabled = document.querySelector<HTMLInputElement>(
+    "#utj-springbone-enabled"
+  );
   const seek = document.querySelector<HTMLInputElement>("#animation-seek");
   const status = document.querySelector<HTMLElement>("#animation-status");
 
@@ -1465,6 +1498,7 @@ function renderAnimationControls(loading = false) {
     !paused ||
     !faceMotionEnabled ||
     !bodyHeadTracksEnabled ||
+    !utjSpringBoneEnabled ||
     !seek ||
     !status
   ) {
@@ -1505,11 +1539,13 @@ function renderAnimationControls(loading = false) {
   paused.disabled = !options.length;
   faceMotionEnabled.disabled = !options.length;
   bodyHeadTracksEnabled.disabled = !options.length || loading;
+  utjSpringBoneEnabled.disabled = loading;
   seek.disabled = !options.length || !lastAnimationSnapshot?.duration;
   speed.value = String(animationState.speed);
   paused.checked = animationState.paused;
   faceMotionEnabled.checked = renderState.faceMotionEnabled;
   bodyHeadTracksEnabled.checked = renderState.bodyHeadTracksEnabled;
+  utjSpringBoneEnabled.checked = renderState.utjSpringBoneEnabled;
   const duration = lastAnimationSnapshot?.duration ?? 5;
   seek.max = String(Math.max(duration, 0.01));
   seek.value = String(Math.min(animationState.seekTime, duration));
@@ -1535,8 +1571,11 @@ function renderSpringBoneStatus(loading = false) {
     return;
   }
 
+  const utj = snapshot.utjRuntime
+    ? ` | UTJ Runtime yes S${snapshot.utjRuntime.springCount}/B${snapshot.utjRuntime.boneCount}/C${snapshot.utjRuntime.colliderCount}/M${snapshot.utjRuntime.missingNodeCount}/Sleeve${snapshot.utjRuntime.maxSleeveOffset.toFixed(3)}/Skirt${snapshot.utjRuntime.maxSkirtOffset.toFixed(3)}/Skin${snapshot.utjRuntime.skinnedBoneMatches}:${snapshot.utjRuntime.skinnedBoneMisses}`
+    : " | UTJ Runtime no";
   status.textContent =
-    `SpringBone metadata | Body Managers ${snapshot.bodyManagerCount}, Bones ${snapshot.bodySpringBoneCount}, ExtraBone ${snapshot.bodyExtraBoneCount}, Colliders S${snapshot.bodySphereColliderCount}/C${snapshot.bodyCapsuleColliderCount}/P${snapshot.bodyPanelColliderCount} | Head Managers ${snapshot.headManagerCount}, Bones ${snapshot.headSpringBoneCount}, ExtraBone ${snapshot.headExtraBoneCount}, Colliders S${snapshot.headSphereColliderCount}/C${snapshot.headCapsuleColliderCount}/P${snapshot.headPanelColliderCount} | CharacterHair ${snapshot.characterHairPresent ? "yes" : "no"} | CharacterEye ${snapshot.characterEyePresent ? "yes" : "no"} | VRM Manager ${snapshot.vrmSpringBoneManagerPresent ? "yes" : "no"}`;
+    `SpringBone metadata | Body Managers ${snapshot.bodyManagerCount}, Bones ${snapshot.bodySpringBoneCount}, ExtraBone ${snapshot.bodyExtraBoneCount}, Colliders S${snapshot.bodySphereColliderCount}/C${snapshot.bodyCapsuleColliderCount}/P${snapshot.bodyPanelColliderCount} | Head Managers ${snapshot.headManagerCount}, Bones ${snapshot.headSpringBoneCount}, ExtraBone ${snapshot.headExtraBoneCount}, Colliders S${snapshot.headSphereColliderCount}/C${snapshot.headCapsuleColliderCount}/P${snapshot.headPanelColliderCount} | CharacterHair ${snapshot.characterHairPresent ? "yes" : "no"} | CharacterEye ${snapshot.characterEyePresent ? "yes" : "no"} | VRM Manager ${snapshot.vrmSpringBoneManagerPresent ? "yes" : "no"}${utj}`;
 }
 
 async function applyBodyAnimation(bodyAsset: BodyAssetManifest) {
@@ -1619,6 +1658,7 @@ function resetLocalOverrides() {
   localAssetState.converterEmbeddedFaceMotionData = null;
   localAssetState.converterEmbeddedLightMotionData = null;
   localAssetState.converterLightControllerPreview = null;
+  localAssetState.converterBaseUrl = null;
   applyLightControllerPreview(null);
   localAssetState.converterError = "";
   localAssetState.faceMotionData = null;
@@ -1634,9 +1674,8 @@ function renderImportSummary(loading = false) {
   const { bodyAsset, headAsset, combinedAsset } = getActiveAssets();
   const summary = document.querySelector<HTMLElement>("#import-summary");
   const assemblyJson = document.querySelector<HTMLElement>("#assembly-json");
-  const runtimeDebug = document.querySelector<HTMLElement>("#runtime-debug");
 
-  if (!summary || !assemblyJson || !runtimeDebug) {
+  if (!summary || !assemblyJson) {
     return;
   }
 
@@ -1846,7 +1885,6 @@ function renderImportSummary(loading = false) {
     2
   );
 
-  runtimeDebug.textContent = JSON.stringify(lastRuntimeDebug, null, 2);
   renderAnimationControls(loading);
   renderSpringBoneStatus(loading);
 }
@@ -1856,38 +1894,6 @@ async function applyCharacterImport() {
   const { bodyAsset, headAsset, combinedAsset } = getActiveAssets();
   applyPreviewCharacterHeightFromAssets(bodyAsset, headAsset);
   lastImportSnapshot = null;
-  lastRuntimeDebug = {
-    materialBindingMode: renderState.materialBindingMode,
-    body: [
-      {
-        meshName: "<loading>",
-        sourceMaterialName: bodyAsset.displayName,
-        resolvedKey: "loading",
-        resolvedKind: "body",
-        usedOriginalMap: false,
-        boundMainTex: null,
-        boundShadowTex: null,
-        boundValueTex: null,
-        boundFaceShadowTex: null,
-        finalMaterialType: "pending",
-      },
-    ],
-    head: [
-      {
-        meshName: "<loading>",
-        sourceMaterialName: headAsset.displayName,
-        resolvedKey: "loading",
-        resolvedKind: "head",
-        usedOriginalMap: false,
-        boundMainTex: null,
-        boundShadowTex: null,
-        boundValueTex: null,
-        boundFaceShadowTex: null,
-        finalMaterialType: "pending",
-      },
-    ],
-    headMorphs: [],
-  };
   lastAnimationSnapshot = {
     selectedUrl: animationState.selectedMotionUrl || null,
     selectedLoopUrl: animationState.selectedLoopUrl || null,
@@ -1932,57 +1938,22 @@ async function applyCharacterImport() {
   };
   renderImportSummary(true);
   if (!combinedAsset) {
-    lastRuntimeDebug = {
-      ...lastRuntimeDebug,
-      body: [
-        {
-          meshName: "<waiting-for-runtime-package>",
-          sourceMaterialName: bodyAsset.displayName,
-          resolvedKey: "missing_runtime_package",
-          resolvedKind: "body",
-          usedOriginalMap: false,
-          boundMainTex: null,
-          boundShadowTex: null,
-          boundValueTex: null,
-          boundFaceShadowTex: null,
-          finalMaterialType: "pending",
-        },
-      ],
-      head: [
-        {
-          meshName: "<waiting-for-runtime-package>",
-          sourceMaterialName: headAsset.displayName,
-          resolvedKey: "missing_runtime_package",
-          resolvedKind: "head",
-          usedOriginalMap: false,
-          boundMainTex: null,
-          boundShadowTex: null,
-          boundValueTex: null,
-          boundFaceShadowTex: null,
-          finalMaterialType: "pending",
-        },
-      ],
-    };
     renderImportSummary();
     return;
   }
   viewer.setMaterialBindingMode(renderState.materialBindingMode);
-  viewer.setBodyDebugMode(renderState.bodyDebugMode);
   viewer.setToonShadowPreview(
     toonShadowSmoothByMode[renderState.toonShadowSmoothMode],
     valueShadowInfluenceByMode[renderState.valueShadowInfluenceMode]
   );
-  viewer.setRenderIsolationMode(renderState.renderIsolationMode);
   viewer.setCharacterYawDegrees(characterYawDegreesByMode[renderState.characterYawMode]);
   const snapshot = await viewer.importCombinedCharacter(combinedAsset);
   if (run !== importRun) {
     return;
   }
   lastImportSnapshot = snapshot;
-  lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
   lastSpringBoneSnapshot = viewer.getSpringBoneSnapshot();
   viewer.updateAssembly(assemblyState);
-  viewer.setRenderIsolationMode(renderState.renderIsolationMode);
   viewer.setCharacterYawDegrees(characterYawDegreesByMode[renderState.characterYawMode]);
   await applyBodyAnimation(bodyAsset);
   await applyFaceMotion();
@@ -1991,10 +1962,148 @@ async function applyCharacterImport() {
   renderImportSummary();
 }
 
-void applyCharacterImport();
 viewer.updatePreviewLight(previewState);
 renderAnimationControls();
 renderSpringBoneStatus();
+
+type CaptureConfig = {
+  baseUrl: string;
+  phase: number;
+  warmupMs: number;
+  warmupFrames: number;
+  warmupMode: "animation" | "runtime";
+  utjSpringBoneEnabled: boolean;
+};
+
+type CaptureWindow = Window & {
+  __PJSK_CAPTURE_READY__?: boolean;
+  __PJSK_CAPTURE_ERROR__?: string;
+  __PJSK_CAPTURE_SNAPSHOT__?: unknown;
+};
+
+function getCaptureWindow() {
+  return window as CaptureWindow;
+}
+
+function readCaptureConfig(): CaptureConfig | null {
+  const params = new URLSearchParams(window.location.search);
+  const baseUrl = params.get("captureBase");
+  if (!baseUrl) {
+    return null;
+  }
+  document.body.classList.add("capture-mode");
+  viewer.setCapturePresentation(true);
+
+  const phase = Number(params.get("capturePhase") ?? "0.5");
+  const yawMode = params.get("characterYawMode");
+  if (yawMode) {
+    renderState.characterYawMode = yawMode as CharacterYawMode;
+  }
+  const warmupMs = Number(params.get("captureWarmupMs") ?? "0");
+  const warmupFrames = Number(params.get("captureWarmupFrames") ?? "0");
+  const warmupModeParam = params.get("captureWarmupMode");
+  const warmupMode = warmupModeParam === "runtime" ? "runtime" : "animation";
+  const utjSpringBoneEnabled = params.get("utjSpringBoneEnabled") === "true";
+  renderState.utjSpringBoneEnabled = utjSpringBoneEnabled;
+  viewer.setUtjSpringBoneEnabled(utjSpringBoneEnabled);
+
+  return {
+    baseUrl,
+    phase: THREE.MathUtils.clamp(Number.isFinite(phase) ? phase : 0.5, 0, 1),
+    warmupMs: Math.max(Math.trunc(Number.isFinite(warmupMs) ? warmupMs : 0), 0),
+    warmupFrames: Math.max(Math.trunc(Number.isFinite(warmupFrames) ? warmupFrames : 0), 0),
+    warmupMode,
+    utjSpringBoneEnabled,
+  };
+}
+
+function setCaptureError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  document.body.dataset.captureError = message;
+  getCaptureWindow().__PJSK_CAPTURE_ERROR__ = message;
+}
+
+function waitForAnimationFrames(count: number) {
+  return new Promise<void>((resolve) => {
+    const step = (remaining: number) => {
+      if (remaining <= 0) {
+        resolve();
+        return;
+      }
+      requestAnimationFrame(() => step(remaining - 1));
+    };
+    step(count);
+  });
+}
+
+async function prepareCaptureFrame(config: CaptureConfig) {
+  animationState.paused = true;
+  viewer.setAnimationPaused(true);
+  lastAnimationSnapshot = viewer.seekAnimationLoopPhase(config.phase);
+  if (config.warmupFrames > 0) {
+    const advanceAnimation = config.warmupMode === "animation";
+    animationState.paused = !advanceAnimation;
+    viewer.setAnimationPaused(!advanceAnimation);
+    for (let index = 0; index < config.warmupFrames; index += 1) {
+      viewer.stepCaptureFrame(1 / 60, advanceAnimation);
+    }
+    animationState.paused = true;
+    viewer.setAnimationPaused(true);
+  } else if (config.warmupMs > 0) {
+    animationState.paused = config.warmupMode === "runtime";
+    viewer.setAnimationPaused(config.warmupMode === "runtime");
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, config.warmupMs);
+    });
+    animationState.paused = true;
+    viewer.setAnimationPaused(true);
+  }
+  lastAnimationSnapshot = viewer.getAnimationSnapshot();
+  viewer.frameCurrentCharacterForCapture();
+  animationState.seekTime = lastAnimationSnapshot.currentTime;
+  lastFaceMotionSnapshot = viewer.getFaceMotionSnapshot();
+  lastSpringBoneSnapshot = viewer.getSpringBoneSnapshot();
+  renderImportSummary();
+  renderAnimationControls();
+  renderSpringBoneStatus();
+  await waitForAnimationFrames(3);
+  const captureWindow = getCaptureWindow();
+  captureWindow.__PJSK_CAPTURE_SNAPSHOT__ = {
+    phase: config.phase,
+    animation: lastAnimationSnapshot,
+    faceMotion: lastFaceMotionSnapshot,
+    springBone: lastSpringBoneSnapshot,
+  };
+  captureWindow.__PJSK_CAPTURE_READY__ = true;
+  document.body.dataset.captureReady = "true";
+}
+
+async function bootstrapApp() {
+  const captureConfig = readCaptureConfig();
+  if (!captureConfig) {
+    await applyCharacterImport();
+    return;
+  }
+
+  try {
+    getCaptureWindow().__PJSK_CAPTURE_READY__ = false;
+    document.body.dataset.captureReady = "false";
+    animationState.paused = true;
+    await parseConverterBaseUrl(captureConfig.baseUrl);
+    if (localAssetState.converterError) {
+      throw new Error(localAssetState.converterError);
+    }
+    await applyCharacterImport();
+    if (localAssetState.converterError) {
+      throw new Error(localAssetState.converterError);
+    }
+    await prepareCaptureFrame(captureConfig);
+  } catch (error) {
+    setCaptureError(error);
+  }
+}
+
+void bootstrapApp();
 
 window.setInterval(() => {
   const status = document.querySelector<HTMLElement>("#animation-status");
@@ -2018,25 +2127,12 @@ document
         renderState.materialBindingMode = select.value as MaterialBindingMode;
         void applyCharacterImport();
       }
-      if (key === "faceSdfDebugMode") {
-        renderState.faceSdfDebugMode = select.value as FaceSdfDebugMode;
-        viewer.setFaceSdfDebugMode(renderState.faceSdfDebugMode);
-        lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
-        renderImportSummary();
-      }
-      if (key === "bodyDebugMode") {
-        renderState.bodyDebugMode = select.value as BodyDebugMode;
-        viewer.setBodyDebugMode(renderState.bodyDebugMode);
-        lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
-        renderImportSummary();
-      }
       if (key === "toonShadowSmoothMode") {
         renderState.toonShadowSmoothMode = select.value as ToonShadowSmoothMode;
         viewer.setToonShadowPreview(
           toonShadowSmoothByMode[renderState.toonShadowSmoothMode],
           valueShadowInfluenceByMode[renderState.valueShadowInfluenceMode]
         );
-        lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
         renderImportSummary();
       }
       if (key === "valueShadowInfluenceMode") {
@@ -2045,19 +2141,6 @@ document
           toonShadowSmoothByMode[renderState.toonShadowSmoothMode],
           valueShadowInfluenceByMode[renderState.valueShadowInfluenceMode]
         );
-        lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
-        renderImportSummary();
-      }
-      if (key === "faceSdfDebugLightMode") {
-        renderState.faceSdfDebugLightMode = select.value as FaceSdfDebugLightMode;
-        viewer.setFaceSdfDebugLightMode(renderState.faceSdfDebugLightMode);
-        lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
-        renderImportSummary();
-      }
-      if (key === "renderIsolationMode") {
-        renderState.renderIsolationMode = select.value as RenderIsolationMode;
-        viewer.setRenderIsolationMode(renderState.renderIsolationMode);
-        lastRuntimeDebug = viewer.getRuntimeDebugSnapshot();
         renderImportSummary();
       }
       if (key === "characterYawMode") {
@@ -2150,6 +2233,17 @@ bodyHeadTracksEnabled?.addEventListener("change", () => {
     renderAnimationControls();
     renderSpringBoneStatus();
   });
+});
+
+const utjSpringBoneEnabled = document.querySelector<HTMLInputElement>(
+  "#utj-springbone-enabled"
+);
+utjSpringBoneEnabled?.addEventListener("change", () => {
+  renderState.utjSpringBoneEnabled = utjSpringBoneEnabled.checked;
+  viewer.setUtjSpringBoneEnabled(renderState.utjSpringBoneEnabled);
+  lastSpringBoneSnapshot = viewer.getSpringBoneSnapshot();
+  renderAnimationControls();
+  renderSpringBoneStatus();
 });
 
 const animationSeek = document.querySelector<HTMLInputElement>("#animation-seek");

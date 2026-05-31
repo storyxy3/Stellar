@@ -18,6 +18,7 @@ public sealed class SpringBoneExporter
         "SpringCapsuleCollider",
         "SpringPanelCollider",
         "ExtraBone",
+        "WindVolumeOneSelf",
         "SekaiCharacterHair",
         "SekaiCharacterEye",
     };
@@ -30,13 +31,20 @@ public sealed class SpringBoneExporter
             MeshLazyLoad = false,
         };
         manager.Options.CustomUnityVersion = new UnityVersion(SekaiUnityVersion);
-        manager.SetAssetFilter(ClassIDType.MonoBehaviour);
+        manager.SetAssetFilter(
+            ClassIDType.MonoBehaviour,
+            ClassIDType.MeshRenderer,
+            ClassIDType.SkinnedMeshRenderer
+        );
         manager.LoadFilesAndFolders(readableBundle.Path);
 
         var objects = manager.AssetsFileList
             .SelectMany(file => file.Objects)
             .ToList();
         var objectRefsByPathId = BuildObjectRefIndex(objects);
+        var rendererEnabledByPathId = objects
+            .OfType<Renderer>()
+            .ToDictionary(renderer => renderer.m_PathID, renderer => renderer.m_Enabled);
         var allMonoBehaviours = objects
             .OfType<MonoBehaviour>()
             .Select(mono => new SpringMonoRaw(
@@ -48,6 +56,13 @@ public sealed class SpringBoneExporter
         var managerReferencedBonePathIds = allMonoBehaviours
             .Where(entry => string.Equals(entry.ScriptName, "SpringManager", StringComparison.OrdinalIgnoreCase))
             .SelectMany(entry => ReadObjectArray(entry.Raw, "springBones"))
+            .Select(value => ResolveObjectRef(value, objectRefsByPathId)?.PathId)
+            .Where(pathId => pathId is not null)
+            .Select(pathId => pathId!.Value)
+            .ToHashSet();
+        var managerReferencedForceProviderPathIds = allMonoBehaviours
+            .Where(entry => string.Equals(entry.ScriptName, "SpringManager", StringComparison.OrdinalIgnoreCase))
+            .SelectMany(entry => ReadObjectArray(entry.Raw, "forceProviders"))
             .Select(value => ResolveObjectRef(value, objectRefsByPathId)?.PathId)
             .Where(pathId => pathId is not null)
             .Select(pathId => pathId!.Value)
@@ -88,15 +103,32 @@ public sealed class SpringBoneExporter
             .ToList();
         var sphereColliders = monoBehaviours
             .Where(entry => string.Equals(entry.ScriptName, "SpringSphereCollider", StringComparison.OrdinalIgnoreCase))
-            .Select(entry => BuildSpringColliderEntry(entry))
+            .Select(entry => BuildSpringColliderEntry(entry, objectRefsByPathId, rendererEnabledByPathId))
             .ToList();
         var capsuleColliders = monoBehaviours
             .Where(entry => string.Equals(entry.ScriptName, "SpringCapsuleCollider", StringComparison.OrdinalIgnoreCase))
-            .Select(entry => BuildSpringColliderEntry(entry))
+            .Select(entry => BuildSpringColliderEntry(entry, objectRefsByPathId, rendererEnabledByPathId))
             .ToList();
         var panelColliders = monoBehaviours
             .Where(entry => string.Equals(entry.ScriptName, "SpringPanelCollider", StringComparison.OrdinalIgnoreCase))
-            .Select(entry => BuildSpringColliderEntry(entry))
+            .Select(entry => BuildSpringColliderEntry(entry, objectRefsByPathId, rendererEnabledByPathId))
+            .ToList();
+        var forceProviderEntries = managerReferencedForceProviderPathIds.Count > 0
+            ? managerReferencedForceProviderPathIds
+                .Select(pathId => monoByPathId.TryGetValue(pathId, out var entry) ? entry : null)
+                .Where(entry => entry is not null)
+                .Cast<SpringMonoRaw>()
+            : allMonoBehaviours
+                .Where(entry => string.Equals(entry.ScriptName, "WindVolumeOneSelf", StringComparison.OrdinalIgnoreCase));
+        var forceProviders = forceProviderEntries
+            .Where(entry => entry is not null)
+            .Cast<SpringMonoRaw>()
+            .Select(entry => new SpringMonoBehaviourEntry(
+                PathId: entry.Mono.m_PathID,
+                ScriptName: entry.ScriptName,
+                GameObject: ResolveGameObject(entry.Mono.m_GameObject),
+                Raw: entry.Raw
+            ))
             .ToList();
         var extraBones = monoBehaviours
             .Where(entry => string.Equals(entry.ScriptName, "ExtraBone", StringComparison.OrdinalIgnoreCase))
@@ -133,6 +165,7 @@ public sealed class SpringBoneExporter
             SphereColliders: sphereColliders,
             CapsuleColliders: capsuleColliders,
             PanelColliders: panelColliders,
+            ForceProviders: forceProviders,
             ExtraBones: extraBones,
             CharacterHair: characterHair,
             CharacterEye: characterEye,
@@ -153,7 +186,13 @@ public sealed class SpringBoneExporter
             Radius: ReadFloat(entry.Raw, "radius"),
             StiffnessForce: ReadFloat(entry.Raw, "stiffnessForce"),
             DragForce: ReadFloat(entry.Raw, "dragForce"),
+            WindInfluence: ReadFloat(entry.Raw, "windInfluence"),
             SpringForce: ReadVector3(entry.Raw, "springForce"),
+            LengthLimitTargets: ReadObjectArray(entry.Raw, "lengthLimitTargets")
+                .Select(value => ResolveObjectRef(value, objectRefsByPathId))
+                .Where(reference => reference is not null)
+                .Cast<SpringObjectRef>()
+                .ToList(),
             Colliders: ReadColliderRefs(entry.Raw, objectRefsByPathId),
             Raw: entry.Raw
         );
@@ -175,19 +214,28 @@ public sealed class SpringBoneExporter
             .Select(value => ResolveObjectRef(value, objectRefsByPathId))
             .Where(reference => reference is not null)
             .Cast<SpringObjectRef>()
-            .GroupBy(reference => reference.PathId)
-            .Select(group => group.First())
             .ToList();
     }
 
     private static SpringColliderEntry BuildSpringColliderEntry(
-        SpringMonoRaw entry
+        SpringMonoRaw entry,
+        IReadOnlyDictionary<long, SpringObjectRef> objectRefsByPathId,
+        IReadOnlyDictionary<long, bool> rendererEnabledByPathId
     )
     {
+        var linkedRendererNode = ReadObject(entry.Raw, "linkedRenderer");
+        var linkedRenderer = ResolveObjectRef(linkedRendererNode, objectRefsByPathId);
+        var linkedRendererPathId = ReadObjectPathId(linkedRendererNode);
+        var linkedRendererEnabled = linkedRendererPathId is not null &&
+            rendererEnabledByPathId.TryGetValue(linkedRendererPathId.Value, out var isEnabled)
+                ? isEnabled
+                : (bool?)null;
         return new SpringColliderEntry(
             PathId: entry.Mono.m_PathID,
             ScriptName: entry.ScriptName,
             GameObject: ResolveGameObject(entry.Mono.m_GameObject),
+            LinkedRenderer: linkedRenderer,
+            LinkedRendererEnabled: linkedRendererEnabled,
             Radius: ReadFloat(entry.Raw, "radius"),
             Height: ReadFloat(entry.Raw, "height") ?? ReadFloat(entry.Raw, "length"),
             Center: ReadVector3(entry.Raw, "center") ?? ReadVector3(entry.Raw, "offset"),
@@ -270,8 +318,62 @@ public sealed class SpringBoneExporter
             Name: gameObject.m_Name,
             TransformPath: gameObject.m_Transform is null
                 ? null
-                : BuildTransformPath(gameObject.m_Transform)
+                : BuildTransformPath(gameObject.m_Transform),
+            ActiveSelf: ReadGameObjectActiveSelf(gameObject),
+            ActiveInHierarchy: ReadGameObjectActiveInHierarchy(gameObject)
         );
+    }
+
+    private static bool? ReadGameObjectActiveSelf(GameObject gameObject)
+    {
+        try
+        {
+            var raw = ConvertToJsonObject(gameObject.ToType());
+            return raw is not null && TryGetProperty(raw, "m_IsActive", out var value)
+                ? ReadBool(value)
+                : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool? ReadGameObjectActiveInHierarchy(GameObject gameObject)
+    {
+        return ReadGameObjectActiveInHierarchy(gameObject, new HashSet<long>());
+    }
+
+    private static bool? ReadGameObjectActiveInHierarchy(GameObject gameObject, HashSet<long> visited)
+    {
+        if (!visited.Add(gameObject.m_PathID))
+        {
+            return null;
+        }
+
+        var activeSelf = ReadGameObjectActiveSelf(gameObject);
+        if (activeSelf == false)
+        {
+            return false;
+        }
+
+        if (gameObject.m_Transform is null ||
+            !gameObject.m_Transform.m_Father.TryGet(out Transform father) ||
+            !father.m_GameObject.TryGet(out GameObject parent))
+        {
+            return activeSelf;
+        }
+
+        var parentActive = ReadGameObjectActiveInHierarchy(parent, visited);
+        if (parentActive == false)
+        {
+            return false;
+        }
+        if (activeSelf is null || parentActive is null)
+        {
+            return null;
+        }
+        return true;
     }
 
     private static SpringObjectRef? ResolveObjectRef(
@@ -286,6 +388,13 @@ public sealed class SpringBoneExporter
         var fileId = ReadInt(obj, "m_FileID") ?? 0;
         var pathId = ReadLong(obj, "m_PathID") ?? 0;
         return ResolveObjectRef(fileId, pathId, objectRefsByPathId);
+    }
+
+    private static long? ReadObjectPathId(JsonNode? node)
+    {
+        return node is JsonObject obj
+            ? ReadLong(obj, "m_PathID")
+            : null;
     }
 
     private static SpringObjectRef? ResolveObjectRef(
@@ -373,6 +482,24 @@ public sealed class SpringBoneExporter
                 : null;
         }
         return null;
+    }
+
+    private static bool? ReadBool(JsonNode? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        return value.GetValueKind() switch
+        {
+            System.Text.Json.JsonValueKind.True => true,
+            System.Text.Json.JsonValueKind.False => false,
+            System.Text.Json.JsonValueKind.Number when value.AsValue().TryGetValue<int>(out var result) => result != 0,
+            System.Text.Json.JsonValueKind.Number when value.AsValue().TryGetValue<long>(out var result) => result != 0,
+            System.Text.Json.JsonValueKind.Number when value.AsValue().TryGetValue<float>(out var result) => MathF.Abs(result) > 0.00001f,
+            _ => null,
+        };
     }
 
     private static long? ReadLong(JsonObject obj, string key)
@@ -543,11 +670,15 @@ public sealed class SpringBoneExporter
             var transformPath = gameObject.m_Transform is null
                 ? null
                 : BuildTransformPath(gameObject.m_Transform);
+            var activeSelf = ReadGameObjectActiveSelf(gameObject);
+            var activeInHierarchy = ReadGameObjectActiveInHierarchy(gameObject);
             refs[gameObject.m_PathID] = new SpringObjectRef(
                 FileId: 0,
                 PathId: gameObject.m_PathID,
                 Name: gameObject.m_Name,
-                TransformPath: transformPath
+                TransformPath: transformPath,
+                ActiveSelf: activeSelf,
+                ActiveInHierarchy: activeInHierarchy
             );
             if (gameObject.m_Transform is not null)
             {
@@ -555,7 +686,9 @@ public sealed class SpringBoneExporter
                     FileId: 0,
                     PathId: gameObject.m_Transform.m_PathID,
                     Name: gameObject.m_Name,
-                    TransformPath: transformPath
+                    TransformPath: transformPath,
+                    ActiveSelf: activeSelf,
+                    ActiveInHierarchy: activeInHierarchy
                 );
             }
         }
@@ -567,7 +700,22 @@ public sealed class SpringBoneExporter
                 FileId: 0,
                 PathId: mono.m_PathID,
                 Name: gameObject?.Name ?? ResolveScriptName(mono),
-                TransformPath: gameObject?.TransformPath
+                TransformPath: gameObject?.TransformPath,
+                ActiveSelf: gameObject?.ActiveSelf,
+                ActiveInHierarchy: gameObject?.ActiveInHierarchy
+            );
+        }
+
+        foreach (var renderer in objects.OfType<Renderer>())
+        {
+            var gameObject = ResolveGameObject(renderer.m_GameObject);
+            refs[renderer.m_PathID] = new SpringObjectRef(
+                FileId: 0,
+                PathId: renderer.m_PathID,
+                Name: gameObject?.Name ?? renderer.type.ToString(),
+                TransformPath: gameObject?.TransformPath,
+                ActiveSelf: gameObject?.ActiveSelf,
+                ActiveInHierarchy: gameObject?.ActiveInHierarchy
             );
         }
 

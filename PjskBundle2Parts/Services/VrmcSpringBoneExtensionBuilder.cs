@@ -68,6 +68,7 @@ public sealed class VrmcSpringBoneExtensionBuilder
         var skippedJoints = new List<VrmcSpringBoneSkippedNode>();
 
         var colliderIndexMap = new Dictionary<int, int>();
+        var resolvedColliderIndexByKey = new Dictionary<ResolvedColliderKey, int>();
         var resolvedColliders = new List<VrmcSpringBoneCollider>();
         foreach (var collider in candidate.VrmExtensionDraft.Colliders)
         {
@@ -92,14 +93,23 @@ public sealed class VrmcSpringBoneExtensionBuilder
                 pathMatches.TryAdd(match.SourcePath, match);
             }
 
+            var shape = new VrmcSpringBoneColliderShape(
+                Sphere: collider.Shape.Sphere,
+                Capsule: collider.Shape.Capsule
+            );
+            var resolvedColliderKey = BuildResolvedColliderKey(resolved.NodeIndex, shape);
+            if (resolvedColliderIndexByKey.TryGetValue(resolvedColliderKey, out var existingIndex))
+            {
+                colliderIndexMap[collider.Index] = existingIndex;
+                continue;
+            }
+
             var extensionIndex = resolvedColliders.Count;
+            resolvedColliderIndexByKey[resolvedColliderKey] = extensionIndex;
             colliderIndexMap[collider.Index] = extensionIndex;
             resolvedColliders.Add(new VrmcSpringBoneCollider(
                 Node: resolved.NodeIndex,
-                Shape: new VrmcSpringBoneColliderShape(
-                    Sphere: collider.Shape.Sphere,
-                    Capsule: collider.Shape.Capsule
-                )
+                Shape: shape
             ));
         }
 
@@ -241,6 +251,61 @@ public sealed class VrmcSpringBoneExtensionBuilder
         );
 
         return new VrmcSpringBoneBuildResult(extension, report);
+    }
+
+    private static ResolvedColliderKey BuildResolvedColliderKey(
+        int nodeIndex,
+        VrmcSpringBoneColliderShape shape
+    )
+    {
+        if (shape.Sphere is not null)
+        {
+            return new ResolvedColliderKey(
+                Node: nodeIndex,
+                Kind: "sphere",
+                Radius: shape.Sphere.Radius,
+                OffsetX: FloatAt(shape.Sphere.Offset, 0),
+                OffsetY: FloatAt(shape.Sphere.Offset, 1),
+                OffsetZ: FloatAt(shape.Sphere.Offset, 2),
+                TailX: 0f,
+                TailY: 0f,
+                TailZ: 0f
+            );
+        }
+
+        if (shape.Capsule is not null)
+        {
+            return new ResolvedColliderKey(
+                Node: nodeIndex,
+                Kind: "capsule",
+                Radius: shape.Capsule.Radius,
+                OffsetX: FloatAt(shape.Capsule.Offset, 0),
+                OffsetY: FloatAt(shape.Capsule.Offset, 1),
+                OffsetZ: FloatAt(shape.Capsule.Offset, 2),
+                TailX: FloatAt(shape.Capsule.Tail, 0),
+                TailY: FloatAt(shape.Capsule.Tail, 1),
+                TailZ: FloatAt(shape.Capsule.Tail, 2)
+            );
+        }
+
+        return new ResolvedColliderKey(
+            Node: nodeIndex,
+            Kind: "none",
+            Radius: 0f,
+            OffsetX: 0f,
+            OffsetY: 0f,
+            OffsetZ: 0f,
+            TailX: 0f,
+            TailY: 0f,
+            TailZ: 0f
+        );
+    }
+
+    private static float FloatAt(float[] values, int index)
+    {
+        return index >= 0 && index < values.Length
+            ? values[index]
+            : 0f;
     }
 
     private static IReadOnlyList<VrmcRuntimeSpringJoint> BuildRuntimeJointChain(
@@ -528,5 +593,17 @@ public sealed class VrmcSpringBoneExtensionBuilder
         string? NodeName,
         string? PrimaryPath,
         string? FallbackPath
+    );
+
+    private sealed record ResolvedColliderKey(
+        int Node,
+        string Kind,
+        float Radius,
+        float OffsetX,
+        float OffsetY,
+        float OffsetZ,
+        float TailX,
+        float TailY,
+        float TailZ
     );
 }

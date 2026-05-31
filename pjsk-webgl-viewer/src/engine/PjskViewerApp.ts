@@ -23,6 +23,11 @@ import {
   type SekaiLayerAtlas,
 } from "../materials/sekaiLayerMaterial";
 import { loadGltfAnimations, loadGltfPart } from "./loadGltfPart";
+import {
+  UtjSpringBoneRuntime,
+  type UtjSpringBoneRuntimeSnapshot,
+} from "./utjSpringBoneRuntimeAdapter";
+import { SekaiExtraBoneRuntime } from "./sekaiExtraBoneRuntime";
 
 const NECK_CONTACT_SHADOW_STRENGTH = 0.0;
 const DEFAULT_CAMERA_TARGET_SCALE = new THREE.Vector3(0.04835, 0.48222, 0.07241);
@@ -87,6 +92,8 @@ export type RenderIsolationMode =
   | "face_sdf"
   | "no_face_sdf"
   | "no_face_layers"
+  | "eyelight_only"
+  | "no_eyelight"
   | "outline_only"
   | "no_outline"
   | "no_body_outline"
@@ -198,6 +205,7 @@ export type SpringBoneRuntimeSnapshot = {
   characterHairPresent: boolean;
   characterEyePresent: boolean;
   vrmSpringBoneManagerPresent: boolean;
+  utjRuntime?: UtjSpringBoneRuntimeSnapshot | null;
   source: "PJSK_sekai_runtime" | "none";
 };
 
@@ -341,7 +349,8 @@ function summarizeSpringBonePart(value: unknown) {
 
 function summarizeSpringBoneMetadata(
   runtimeExtension: unknown,
-  vrmSpringBoneManagerPresent: boolean
+  vrmSpringBoneManagerPresent: boolean,
+  utjRuntime: UtjSpringBoneRuntimeSnapshot | null
 ): SpringBoneRuntimeSnapshot {
   const extension = asRecord(runtimeExtension);
   const payload = asRecord(extension.pjskSpringBone ?? extension.PjskSpringBone);
@@ -366,6 +375,7 @@ function summarizeSpringBoneMetadata(
     characterHairPresent: head.characterHairPresent,
     characterEyePresent: head.characterEyePresent,
     vrmSpringBoneManagerPresent,
+    utjRuntime,
     source: present ? "PJSK_sekai_runtime" : "none",
   };
 }
@@ -601,6 +611,122 @@ function getDefaultCameraTarget(characterHeight: number) {
 function getDefaultCameraPosition(characterHeight: number) {
   return getDefaultCameraTarget(characterHeight)
     .add(DEFAULT_CAMERA_OFFSET_SCALE.clone().multiplyScalar(characterHeight));
+}
+
+function makeSeededRandom(seed: number) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 0x100000000;
+  };
+}
+
+function drawCaptureTriangleBackground(width: number, height: number) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) {
+    return canvas;
+  }
+
+  const primary = context.createLinearGradient(0, height, width, 0);
+  primary.addColorStop(0, "#f9fffe");
+  primary.addColorStop(0.52, "#edfaff");
+  primary.addColorStop(1, "#fff8fe");
+  context.fillStyle = primary;
+  context.fillRect(0, 0, width, height);
+
+  const overlay = context.createLinearGradient(0, 0, width, height);
+  overlay.addColorStop(0, "rgba(255, 246, 252, 0.34)");
+  overlay.addColorStop(1, "rgba(219, 246, 255, 0.40)");
+  context.fillStyle = overlay;
+  context.fillRect(0, 0, width, height);
+  context.fillStyle = "rgba(255, 255, 255, 0.48)";
+  context.fillRect(0, 0, width, height);
+
+  const random = makeSeededRandom(width * 73856093 ^ height * 19349663);
+  const colors = [
+    [166, 236, 255],
+    [214, 206, 255],
+    [255, 204, 238],
+    [255, 237, 182],
+  ] as const;
+  const aspect = width / Math.max(height, 1);
+  const wideShift = Math.min(0.12, Math.max(0, (aspect - 1) * 0.08));
+
+  const drawTriangle = (
+    x: number,
+    y: number,
+    rotation: number,
+    size: number,
+    color: readonly number[],
+    alpha: number
+  ) => {
+    context.save();
+    context.translate(x, y);
+    context.rotate(rotation);
+    context.beginPath();
+    for (let index = 0; index < 3; index += 1) {
+      const angle = -Math.PI / 2 + index * Math.PI * 2 / 3;
+      const px = Math.cos(angle) * size * 0.56;
+      const py = Math.sin(angle) * size * 0.56;
+      if (index === 0) {
+        context.moveTo(px, py);
+      } else {
+        context.lineTo(px, py);
+      }
+    }
+    context.closePath();
+    context.fillStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${alpha})`;
+    context.fill();
+    context.restore();
+  };
+
+  const drawRandomTriangles = (count: number, baseSize: number) => {
+    for (let index = 0; index < count; index += 1) {
+      const edgeRoll = random();
+      let x: number;
+      let y: number;
+      if (edgeRoll < 0.78) {
+        const edge = random();
+        if (edge < 0.26) {
+          x = (-0.04 + random() * 0.22) * width;
+          y = random() * height;
+        } else if (edge < 0.50) {
+          x = (0.82 - wideShift + random() * (0.21 + wideShift)) * width;
+          y = random() * height;
+        } else if (edge < 0.78) {
+          x = random() * width;
+          y = (-0.04 + random() * (0.24 + wideShift * 0.5)) * height;
+        } else {
+          x = random() * width;
+          y = (0.80 - wideShift * 0.8 + random() * (0.23 + wideShift * 0.8)) * height;
+        }
+      } else {
+        x = (0.12 + random() * 0.76) * width;
+        y = (0.12 + random() * 0.76) * height;
+      }
+      const dx = (x - width * 0.5) / width * 2;
+      const dy = (y - height * 0.5) / height * 2;
+      const edgeDistance = Math.max(0.28, dx * dx + dy * dy);
+      const size = baseSize * (0.72 + random() * 0.46) * edgeDistance;
+      const alpha = (0.08 + random() * 0.13) * Math.min(1.25, edgeDistance + 0.25);
+      drawTriangle(
+        x,
+        y,
+        random() * Math.PI * 2,
+        size,
+        colors[Math.floor(random() * colors.length)],
+        alpha
+      );
+    }
+  };
+
+  const scale = Math.min(width, height) / 1000;
+  drawRandomTriangles(Math.max(8, Math.round(18 * scale)), 150 * scale);
+  drawRandomTriangles(Math.max(24, Math.round(80 * scale)), 72 * scale);
+  return canvas;
 }
 
 function getBodyNeckContactCenter(bodyAsset?: BodyAssetManifest | null) {
@@ -1277,6 +1403,16 @@ function filterBodyHeadMotionTracks(clip: THREE.AnimationClip) {
   );
 }
 
+function prepareRuntimeAnimationClip(
+  clip: THREE.AnimationClip,
+  includeBodyHeadTracks: boolean,
+  utjControlledNodeNames: ReadonlySet<string>
+) {
+  void utjControlledNodeNames;
+  const bodyClip = includeBodyHeadTracks ? clip : filterBodyHeadMotionTracks(clip);
+  return bodyClip;
+}
+
 export class PjskViewerApp {
   private readonly container: HTMLElement;
   private readonly scene: THREE.Scene;
@@ -1294,6 +1430,9 @@ export class PjskViewerApp {
   private readonly bodySlot: THREE.Group;
   private readonly headSlot: THREE.Group;
   private readonly attachGuide: THREE.Line;
+  private readonly sceneReference = new THREE.Group();
+  private capturePresentationEnabled = false;
+  private captureBackgroundTexture: THREE.CanvasTexture | null = null;
   private animationFrame = 0;
   private importRevision = 0;
   private currentBodyAsset: BodyAssetManifest | null = null;
@@ -1337,12 +1476,15 @@ export class PjskViewerApp {
   private readonly currentHeadMorphRuntimes: HeadMorphRuntime[] = [];
   private currentRuntimeExtension: unknown = null;
   private currentVrmSpringBoneManager: VRMSpringBoneManager | null = null;
+  private currentUtjSpringBoneRuntime: UtjSpringBoneRuntime | null = null;
+  private currentExtraBoneRuntime: SekaiExtraBoneRuntime | null = null;
   private readonly animationClipCache = new Map<string, THREE.AnimationClip[]>();
   private readonly smoothedLoopClipCache = new WeakMap<THREE.AnimationClip, THREE.AnimationClip>();
   private animationPlaybackSpeed = 1;
   private animationPaused = false;
   private faceMotionEnabled = true;
   private bodyHeadTracksEnabled = true;
+  private utjSpringBoneEnabled = false;
   private animationRevision = 0;
   private characterHeight = 1;
   private readonly tempMatrixA = new THREE.Matrix4();
@@ -1353,18 +1495,6 @@ export class PjskViewerApp {
   private readonly faceRightWorld = new THREE.Vector3();
   private readonly faceUpWorld = new THREE.Vector3();
   private readonly faceForwardWorld = new THREE.Vector3();
-  private readonly sideHairParentWorld = new THREE.Vector3();
-  private readonly sideHairTailWorld = new THREE.Vector3();
-  private readonly sideHairColliderWorld = new THREE.Vector3();
-  private readonly sideHairCurrentDir = new THREE.Vector3();
-  private readonly sideHairTargetDir = new THREE.Vector3();
-  private readonly sideHairPush = new THREE.Vector3();
-  private readonly sideHairWorldDelta = new THREE.Quaternion();
-  private readonly sideHairWeightedDelta = new THREE.Quaternion();
-  private readonly sideHairBoneWorldQuat = new THREE.Quaternion();
-  private readonly sideHairParentWorldQuat = new THREE.Quaternion();
-  private readonly sideHairTargetLocalQuat = new THREE.Quaternion();
-  private readonly sideHairTargetTailWorld = new THREE.Vector3();
   private materialBindingMode: MaterialBindingMode = "manifest";
   private bodyDebugMode: BodyDebugMode = "off";
   private toonShadowWidthOverride: number | null = null;
@@ -1396,6 +1526,7 @@ export class PjskViewerApp {
     this.renderer.setSize(width, height);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.container.appendChild(this.renderer.domElement);
+    this.updateCaptureBackgroundTexture();
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -1572,6 +1703,8 @@ export class PjskViewerApp {
       characterAsset.runtimeExtension
     );
     this.currentVrmSpringBoneManager = loaded.springBoneManager ?? null;
+    this.currentUtjSpringBoneRuntime = null;
+    this.currentExtraBoneRuntime = null;
     this.currentBodyAttachNode = null;
     this.currentHeadAttachOriginNode = null;
     this.runtimeDebug.headMorphs = [];
@@ -1599,6 +1732,14 @@ export class PjskViewerApp {
       );
       this.bindHeadMorphTargets(loaded.root, characterAsset.headAsset);
       this.prepareCombinedComposition(bodySkeletonRoot, loaded.root);
+      this.currentExtraBoneRuntime = SekaiExtraBoneRuntime.fromPjskRuntimeExtension(
+        this.currentRuntimeExtension,
+        loaded.root
+      );
+      this.currentUtjSpringBoneRuntime = UtjSpringBoneRuntime.fromPjskRuntimeExtension(
+        this.currentRuntimeExtension,
+        loaded.root
+      );
     } else {
       this.currentCompositionStatus = {
         mode: "separate_parts",
@@ -1673,6 +1814,8 @@ export class PjskViewerApp {
 
   private applyRenderIsolationMode() {
     const faceSdfEnabled = this.renderIsolationMode === "face_sdf";
+    const eyelightOnly = this.renderIsolationMode === "eyelight_only";
+    const noEyelight = this.renderIsolationMode === "no_eyelight";
     const faceLayersVisible = this.renderIsolationMode !== "no_face_layers";
     const outlineOnly = this.renderIsolationMode === "outline_only";
     const outlineVisible = this.renderIsolationMode !== "no_outline";
@@ -1690,14 +1833,20 @@ export class PjskViewerApp {
           sourceKind === "eyebrow" ||
           sourceKind === "eye" ||
           sourceKind === "eyelight";
+        if (eyelightOnly) {
+          mesh.visible = sourceKind === "eyelight";
+          return;
+        }
         mesh.visible =
           outlineVisible &&
           !isOutlineHiddenByIsolation(sourceKind, this.renderIsolationMode) &&
+          (!noEyelight || sourceKind !== "eyelight") &&
           (!isFaceLayerOutline || faceLayersVisible);
         return;
       }
       const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
       let isFaceLayer = false;
+      let isEyelightLayer = false;
       for (const material of materials) {
         if (material instanceof THREE.ShaderMaterial) {
           if (material.uniforms.uFaceSdfEnabled) {
@@ -1705,15 +1854,18 @@ export class PjskViewerApp {
           }
           if (material.uniforms.uMode && !material.uniforms.uFaceSdfEnabled) {
             isFaceLayer = true;
+            isEyelightLayer = isEyelightLayer || material.uniforms.uMode.value > 1.5;
           }
         }
       }
       if (outlineOnly) {
         mesh.visible = false;
+      } else if (eyelightOnly) {
+        mesh.visible = isEyelightLayer;
       } else if (isFaceLayer) {
-        mesh.visible = faceLayersVisible;
+        mesh.visible = faceLayersVisible && (!noEyelight || !isEyelightLayer);
       } else {
-        mesh.visible = true;
+        mesh.visible = !eyelightOnly;
       }
     };
     for (const slot of [this.bodySlot, this.headSlot]) {
@@ -1929,7 +2081,8 @@ export class PjskViewerApp {
   getSpringBoneSnapshot(): SpringBoneRuntimeSnapshot {
     return summarizeSpringBoneMetadata(
       this.currentRuntimeExtension,
-      Boolean(this.currentVrmSpringBoneManager)
+      Boolean(this.currentVrmSpringBoneManager),
+      this.currentUtjSpringBoneRuntime?.getSnapshot(this.utjSpringBoneEnabled) ?? null
     );
   }
 
@@ -1996,6 +2149,15 @@ export class PjskViewerApp {
     void this.refreshAnimationPlayback();
   }
 
+  setUtjSpringBoneEnabled(enabled: boolean) {
+    this.utjSpringBoneEnabled = enabled;
+    if (enabled) {
+      this.currentUtjSpringBoneRuntime?.resetStateToCurrentPose();
+    } else {
+      this.currentUtjSpringBoneRuntime?.resetPose();
+    }
+  }
+
   seekAnimation(time: number) {
     const duration = Math.max(this.currentAnimationDuration, 0);
     const nextTime = duration > 0
@@ -2011,7 +2173,80 @@ export class PjskViewerApp {
     this.currentFaceMotionTime = nextTime;
     this.applyCurrentFaceMotionFrame();
     this.syncLinkedHeadBones();
+    this.currentUtjSpringBoneRuntime?.resetStateToCurrentPose();
     this.applyAnimationPlaybackSettings();
+  }
+
+  seekAnimationLoopPhase(phase: number) {
+    this.activateQueuedLoopForSeek();
+    const duration = Math.max(this.currentAnimationDuration, 0);
+    const clampedPhase = THREE.MathUtils.clamp(
+      Number.isFinite(phase) ? phase : 0,
+      0,
+      1
+    );
+    this.seekAnimation(duration * clampedPhase);
+    return this.getAnimationSnapshot();
+  }
+
+  setCapturePresentation(enabled: boolean) {
+    this.capturePresentationEnabled = enabled;
+    if (enabled) {
+      this.scene.fog = null;
+      this.sceneReference.visible = false;
+      this.attachGuide.visible = false;
+      this.handleResize();
+      return;
+    }
+    this.scene.fog = new THREE.Fog("#7f8d95", 5.5, 15);
+    this.sceneReference.visible = true;
+    this.attachGuide.visible = true;
+  }
+
+  frameCurrentCharacterForCapture() {
+    const bounds = new THREE.Box3();
+    let hasBounds = false;
+    for (const slot of [this.bodySlot, this.headSlot]) {
+      slot.updateMatrixWorld(true);
+      slot.traverse((object) => {
+        if (!object.visible || !(object instanceof THREE.Mesh)) {
+          return;
+        }
+        bounds.expandByObject(object);
+        hasBounds = true;
+      });
+    }
+    if (!hasBounds || bounds.isEmpty()) {
+      return;
+    }
+
+    const center = bounds.getCenter(new THREE.Vector3());
+    const offset = this.camera.position.clone().sub(this.controls.target);
+    const nextTarget = this.controls.target.clone();
+    nextTarget.x = center.x;
+    nextTarget.z = center.z;
+    this.controls.target.copy(nextTarget);
+    this.camera.position.copy(nextTarget).add(offset);
+    this.controls.update();
+    this.cameraDebugChangeCallback?.();
+  }
+
+  stepCaptureFrame(delta: number, advanceAnimation: boolean) {
+    const stepDelta = Math.max(0, delta);
+    if (advanceAnimation) {
+      this.currentAnimationMixer?.update(stepDelta);
+      this.updateFaceMotion(stepDelta);
+    }
+    this.syncLinkedHeadBones();
+    this.currentExtraBoneRuntime?.update();
+    if (this.utjSpringBoneEnabled) {
+      this.currentUtjSpringBoneRuntime?.update(stepDelta);
+    } else {
+      this.currentUtjSpringBoneRuntime?.resetPose();
+    }
+    this.applyBodyNeckContactUniforms();
+    this.updateShaderCameraPositions();
+    this.updateShaderFaceBasis();
   }
 
   setFaceMotionSet(
@@ -2482,6 +2717,7 @@ export class PjskViewerApp {
     this.stopAnimationPlayback();
     window.removeEventListener("resize", this.handleResize);
     this.controls.dispose();
+    this.captureBackgroundTexture?.dispose();
     this.renderer.dispose();
     this.container.replaceChildren();
   }
@@ -2493,11 +2729,12 @@ export class PjskViewerApp {
     );
     floor.rotation.x = -Math.PI / 2;
     floor.position.y = -1.2;
-    this.scene.add(floor);
+    this.sceneReference.add(floor);
 
     const grid = new THREE.GridHelper(10, 20, "#a8957b", "#c2b19b");
     grid.position.y = -1.18;
-    this.scene.add(grid);
+    this.sceneReference.add(grid);
+    this.scene.add(this.sceneReference);
   }
 
   private applyCharacterHeight(height: number) {
@@ -3899,6 +4136,18 @@ export class PjskViewerApp {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
+    this.updateCaptureBackgroundTexture();
+  }
+
+  private updateCaptureBackgroundTexture() {
+    const width = Math.max(Math.round(this.container.clientWidth), 320);
+    const height = Math.max(Math.round(this.container.clientHeight), 320);
+    this.captureBackgroundTexture?.dispose();
+    this.captureBackgroundTexture = new THREE.CanvasTexture(
+      drawCaptureTriangleBackground(width, height)
+    );
+    this.captureBackgroundTexture.colorSpace = THREE.SRGBColorSpace;
+    this.scene.background = this.captureBackgroundTexture;
   }
 
   private updateShaderCameraPositions() {
@@ -4020,6 +4269,12 @@ export class PjskViewerApp {
     this.currentAnimationMixer?.update(delta);
     this.updateFaceMotion(delta);
     this.syncLinkedHeadBones();
+    this.currentExtraBoneRuntime?.update();
+    if (this.utjSpringBoneEnabled) {
+      this.currentUtjSpringBoneRuntime?.update(delta);
+    } else {
+      this.currentUtjSpringBoneRuntime?.resetPose();
+    }
     this.applyBodyNeckContactUniforms();
     this.controls.update();
     this.updateShaderCameraPositions();
@@ -4097,6 +4352,10 @@ export class PjskViewerApp {
     this.currentAnimationError = null;
 
     if (!this.currentAnimationUrl || !this.currentBodyAnimationRoot) {
+      this.syncLinkedHeadBones();
+      this.currentExtraBoneRuntime?.update();
+      this.currentUtjSpringBoneRuntime?.resetStateToCurrentPose();
+      this.currentUtjSpringBoneRuntime?.settleCurrentPose();
       return;
     }
 
@@ -4127,14 +4386,19 @@ export class PjskViewerApp {
       return;
     }
 
+    const utjControlledNodeNames =
+      this.currentUtjSpringBoneRuntime?.getControlledTrackNodeNames() ??
+      new Set<string>();
     this.currentAnimationMixer = new THREE.AnimationMixer(
       this.currentBodyAnimationRoot
     );
     const sourceClip = clips.find((candidate) => !isLoopClipName(candidate.name, this.currentAnimationUrl))
       ?? clips[0];
-    const clip = this.bodyHeadTracksEnabled
-      ? sourceClip
-      : filterBodyHeadMotionTracks(sourceClip);
+    const clip = prepareRuntimeAnimationClip(
+      sourceClip,
+      this.bodyHeadTracksEnabled,
+      utjControlledNodeNames
+    );
     const clipName = clip.name || this.currentAnimationUrl;
     this.currentAnimationClipName = clipName;
     this.currentAnimationDuration = clip.duration;
@@ -4151,11 +4415,13 @@ export class PjskViewerApp {
       const sourceLoopClip = clips.find((candidate) => isLoopClipName(candidate.name, loopUrl))
         ?? clips.find((candidate) => candidate !== sourceClip)
         ?? null;
-      loopClip = sourceLoopClip && this.bodyHeadTracksEnabled
-        ? sourceLoopClip
-        : sourceLoopClip
-          ? filterBodyHeadMotionTracks(sourceLoopClip)
-          : null;
+      loopClip = sourceLoopClip
+        ? prepareRuntimeAnimationClip(
+          sourceLoopClip,
+          this.bodyHeadTracksEnabled,
+          utjControlledNodeNames
+        )
+        : null;
     } else if (loopUrl) {
       let loopClips = this.animationClipCache.get(loopUrl);
       if (!loopClips) {
@@ -4168,11 +4434,13 @@ export class PjskViewerApp {
         }
       }
       const sourceLoopClip = loopClips?.[0] ?? null;
-      loopClip = sourceLoopClip && this.bodyHeadTracksEnabled
-        ? sourceLoopClip
-        : sourceLoopClip
-          ? filterBodyHeadMotionTracks(sourceLoopClip)
-          : null;
+      loopClip = sourceLoopClip
+        ? prepareRuntimeAnimationClip(
+          sourceLoopClip,
+          this.bodyHeadTracksEnabled,
+          utjControlledNodeNames
+        )
+        : null;
     }
 
     if (loopClip) {
@@ -4233,6 +4501,42 @@ export class PjskViewerApp {
     }
 
     this.applyAnimationPlaybackSettings();
+    this.currentAnimationMixer.update(0);
+    this.syncLinkedHeadBones();
+    this.currentExtraBoneRuntime?.update();
+    this.currentUtjSpringBoneRuntime?.resetStateToCurrentPose();
+    this.currentUtjSpringBoneRuntime?.settleCurrentPose();
+  }
+
+  private activateQueuedLoopForSeek() {
+    if (
+      !this.currentLoopAction ||
+      !this.currentAnimationMixer ||
+      !this.currentAnimationAction
+    ) {
+      return;
+    }
+
+    if (this.currentAnimationFinishedHandler) {
+      this.currentAnimationMixer.removeEventListener(
+        "finished",
+        this.currentAnimationFinishedHandler
+      );
+      this.currentAnimationFinishedHandler = null;
+    }
+
+    this.currentAnimationAction.stop();
+    this.currentLoopAction.enabled = true;
+    this.currentLoopAction.reset();
+    this.currentLoopAction.play();
+    this.currentAnimationAction = this.currentLoopAction;
+    this.currentLoopAction = null;
+    this.currentAnimationClipName =
+      this.queuedLoopClipName ?? this.currentAnimationAction.getClip().name;
+    this.currentAnimationDuration = this.currentAnimationAction.getClip().duration;
+    this.queuedLoopClipName = null;
+    this.promoteFaceMotionLoop();
+    this.applyAnimationPlaybackSettings();
   }
 
 
@@ -4271,296 +4575,6 @@ export class PjskViewerApp {
       link.headBone.quaternion.copy(this.tempQuaternion);
       link.headBone.scale.copy(this.tempScale);
       link.headBone.updateMatrix();
-    }
-    this.characterRoot.updateMatrixWorld(true);
-  }
-
-  private applyId273ScreenLeftSideHairProjection() {
-    const runtime = this.currentRuntimeExtension as
-      | {
-          character?: {
-            costume?: {
-              character3dId?: number;
-            };
-          };
-        }
-      | null;
-    if (runtime?.character?.costume?.character3dId !== 273) {
-      return;
-    }
-
-    const chainNames = [
-      "Right_S_hair_01_offset",
-      "EX_Right_S_hair_01",
-      "Right_S_hair_02_offset",
-      "EX_Right_S_hair_02",
-      "Right_S_hair_03_offset",
-      "EX_Right_S_hair_03",
-      "EX_Right_S_hair_03_spring_tail",
-    ];
-    const chain = chainNames
-      .map((name) => this.findNodeByImportedName(this.characterRoot, name))
-      .filter((node): node is THREE.Object3D => Boolean(node));
-    if (chain.length !== chainNames.length) {
-      return;
-    }
-
-    const colliders = [
-      { name: "CL_SpineSphereCollider", radius: 0.02 },
-      { name: "CL_ChestSphereCollider_Top", radius: 0.03 },
-      { name: "CL_ChestSphereCollider", radius: 0.03 },
-      { name: "CL_ChestSphereCollider_Center", radius: 0.03 },
-      { name: "CL_ChestSphereCollider_Head", radius: 0.03 },
-    ]
-      .map((entry) => ({
-        ...entry,
-        node: this.findNodeByImportedName(this.characterRoot, entry.name),
-      }))
-      .filter(
-        (entry): entry is {
-          name: string;
-          radius: number;
-          node: THREE.Object3D;
-        } => Boolean(entry.node)
-      );
-    if (!colliders.length) {
-      return;
-    }
-
-    this.characterRoot.updateMatrixWorld(true);
-    const restPositions = chain.map((node) =>
-      node.getWorldPosition(new THREE.Vector3())
-    );
-    const targetPositions = restPositions.map((position) => position.clone());
-    const restLengths = restPositions
-      .slice(1)
-      .map((position, index) => position.distanceTo(restPositions[index]));
-    const hitRadii = [0, 0.02, 0, 0.015, 0, 0.015, 0];
-    const collidesWithBodyUpper = [false, false, false, true, false, true, false];
-    const safetyMargin = 0.008;
-    const neck = this.findNodeByImportedName(this.characterRoot, "Neck");
-    const spine = this.findNodeByImportedName(this.characterRoot, "Spine");
-    const bodyDown = new THREE.Vector3(0, -1, 0);
-    if (neck && spine) {
-      bodyDown
-        .copy(spine.getWorldPosition(new THREE.Vector3()))
-        .sub(neck.getWorldPosition(new THREE.Vector3()));
-      if (bodyDown.lengthSq() > 0.000001) {
-        bodyDown.normalize();
-      } else {
-        bodyDown.set(0, -1, 0);
-      }
-    }
-    const restDown = restPositions[restPositions.length - 1]
-      .clone()
-      .sub(restPositions[0]);
-    if (restDown.lengthSq() > 0.000001) {
-      restDown.normalize();
-    } else {
-      restDown.copy(bodyDown);
-    }
-    const surfaceBiasDown = bodyDown
-      .clone()
-      .multiplyScalar(0.6)
-      .add(restDown.multiplyScalar(0.4));
-    if (surfaceBiasDown.lengthSq() > 0.000001) {
-      surfaceBiasDown.normalize();
-    } else {
-      surfaceBiasDown.set(0, -1, 0);
-    }
-    const slideFactors = [0, 0, 0, 0.22, 0, 0.3, 0];
-    const parentResponseFactors = [0, 1.9, 1.35, 0.9, 0.5, 0.24, 0.08];
-    const parentSlideFactors = [0, 0.58, 0.5, 0.42, 0.72, 0.95, 1.05];
-    const collisionWeightFactors = [0, 0, 0, 0.8, 0, 0.55, 0];
-    const surfaceSlide = new THREE.Vector3();
-    const aggregatePush = new THREE.Vector3();
-    let maxPenetration = 0;
-
-    for (let index = 1; index < targetPositions.length; index += 1) {
-      if (!collidesWithBodyUpper[index]) {
-        continue;
-      }
-      for (const collider of colliders) {
-        collider.node.getWorldPosition(this.sideHairColliderWorld);
-        this.sideHairPush
-          .copy(targetPositions[index])
-          .sub(this.sideHairColliderWorld);
-        if (this.sideHairPush.lengthSq() < 0.000001) {
-          this.sideHairPush.set(-1, 0, 0);
-        }
-        const distance = this.sideHairPush.length();
-        const penetration =
-          hitRadii[index] + collider.radius + safetyMargin - distance;
-        if (penetration <= 0) {
-          continue;
-        }
-        this.sideHairPush.normalize();
-        this.sideHairTargetDir
-          .copy(this.sideHairPush)
-          .addScaledVector(
-            bodyDown,
-            -this.sideHairPush.dot(bodyDown)
-          );
-        if (this.sideHairTargetDir.lengthSq() > 0.000001) {
-          this.sideHairPush.copy(this.sideHairTargetDir.normalize());
-        }
-        aggregatePush.addScaledVector(
-          this.sideHairPush,
-          penetration * collisionWeightFactors[index]
-        );
-        maxPenetration = Math.max(maxPenetration, penetration);
-      }
-    }
-
-    if (aggregatePush.lengthSq() > 0.000001) {
-      aggregatePush.normalize();
-      for (let index = 1; index < targetPositions.length; index += 1) {
-        targetPositions[index].addScaledVector(
-          aggregatePush,
-          maxPenetration * 1.75 * parentResponseFactors[index]
-        );
-        targetPositions[index].addScaledVector(
-          surfaceBiasDown,
-          maxPenetration * 0.85 * parentSlideFactors[index]
-        );
-      }
-    }
-
-    const projectPoint = (
-      position: THREE.Vector3,
-      hitRadius: number,
-      chainIndex: number
-    ) => {
-      let changed = false;
-      for (const collider of colliders) {
-        collider.node.getWorldPosition(this.sideHairColliderWorld);
-        this.sideHairPush.copy(position).sub(this.sideHairColliderWorld);
-        if (this.sideHairPush.lengthSq() < 0.000001) {
-          this.sideHairPush.set(-1, 0, 0);
-        }
-        const distance = this.sideHairPush.length();
-        const minimumDistance = hitRadius + collider.radius + safetyMargin;
-        if (distance >= minimumDistance) {
-          continue;
-        }
-        const penetration = minimumDistance - distance;
-        this.sideHairPush.normalize();
-        this.sideHairTargetDir
-          .copy(this.sideHairPush)
-          .addScaledVector(
-            bodyDown,
-            -this.sideHairPush.dot(bodyDown)
-          );
-        if (this.sideHairTargetDir.lengthSq() > 0.000001) {
-          this.sideHairPush.copy(this.sideHairTargetDir.normalize());
-        }
-        position.addScaledVector(
-          this.sideHairPush,
-          penetration
-        );
-        surfaceSlide
-          .copy(surfaceBiasDown)
-          .addScaledVector(
-            this.sideHairPush,
-            -surfaceBiasDown.dot(this.sideHairPush)
-          );
-        if (surfaceSlide.lengthSq() > 0.000001) {
-          position.addScaledVector(
-            surfaceSlide.normalize(),
-            penetration * slideFactors[chainIndex]
-          );
-        }
-        changed = true;
-      }
-      return changed;
-    };
-    const preventUpwardDrift = (index: number) => {
-      this.sideHairTargetDir
-        .copy(targetPositions[index])
-        .sub(restPositions[index]);
-      const upwardAmount = this.sideHairTargetDir.dot(bodyDown);
-      if (upwardAmount < 0) {
-        targetPositions[index].addScaledVector(bodyDown, -upwardAmount);
-      }
-    };
-
-    let hasCollision = aggregatePush.lengthSq() > 0.000001;
-    for (let iteration = 0; iteration < 8; iteration += 1) {
-      for (let index = 1; index < targetPositions.length; index += 1) {
-        this.sideHairTargetDir
-          .copy(targetPositions[index])
-          .sub(targetPositions[index - 1]);
-        if (this.sideHairTargetDir.lengthSq() < 0.000001) {
-          continue;
-        }
-        targetPositions[index]
-          .copy(targetPositions[index - 1])
-          .add(
-            this.sideHairTargetDir
-              .normalize()
-              .multiplyScalar(restLengths[index - 1])
-          );
-      }
-      for (let index = 1; index < targetPositions.length; index += 1) {
-        if (!collidesWithBodyUpper[index]) {
-          continue;
-        }
-        hasCollision =
-          projectPoint(targetPositions[index], hitRadii[index], index) ||
-          hasCollision;
-        preventUpwardDrift(index);
-      }
-    }
-
-    if (!hasCollision) {
-      return;
-    }
-
-    for (let pass = 0; pass < 3; pass += 1) {
-      for (let index = 0; index < chain.length - 1; index += 1) {
-        const bone = chain[index];
-        const end = chain[index + 1];
-        if (!bone.parent) {
-          continue;
-        }
-        this.characterRoot.updateMatrixWorld(true);
-        bone.getWorldPosition(this.sideHairParentWorld);
-        end.getWorldPosition(this.sideHairTailWorld);
-        this.sideHairCurrentDir
-          .copy(this.sideHairTailWorld)
-          .sub(this.sideHairParentWorld);
-        this.sideHairTargetDir
-          .copy(targetPositions[index + 1])
-          .sub(this.sideHairParentWorld);
-
-        if (
-          this.sideHairCurrentDir.lengthSq() < 0.0001 ||
-          this.sideHairTargetDir.lengthSq() < 0.0001
-        ) {
-          continue;
-        }
-
-        this.sideHairCurrentDir.normalize();
-        this.sideHairTargetDir.normalize();
-        this.sideHairWorldDelta.setFromUnitVectors(
-          this.sideHairCurrentDir,
-          this.sideHairTargetDir
-        );
-        this.sideHairWeightedDelta.identity().slerp(
-          this.sideHairWorldDelta,
-          0.58
-        );
-        bone.getWorldQuaternion(this.sideHairBoneWorldQuat);
-        bone.parent!.getWorldQuaternion(this.sideHairParentWorldQuat);
-        this.sideHairTargetLocalQuat
-          .copy(this.sideHairParentWorldQuat)
-          .invert()
-          .multiply(this.sideHairWeightedDelta)
-          .multiply(this.sideHairBoneWorldQuat);
-
-        bone.quaternion.copy(this.sideHairTargetLocalQuat);
-        bone.updateMatrix();
-      }
     }
     this.characterRoot.updateMatrixWorld(true);
   }

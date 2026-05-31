@@ -827,7 +827,7 @@ public sealed class MotionPackageExporter
             1 => new[] { -values[0], values[1], values[2] },
             2 => NormalizeQuaternion(new[] { values[0], -values[1], -values[2], values[3] }),
             3 => new[] { values[0], values[1], values[2] },
-            4 => EulerDegreesToQuaternion(values[0], -values[1], -values[2]),
+            4 => ConvertUnityEulerDegreesToExportQuaternion(values[0], values[1], values[2]),
             _ => values,
         };
     }
@@ -842,18 +842,10 @@ public sealed class MotionPackageExporter
         return new[] { q[0] / length, q[1] / length, q[2] / length, q[3] / length };
     }
 
-    private static float[] EulerDegreesToQuaternion(float xDegrees, float yDegrees, float zDegrees)
+    private static float[] ConvertUnityEulerDegreesToExportQuaternion(float xDegrees, float yDegrees, float zDegrees)
     {
-        var x = DegreesToRadians(xDegrees);
-        var y = DegreesToRadians(yDegrees);
-        var z = DegreesToRadians(zDegrees);
-        var quaternion = System.Numerics.Quaternion.CreateFromYawPitchRoll(y, x, z);
-        return NormalizeQuaternion(new[] { quaternion.X, quaternion.Y, quaternion.Z, quaternion.W });
-    }
-
-    private static float DegreesToRadians(float degrees)
-    {
-        return degrees * MathF.PI / 180f;
+        var quaternion = Fbx.EulerToQuaternion(new AssetStudio.Vector3(xDegrees, yDegrees, zDegrees));
+        return NormalizeQuaternion(new[] { quaternion.X, -quaternion.Y, -quaternion.Z, quaternion.W });
     }
 
     private static bool CanCollapseTrack(IReadOnlyList<float> values, int componentCount)
@@ -1138,6 +1130,7 @@ public sealed class MotionPackageExporter
                 continue;
             }
 
+            var nodeIndexMap = EnsureMergedAnimationNodes(mergedJson, root);
             var accessorOffset = GetArrayCount(mergedJson, "accessors");
             var bufferViewOffset = GetArrayCount(mergedJson, "bufferViews");
             var binOffset = Align4(mergedBin.Count);
@@ -1171,6 +1164,7 @@ public sealed class MotionPackageExporter
                 {
                     RemapAnimationAccessors(clone, accessorOffset);
                 }
+                RemapAnimationChannelNodes(clone, nodeIndexMap);
                 mergedAnimations.Add(clone);
             }
         }
@@ -1181,6 +1175,77 @@ public sealed class MotionPackageExporter
             buffer["byteLength"] = mergedBin.Count;
         }
         GltfJsonEditor.WriteDocumentToGlb(mergedJson, mergedBin.ToArray(), outputGlbPath);
+    }
+
+    private static int[] EnsureMergedAnimationNodes(JsonObject targetRoot, JsonObject sourceRoot)
+    {
+        var sourceNodes = sourceRoot["nodes"] as JsonArray;
+        if (sourceNodes is null || sourceNodes.Count == 0)
+        {
+            return Array.Empty<int>();
+        }
+
+        var targetNodes = EnsureArray(targetRoot, "nodes");
+        var targetNodeByName = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < targetNodes.Count; i++)
+        {
+            if (targetNodes[i] is not JsonObject node)
+            {
+                continue;
+            }
+
+            var name = node["name"]?.GetValue<string>();
+            if (!string.IsNullOrEmpty(name) && !targetNodeByName.ContainsKey(name))
+            {
+                targetNodeByName[name] = i;
+            }
+        }
+
+        var map = new int[sourceNodes.Count];
+        for (var i = 0; i < sourceNodes.Count; i++)
+        {
+            var sourceNode = sourceNodes[i] as JsonObject;
+            var name = sourceNode?["name"]?.GetValue<string>();
+            if (string.IsNullOrEmpty(name))
+            {
+                name = $"animation_node_{targetNodes.Count}";
+            }
+
+            if (!targetNodeByName.TryGetValue(name, out var targetIndex))
+            {
+                targetIndex = targetNodes.Count;
+                targetNodes.Add(new JsonObject { ["name"] = name });
+                targetNodeByName[name] = targetIndex;
+                AddSceneRootNode(targetRoot, targetIndex);
+            }
+            map[i] = targetIndex;
+        }
+
+        return map;
+    }
+
+    private static void AddSceneRootNode(JsonObject root, int nodeIndex)
+    {
+        var scenes = EnsureArray(root, "scenes");
+        if (scenes.Count == 0 || scenes[0] is not JsonObject scene)
+        {
+            scene = new JsonObject();
+            scenes.Insert(0, scene);
+            root["scene"] = 0;
+        }
+
+        var sceneNodes = scene["nodes"] as JsonArray;
+        if (sceneNodes is null)
+        {
+            sceneNodes = new JsonArray();
+            scene["nodes"] = sceneNodes;
+        }
+
+        if (!sceneNodes.OfType<JsonValue>().Any(value =>
+            value.TryGetValue<int>(out var existing) && existing == nodeIndex))
+        {
+            sceneNodes.Add(nodeIndex);
+        }
     }
 
     private static int GetArrayCount(JsonObject root, string key)
@@ -1279,6 +1344,28 @@ public sealed class MotionPackageExporter
             {
                 sampler["output"] = output + accessorOffset;
             }
+        }
+    }
+
+    private static void RemapAnimationChannelNodes(JsonObject animation, IReadOnlyList<int> nodeIndexMap)
+    {
+        if (nodeIndexMap.Count == 0 || animation["channels"] is not JsonArray channels)
+        {
+            return;
+        }
+
+        foreach (var channel in channels.OfType<JsonObject>())
+        {
+            if (channel["target"] is not JsonObject target ||
+                target["node"] is not JsonValue nodeValue ||
+                !nodeValue.TryGetValue<int>(out var sourceNode) ||
+                sourceNode < 0 ||
+                sourceNode >= nodeIndexMap.Count)
+            {
+                continue;
+            }
+
+            target["node"] = nodeIndexMap[sourceNode];
         }
     }
 }

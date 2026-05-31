@@ -1,78 +1,102 @@
 # PJSK WebGL Viewer
 
-Standalone Project SEKAI character viewer for converter outputs.
+Browser runtime for inspecting converted Project SEKAI character packages.
 
-## Why this exists
+The viewer does not parse Unity bundles. It loads the offline converter output folder, especially:
 
-The Blender exploration already established the important boundary:
+- `character/character.vrm`
+- `pjsk-sekai-runtime.extension.json`
+- `motion/body_motion.glb`, when present
+- `character/textures/**`
 
-- body, hair, and accessories can share a toon-lit path
-- face must remain a separate shader path
-- preview lighting should be external state
-- the browser runtime should prefer stable converted packages over raw Unity bundle parsing
-
-This project hardcodes those constraints into a WebGL runtime instead of extending the existing `sekai-viewer` frontend.
-
-## Current scope
-
-- Vite + TypeScript + Three.js standalone app
-- converter-folder import for lean `character/character.vrm` packages
-- legacy separate import slots for body and head
-- switchable assembly modes: stitched, manual, split
-- separate material functions for body and face
-- GLTF loader path with automatic proxy fallback
-- local asset picker entry for converted `.bundle -> .vrm/.glb` outputs
-- complete model composition based on `skeletonId`, neck attach node, and head attach origin
-- adjustable preview directional light
-- runtime import from `PJSK_sekai_runtime` custom metadata
-- PJSK springbone runtime from exported raw spring metadata, with VRM springbone fallback
-- VRM migration profile debug payload for preserving PJSK-specific runtime semantics
-
-## Expected asset pipeline
-
-Browser code should not parse raw Unity bundles directly.
-
-Target flow:
-
-1. Offline converter reads Unity bundles.
-2. Converter exports web-consumable model, skeleton, texture, and animation data.
-3. Viewer loads only converted outputs.
-
-VRM is treated as a transport/container upgrade, not as a shader replacement. Standard VRM/MToon is the compatibility fallback; exact PJSK rendering depends on custom extras carrying the same C/S/H, face SDF, material-kind, morph-binding, springbone, and assembly metadata used by this viewer.
-
-The type definitions in `src/data/sampleScene.ts` show the intended runtime boundary:
-
-- body asset manifest
-- head asset manifest
-- skeleton compatibility metadata
-- assembly state
-- animation URLs owned by the body import side
-
-## Resolved Issue: Texture Explosion
-
-The May 23, 2026 render failure was not caused by GLB skinning or viewer-side material slot matching.
-
-Root cause:
-
-- `AssetStudio`'s `ModelConverter` exports textures through `ConvertToStream(imageFormat, true)`.
-- That `true` performs a vertical flip during PNG export.
-- The viewer then received texture files that were already upside down, so manifest-bound textures looked exploded even when UVs, indices, and bind poses were correct.
-
-Final fix:
-
-- `PjskBundle2Parts` now normalizes every `ImportedTexture` back to glTF-facing orientation in `Services/AssetStudioImportedModelFactory.cs`.
-- The viewer still loads manifest textures with `flipY = false`, which is correct for glTF UV conventions.
-- When testing a new converter build, re-import the whole converter output folder so the browser gets fresh blob URLs.
-
-## Development
+## Quick Start
 
 ```bash
 npm install
 npm run dev
 ```
 
-## Current Gaps
+Open the local Vite URL and select the whole converter output folder, for example:
 
-1. Implement a browser equivalent of `SekaiBoneBasisDriver` for closer face SDF parity.
-2. Map PJSK face motion to portable VRM expressions or VRMA if external VRM tools need animation.
-3. Keep shader/material tuning aligned with current converter output instead of old split GLB samples.
+```text
+<converter-output-directory>
+```
+
+The preferred package is the lean runtime export from `PjskBundle2Parts`. Legacy split body/head imports are no longer the main path.
+
+## Capture Mode
+
+Generate a deterministic browser screenshot from a converter output folder:
+
+```bash
+npm run capture:runtime -- \
+  --input <converter-output-directory> \
+  --out <capture-output.png> \
+  --width 1400 \
+  --height 1000 \
+  --phase 0.5
+```
+
+Useful capture options:
+
+- `--phase <0..1>` seeks the selected loop phase.
+- `--warmup-frames <n>` steps the runtime at 60fps before capture.
+- `--warmup-mode animation` advances animation and runtime.
+- `--warmup-mode runtime` freezes animation and only settles runtime systems.
+- `--yaw <0|45|-45|90|-90|180>` sets character yaw.
+- `--utj-springbone` explicitly enables the experimental UTJ SpringBone runtime.
+
+UTJ SpringBone is off by default in both browser and capture mode. The metadata is still loaded and shown, but the runtime is disabled until the physics implementation is trustworthy again.
+
+## Runtime Behavior
+
+The viewer reads exact PJSK semantics from `PJSK_sekai_runtime`:
+
+- body/head assembly metadata
+- material slot kinds and C/S/H texture roles
+- face SDF texture role
+- morph hash/channel bindings
+- embedded face/light motion data
+- raw and candidate SpringBone metadata
+
+Motion behavior:
+
+- If `motion/body_motion.glb` is present in the runtime extension, it is selected automatically.
+- A merged `body_motion.glb` containing `motion` and `motion_loop` is treated as both the main clip and loop clip.
+- Embedded face clips are promoted with the body loop, so `face_loop` is active when the body loop is active.
+
+## Configuration
+
+Viewer defaults live in:
+
+```text
+src/config/viewerConfig.ts
+```
+
+This file owns UI/runtime defaults such as:
+
+- toon shadow preview presets
+- value shadow influence presets
+- character yaw presets
+- default render state
+- default animation state
+- default UTJ SpringBone enabled state
+
+Lighting and sample catalog data still live in `src/data/sampleScene.ts` because they are part of the runtime package boundary and fallback sample data.
+
+## Development Notes
+
+Build:
+
+```bash
+npm run build
+```
+
+Current constraints:
+
+- Browser code should load converted packages only, not raw bundles.
+- `character/character.vrm` is a transport container with PJSK custom extras, not a guarantee of generic VRM visual parity.
+- Exact rendering still depends on viewer-specific shaders and `PJSK_sekai_runtime`.
+- SpringBone metadata is retained, but UTJ runtime simulation is temporarily disabled by default.
+
+When testing a new converter build, regenerate the output folder and re-import the whole folder so stale browser blob URLs are not reused.

@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "capture:runtime": "node capture-runtime.mjs"
   },
   "dependencies": {
     "@pixiv/three-vrm": "^3.5.3",
