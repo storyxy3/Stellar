@@ -90,8 +90,14 @@ public sealed class VrmSpringBoneCandidateBuilder
         List<VrmSpringBonePivotCandidate> springBonePivots
     )
     {
+        var knownPivotKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var pivot in part.SpringBonePivots)
         {
+            var key = BuildSpringBonePivotKey(part.PartKind, pivot.PathId, pivot.GameObject?.TransformPath);
+            if (!knownPivotKeys.Add(key))
+            {
+                continue;
+            }
             springBonePivots.Add(new VrmSpringBonePivotCandidate(
                 PartKind: part.PartKind,
                 SourcePathId: pivot.PathId,
@@ -100,6 +106,36 @@ public sealed class VrmSpringBoneCandidateBuilder
                 NodePath: pivot.GameObject?.TransformPath
             ));
         }
+
+        foreach (var bone in part.Bones)
+        {
+            var pivot = bone.PivotNode;
+            if (pivot is null)
+            {
+                continue;
+            }
+
+            var key = BuildSpringBonePivotKey(part.PartKind, pivot.PathId, pivot.TransformPath);
+            if (!knownPivotKeys.Add(key))
+            {
+                continue;
+            }
+
+            springBonePivots.Add(new VrmSpringBonePivotCandidate(
+                PartKind: part.PartKind,
+                SourcePathId: pivot.PathId,
+                ScriptName: "SpringBonePivot",
+                NodeName: pivot.Name,
+                NodePath: pivot.TransformPath
+            ));
+        }
+    }
+
+    private static string BuildSpringBonePivotKey(string partKind, long sourcePathId, string? nodePath)
+    {
+        return sourcePathId != 0
+            ? $"{partKind}:id:{sourcePathId}"
+            : $"{partKind}:path:{nodePath ?? string.Empty}";
     }
 
     private static void AddColliders(

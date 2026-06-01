@@ -317,18 +317,6 @@ public sealed class VrmcSpringBoneExtensionBuilder
         var runtimeJoints = new List<VrmcRuntimeSpringJoint>();
         foreach (var joint in sourceJoints)
         {
-            if (!string.IsNullOrWhiteSpace(joint.PivotNodePath) &&
-                runtimeJoints.Count > 0)
-            {
-                AddRuntimeJointIfNew(runtimeJoints, new VrmcRuntimeSpringJoint(
-                    Source: joint,
-                    Kind: "joint_pivot",
-                    NodeName: joint.PivotNodeName,
-                    PrimaryPath: joint.PivotNodePath,
-                    FallbackPath: null
-                ));
-            }
-
             AddRuntimeJointIfNew(runtimeJoints, new VrmcRuntimeSpringJoint(
                 Source: joint,
                 Kind: "joint",
