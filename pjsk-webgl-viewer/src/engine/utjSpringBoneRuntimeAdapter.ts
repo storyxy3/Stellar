@@ -1628,14 +1628,58 @@ function resolveJointColliders(
     : orderedJointGroups !== undefined
     ? orderedJointGroups
     : spring.colliderGroups ?? [];
-  const colliders = groupIndexes.flatMap((index) => colliderGroupByIndex.get(index) ?? [])
-    .filter((collider) => {
-      if (!joint.nodeName?.includes("_BS_hair_01")) {
-        return true;
-      }
-      return !collider.source.name?.includes("CL_ChestSphereCollider_Head");
-    });
+  const colliders = preferMatchingPoseColliders(
+    groupIndexes.flatMap((index) => colliderGroupByIndex.get(index) ?? []),
+    spring,
+    joint
+  );
   return colliders;
+}
+
+function preferMatchingPoseColliders(
+  colliders: RuntimeCollider[],
+  spring: CandidateSpring,
+  joint: CandidateJoint
+): RuntimeCollider[] {
+  const preferredRoot = preferredColliderRoot(spring, joint);
+  if (!preferredRoot) {
+    return colliders;
+  }
+
+  const collidersByName = new Map<string, RuntimeCollider[]>();
+  for (const collider of colliders) {
+    const name = collider.source.nodeName ?? collider.source.name ?? "";
+    const items = collidersByName.get(name);
+    if (items) {
+      items.push(collider);
+    } else {
+      collidersByName.set(name, [collider]);
+    }
+  }
+
+  return colliders.filter((collider) => {
+    const name = collider.source.nodeName ?? collider.source.name ?? "";
+    const sameNameColliders = collidersByName.get(name);
+    if (!sameNameColliders || sameNameColliders.length <= 1) {
+      return true;
+    }
+    const hasPreferredPose = sameNameColliders.some((item) =>
+      item.source.nodePath?.startsWith(preferredRoot)
+    );
+    return !hasPreferredPose || collider.source.nodePath?.startsWith(preferredRoot);
+  });
+}
+
+function preferredColliderRoot(spring: CandidateSpring, joint: CandidateJoint): "body/" | "sit_body/" | null {
+  if (joint.nodePath?.startsWith("sit_body/")) {
+    return "sit_body/";
+  }
+  if (joint.nodePath?.startsWith("body/")) {
+    return "body/";
+  }
+  return spring.name?.startsWith("Head:") || joint.nodePath?.startsWith("face/")
+    ? "body/"
+    : null;
 }
 
 function resolveJointColliderGroupsByOrder(

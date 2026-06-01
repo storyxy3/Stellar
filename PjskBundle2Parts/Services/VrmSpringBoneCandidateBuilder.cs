@@ -427,6 +427,7 @@ public sealed class VrmSpringBoneCandidateBuilder
             .Where(collider => collider.GameObject?.ActiveInHierarchy != false)
             .Where(collider => MatchesRuntimeColliderFlag(collider, matchedBindings))
             .ToList();
+        sourceColliders = PreferMatchingPoseColliders(part, bone, sourceColliders);
         var colliderIndexes = sourceColliders
             .Select(collider => colliderIndexByKey.TryGetValue(
                 new SpringColliderKey(colliderSourcePart.PartKind, collider.PathId),
@@ -458,6 +459,56 @@ public sealed class VrmSpringBoneCandidateBuilder
             Colliders: colliderIndexes,
             SourceColliderPathIds: sourcePathIds
         );
+    }
+
+    private static List<SpringColliderEntry> PreferMatchingPoseColliders(
+        SpringBoneExport part,
+        SpringBoneEntry bone,
+        List<SpringColliderEntry> colliders
+    )
+    {
+        var preferredRoot = PreferredColliderRoot(part, bone);
+        if (preferredRoot is null)
+        {
+            return colliders;
+        }
+
+        var collidersByName = colliders
+            .GroupBy(collider => collider.GameObject?.Name ?? string.Empty, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
+        return colliders
+            .Where(collider =>
+            {
+                var name = collider.GameObject?.Name ?? string.Empty;
+                if (!collidersByName.TryGetValue(name, out var sameNameColliders) ||
+                    sameNameColliders.Count <= 1)
+                {
+                    return true;
+                }
+
+                var hasPreferredPose = sameNameColliders.Any(item =>
+                    item.GameObject?.TransformPath?.StartsWith(preferredRoot, StringComparison.Ordinal) == true);
+                return !hasPreferredPose ||
+                    collider.GameObject?.TransformPath?.StartsWith(preferredRoot, StringComparison.Ordinal) == true;
+            })
+            .ToList();
+    }
+
+    private static string? PreferredColliderRoot(SpringBoneExport part, SpringBoneEntry bone)
+    {
+        var bonePath = bone.GameObject?.TransformPath;
+        if (bonePath?.StartsWith("sit_body/", StringComparison.Ordinal) == true)
+        {
+            return "sit_body/";
+        }
+        if (bonePath?.StartsWith("body/", StringComparison.Ordinal) == true)
+        {
+            return "body/";
+        }
+        return string.Equals(part.PartKind, "Head", StringComparison.OrdinalIgnoreCase) ||
+            bonePath?.StartsWith("face/", StringComparison.Ordinal) == true
+                ? "body/"
+                : null;
     }
 
     private static bool MatchesRuntimeColliderFlag(
