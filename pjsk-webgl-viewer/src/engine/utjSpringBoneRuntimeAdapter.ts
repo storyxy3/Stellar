@@ -38,6 +38,7 @@ type CandidateCollider = {
   index?: number;
   sourcePathId?: number;
   name?: string;
+  poseRoot?: string | null;
   enabled?: boolean;
   linkedRenderer?: {
     fileId?: number;
@@ -68,6 +69,48 @@ type CandidateCollider = {
 type CandidateColliderGroup = {
   index?: number;
   colliders?: number[];
+  sourceKind?: string | null;
+  colliderFlag?: number | null;
+  matchedPrefixes?: string[] | null;
+  collidersByRoot?: Record<string, number[]> | null;
+  defaultRoot?: string | null;
+};
+
+type RuntimeUnitySetup = {
+  version?: number;
+  rootSelectionProfile?: {
+    defaultBodyRoot?: string;
+    rootCandidates?: { root?: string; defaultPriority?: number }[];
+  } | null;
+  managerColliderCaches?: RuntimeManagerColliderCache[];
+  bindingDecisions?: RuntimeBindingDecision[];
+  activeRootProfile?: {
+    defaultBodyRoot?: string;
+    activeRoots?: string[];
+    inactiveRoots?: string[];
+  } | null;
+};
+
+type RuntimeManagerColliderCache = {
+  managerPathId?: number;
+  partKind?: string | null;
+  sourcePoseRoot?: string | null;
+  runtimeRoot?: string | null;
+  managerNodeName?: string | null;
+  managerNodePath?: string | null;
+  springBonePathIds?: number[];
+  sphereColliderIndexes?: number[];
+  capsuleColliderIndexes?: number[];
+  panelColliderIndexes?: number[];
+};
+
+type RuntimeBindingDecision = {
+  sourceKind?: string | null;
+  sourceSpringBonePathId?: number;
+  colliderFlag?: number | null;
+  candidateRoots?: Record<string, number[]> | null;
+  defaultRoot?: string | null;
+  selectedColliderIndexes?: number[];
 };
 
 type CandidateSpring = {
@@ -146,6 +189,47 @@ type RuntimeCollider = {
   node: THREE.Object3D;
 };
 
+type RuntimeColliderGroup = {
+  source: CandidateColliderGroup;
+  colliders: RuntimeCollider[];
+  collidersByRoot: Map<string, RuntimeCollider[]>;
+};
+
+type RuntimeColliderBinding = {
+  colliders: RuntimeCollider[];
+  diagnostics: RuntimeColliderBindingDiagnostic[];
+};
+
+type RuntimeColliderBindingDiagnostic = {
+  sourceKind: string;
+  colliderFlag: number | null;
+  colliderGroupIndex: number | null;
+  springName: string;
+  boneName: string | null;
+  bonePath: string | null;
+  sourceSpringBonePathId: number | null;
+  candidateRoots: {
+    root: string;
+    colliderCount: number;
+    colliderSourcePathIds: number[];
+  }[];
+  defaultRoot: string | null;
+  selectedRoot: string | null;
+  selectedColliderCount: number;
+  selectedColliderSourcePathIds: number[];
+  selectionReason: string;
+};
+
+type RuntimeColliderRootSelection = {
+  root: string | null;
+  reason: string;
+};
+
+type RuntimeManagerColliderCacheBinding = {
+  source: RuntimeManagerColliderCache;
+  colliderIndexes: Set<number>;
+};
+
 type LastCollisionInfo = {
   kind: string;
   name: string | null;
@@ -157,6 +241,13 @@ type LastCollisionInfo = {
 type RuntimeBone = {
   managerPathId: number | null;
   springName: string;
+  sourceBoneName: string | null;
+  sourceBonePath: string | null;
+  sourceBonePathId: number | null;
+  pivotSourceName: string | null;
+  pivotSourcePath: string | null;
+  pivotResolvedPath: string | null;
+  tailBinding: RuntimeTailBindingDiagnostic;
   automaticUpdates: boolean;
   enabled: boolean;
   enableLengthLimits: boolean;
@@ -194,6 +285,7 @@ type RuntimeBone = {
   yAngleLimit: UtjAngleLimit | null;
   zAngleLimit: UtjAngleLimit | null;
   colliders: RuntimeCollider[];
+  colliderBindingDiagnostics: RuntimeColliderBindingDiagnostic[];
   angleLimitForwardSign: number;
   lastCollisionStatus: number;
   lastCollisionInfo: LastCollisionInfo | null;
@@ -249,6 +341,18 @@ type VectorSnapshot = {
   length: number;
 };
 
+type RuntimeTailBindingDiagnostic = {
+  mode: "fallback" | "singleChild" | "averageChildren";
+  childCount: number;
+  childNames: string[];
+  childPaths: string[];
+  tailPosition: THREE.Vector3;
+};
+
+type TailBindingSnapshot = Omit<RuntimeTailBindingDiagnostic, "tailPosition"> & {
+  tailPosition: VectorSnapshot;
+};
+
 type QuaternionSnapshot = {
   x: number;
   y: number;
@@ -285,6 +389,13 @@ export type UtjSpringBoneTraceEvent = {
   springName: string;
   boneName: string;
   bonePath: string;
+  sourceBoneName: string | null;
+  sourceBonePath: string | null;
+  sourceBonePathId: number | null;
+  pivotSourceName: string | null;
+  pivotSourcePath: string | null;
+  pivotResolvedPath: string | null;
+  tailBinding: TailBindingSnapshot;
   managerPathId: number | null;
   deltaTime: number;
   dynamicRatio: number;
@@ -364,6 +475,14 @@ export type UtjSpringBoneRuntimeSnapshot = {
     name: string;
     path: string;
     springName: string;
+    sourceBoneName: string | null;
+    sourceBonePath: string | null;
+    sourceBonePathId: number | null;
+    resolvedIsSkinnedBone: boolean;
+    pivotSourceName: string | null;
+    pivotSourcePath: string | null;
+    pivotResolvedPath: string | null;
+    tailBinding: TailBindingSnapshot;
     offset: number;
     colliderCount: number;
     lastCollisionStatus: number;
@@ -379,11 +498,20 @@ export type UtjSpringBoneRuntimeSnapshot = {
     animatedTipDelta: VectorSnapshot;
     velocity: VectorSnapshot;
     springForce: VectorSnapshot;
+    colliderBindings: RuntimeColliderBindingDiagnostic[];
   }[];
   skirtOffsets: {
     name: string;
     path: string;
     springName: string;
+    sourceBoneName: string | null;
+    sourceBonePath: string | null;
+    sourceBonePathId: number | null;
+    resolvedIsSkinnedBone: boolean;
+    pivotSourceName: string | null;
+    pivotSourcePath: string | null;
+    pivotResolvedPath: string | null;
+    tailBinding: TailBindingSnapshot;
     offset: number;
     appliedRotationDegrees: number;
     colliderCount: number;
@@ -404,7 +532,9 @@ export type UtjSpringBoneRuntimeSnapshot = {
     headMovement: VectorSnapshot;
     gravity: VectorSnapshot;
     springForce: VectorSnapshot;
+    colliderBindings: RuntimeColliderBindingDiagnostic[];
   }[];
+  bindingDiagnostics: RuntimeColliderBindingDiagnostic[];
   skinnedBoneMatches: number;
   skinnedBoneMisses: number;
 };
@@ -450,6 +580,9 @@ export class UtjSpringBoneRuntime {
   ): UtjSpringBoneRuntime | null {
     const payload = asRecord(extension);
     const springBone = asRecord(payload?.pjskSpringBone ?? payload?.PjskSpringBone);
+    const runtimeUnitySetup = asRecord(
+      springBone?.runtimeUnitySetup ?? springBone?.RuntimeUnitySetup
+    ) as RuntimeUnitySetup | null;
     const candidate = asRecord(springBone?.vrmCandidate ?? springBone?.VrmCandidate) as
       | Candidate
       | null;
@@ -463,6 +596,8 @@ export class UtjSpringBoneRuntime {
     const skinnedBones = collectSkinnedBones(root);
     const managerSettingsByPathId = buildManagerSettingsByPathId(springBone);
     const colliderByIndex = new Map<number, RuntimeCollider>();
+    const bindingDecisionByBonePathId = buildRuntimeBindingDecisionMap(runtimeUnitySetup);
+    const managerColliderCacheByPathId = buildRuntimeManagerColliderCacheMap(runtimeUnitySetup);
     const missingNodes: string[] = [];
 
     for (const collider of draft.colliders ?? []) {
@@ -480,7 +615,7 @@ export class UtjSpringBoneRuntime {
       colliderByIndex.set(collider.index, { source: collider, node });
     }
 
-    const colliderGroupByIndex = new Map<number, RuntimeCollider[]>();
+    const colliderGroupByIndex = new Map<number, RuntimeColliderGroup>();
     for (const group of draft.colliderGroups ?? []) {
       if (typeof group.index !== "number") {
         continue;
@@ -488,11 +623,24 @@ export class UtjSpringBoneRuntime {
       const colliders = (group.colliders ?? [])
         .map((index) => colliderByIndex.get(index))
         .filter((collider): collider is RuntimeCollider => Boolean(collider));
-      colliderGroupByIndex.set(group.index, colliders);
+      const collidersByRoot = new Map<string, RuntimeCollider[]>();
+      for (const [rootName, indexes] of Object.entries(group.collidersByRoot ?? {})) {
+        const rootColliders = indexes
+          .map((index) => colliderByIndex.get(index))
+          .filter((collider): collider is RuntimeCollider => Boolean(collider));
+        if (rootColliders.length > 0) {
+          collidersByRoot.set(rootName, rootColliders);
+        }
+      }
+      colliderGroupByIndex.set(group.index, {
+        source: group,
+        colliders,
+        collidersByRoot,
+      });
     }
 
     const bones: RuntimeBone[] = [];
-    const childExclusionNodes = collectSpringBoneChildExclusionNodes(draft.springBonePivots, resolution);
+    const childExclusionNodes = collectSpringBoneChildExclusionNodes(draft.springs, resolution);
     const controlledNodes = new Set<THREE.Object3D>();
     const forceProviderCache = new Map<string, RuntimeForceProvider>();
     for (const spring of draft.springs) {
@@ -515,15 +663,27 @@ export class UtjSpringBoneRuntime {
 
         const pivotNode = resolveSpringBonePivotNode(resolution, joint);
 
+        const colliderBinding = resolveJointColliderBinding(
+          spring,
+          joint,
+          index,
+          colliderGroupByIndex,
+          runtimeUnitySetup,
+          bindingDecisionByBonePathId,
+          managerColliderCacheByPathId,
+          colliderByIndex
+        );
+
+        const tailBinding = computeUtjChildPosition(node, childExclusionNodes);
         const runtimeBone = createRuntimeBone(
           spring,
           joint,
           node,
-          computeUtjChildPosition(node, childExclusionNodes),
+          tailBinding,
           pivotNode,
           resolveLengthLimitTargets(resolution, joint),
           forceProviders,
-          resolveJointColliders(spring, joint, index, colliderGroupByIndex),
+          colliderBinding,
           managerSettingsByPathId
         );
         if (runtimeBone) {
@@ -705,7 +865,7 @@ export class UtjSpringBoneRuntime {
     if (traceEvent) {
       traceEvent.stateAfterLengthLimits = stateSnapshot(bone.state);
     }
-    const tailRadius = Math.abs(bone.radius) * (bone.springName.startsWith("Head:") ? 1.3 : 1.0);
+    const tailRadius = Math.abs(bone.radius);
     if (traceEvent) {
       traceEvent.tailRadius = tailRadius;
     }
@@ -806,6 +966,13 @@ export class UtjSpringBoneRuntime {
       springName: bone.springName,
       boneName: bone.node.name,
       bonePath: getObjectPath(bone.node),
+      sourceBoneName: bone.sourceBoneName,
+      sourceBonePath: bone.sourceBonePath,
+      sourceBonePathId: bone.sourceBonePathId,
+      pivotSourceName: bone.pivotSourceName,
+      pivotSourcePath: bone.pivotSourcePath,
+      pivotResolvedPath: bone.pivotResolvedPath,
+      tailBinding: tailBindingSnapshot(bone.tailBinding),
       managerPathId: bone.managerPathId,
       deltaTime,
       dynamicRatio,
@@ -1144,10 +1311,19 @@ export class UtjSpringBoneRuntime {
       } else {
         skinnedBoneMisses += 1;
       }
+      const resolvedIsSkinnedBone = this.skinnedBones.has(bone.node);
       topOffsets.push({
         name: bone.node.name,
         path: getObjectPath(bone.node),
         springName: bone.springName,
+        sourceBoneName: bone.sourceBoneName,
+        sourceBonePath: bone.sourceBonePath,
+        sourceBonePathId: bone.sourceBonePathId,
+        resolvedIsSkinnedBone,
+        pivotSourceName: bone.pivotSourceName,
+        pivotSourcePath: bone.pivotSourcePath,
+        pivotResolvedPath: bone.pivotResolvedPath,
+        tailBinding: tailBindingSnapshot(bone.tailBinding),
         offset,
         colliderCount: bone.colliders.length,
         lastCollisionStatus: bone.lastCollisionStatus,
@@ -1163,12 +1339,21 @@ export class UtjSpringBoneRuntime {
         animatedTipDelta: vectorSnapshot(animatedTipDelta),
         velocity: vectorSnapshot(velocity),
         springForce: vectorSnapshot(bone.springForce),
+        colliderBindings: bone.colliderBindingDiagnostics.map(cloneColliderBindingDiagnostic),
       });
       if (name.includes("skirt")) {
         skirtOffsets.push({
           name: bone.node.name,
           path: getObjectPath(bone.node),
           springName: bone.springName,
+          sourceBoneName: bone.sourceBoneName,
+          sourceBonePath: bone.sourceBonePath,
+          sourceBonePathId: bone.sourceBonePathId,
+          resolvedIsSkinnedBone,
+          pivotSourceName: bone.pivotSourceName,
+          pivotSourcePath: bone.pivotSourcePath,
+          pivotResolvedPath: bone.pivotResolvedPath,
+          tailBinding: tailBindingSnapshot(bone.tailBinding),
           offset,
           appliedRotationDegrees: THREE.MathUtils.radToDeg(
             bone.skinAnimationLocalRotation.angleTo(bone.node.quaternion)
@@ -1193,6 +1378,7 @@ export class UtjSpringBoneRuntime {
           headMovement: vectorSnapshot(bone.state.cachedMovement),
           gravity: vectorSnapshot(bone.gravity),
           springForce: vectorSnapshot(bone.springForce),
+          colliderBindings: bone.colliderBindingDiagnostics.map(cloneColliderBindingDiagnostic),
         });
       }
     }
@@ -1208,6 +1394,9 @@ export class UtjSpringBoneRuntime {
       maxSkirtOffset,
       topOffsets: topOffsets.slice(0, 8),
       skirtOffsets,
+      bindingDiagnostics: this.bones
+        .flatMap((bone) => bone.colliderBindingDiagnostics)
+        .map(cloneColliderBindingDiagnostic),
       skinnedBoneMatches,
       skinnedBoneMisses,
     };
@@ -1394,17 +1583,28 @@ function colliderTraceSnapshot(
   };
 }
 
+function tailBindingSnapshot(binding: RuntimeTailBindingDiagnostic): TailBindingSnapshot {
+  return {
+    mode: binding.mode,
+    childCount: binding.childCount,
+    childNames: [...binding.childNames],
+    childPaths: [...binding.childPaths],
+    tailPosition: vectorSnapshot(binding.tailPosition),
+  };
+}
+
 function createRuntimeBone(
   spring: CandidateSpring,
   joint: CandidateJoint,
   node: THREE.Object3D,
-  tailPosition: THREE.Vector3,
+  tailBinding: RuntimeTailBindingDiagnostic,
   pivotNode: THREE.Object3D | null,
   lengthLimitTargetNodes: THREE.Object3D[],
   forceProviders: RuntimeForceProvider[],
-  colliders: RuntimeCollider[],
+  colliderBinding: RuntimeColliderBinding,
   managerSettingsByPathId: ReadonlyMap<number, ManagerSettings>
 ): RuntimeBone | null {
+  const tailPosition = tailBinding.tailPosition;
   const headPosition = node.getWorldPosition(new THREE.Vector3());
   const direction = tailPosition.clone().sub(headPosition);
   const springLength = direction.length();
@@ -1425,6 +1625,13 @@ function createRuntimeBone(
   return {
     managerPathId: typeof spring.managerPathId === "number" ? spring.managerPathId : null,
     springName: spring.name ?? "spring",
+    sourceBoneName: joint.nodeName ?? null,
+    sourceBonePath: joint.nodePath ?? null,
+    sourceBonePathId: typeof joint.sourcePathId === "number" ? joint.sourcePathId : null,
+    pivotSourceName: joint.pivotNodeName ?? null,
+    pivotSourcePath: joint.pivotNodePath ?? null,
+    pivotResolvedPath: pivotNode ? getObjectPath(pivotNode) : null,
+    tailBinding,
     automaticUpdates: spring.automaticUpdates !== false,
     enabled: spring.enabled !== false && joint.enabled !== false,
     enableLengthLimits: spring.enableLengthLimits !== false,
@@ -1461,7 +1668,8 @@ function createRuntimeBone(
     pivotNode,
     yAngleLimit: angleLimitFromCandidate(joint.rawAngleLimits?.y),
     zAngleLimit: angleLimitFromCandidate(joint.rawAngleLimits?.z),
-    colliders,
+    colliders: colliderBinding.colliders,
+    colliderBindingDiagnostics: colliderBinding.diagnostics,
     angleLimitForwardSign,
     lastCollisionStatus: 0,
     lastCollisionInfo: null,
@@ -1605,12 +1813,16 @@ function angleLimitFromCandidate(limit?: CandidateAngleLimit | null): UtjAngleLi
   };
 }
 
-function resolveJointColliders(
+function resolveJointColliderBinding(
   spring: CandidateSpring,
   joint: CandidateJoint,
   jointIndex: number,
-  colliderGroupByIndex: ReadonlyMap<number, RuntimeCollider[]>
-): RuntimeCollider[] {
+  colliderGroupByIndex: ReadonlyMap<number, RuntimeColliderGroup>,
+  runtimeUnitySetup: RuntimeUnitySetup | null,
+  bindingDecisionByBonePathId: ReadonlyMap<number, RuntimeBindingDecision>,
+  managerColliderCacheByPathId: ReadonlyMap<number, RuntimeManagerColliderCacheBinding>,
+  colliderByIndex: ReadonlyMap<number, RuntimeCollider>
+): RuntimeColliderBinding {
   const nodePathGroups = joint.nodePath
     ? spring.jointColliderGroupsByNodePath?.[joint.nodePath]
     : undefined;
@@ -1628,12 +1840,353 @@ function resolveJointColliders(
     : orderedJointGroups !== undefined
     ? orderedJointGroups
     : spring.colliderGroups ?? [];
-  const colliders = preferMatchingPoseColliders(
-    groupIndexes.flatMap((index) => colliderGroupByIndex.get(index) ?? []),
+  const bindingDecision = typeof joint.sourcePathId === "number"
+    ? bindingDecisionByBonePathId.get(joint.sourcePathId)
+    : undefined;
+  const diagnostics: RuntimeColliderBindingDiagnostic[] = [];
+  const colliders = groupIndexes.flatMap((index) => {
+    const group = colliderGroupByIndex.get(index);
+    if (!group) {
+      return [];
+    }
+    const resolved = resolveRuntimeColliderGroup(
+        group,
+        spring,
+        joint,
+        runtimeUnitySetup,
+        bindingDecision,
+        managerColliderCacheByPathId,
+        colliderByIndex
+      );
+    diagnostics.push(resolved.diagnostic);
+    return resolved.colliders;
+  });
+  return { colliders, diagnostics };
+}
+
+function resolveRuntimeColliderGroup(
+  group: RuntimeColliderGroup,
+  spring: CandidateSpring,
+  joint: CandidateJoint,
+  runtimeUnitySetup: RuntimeUnitySetup | null,
+  bindingDecision: RuntimeBindingDecision | undefined,
+  managerColliderCacheByPathId: ReadonlyMap<number, RuntimeManagerColliderCacheBinding>,
+  colliderByIndex: ReadonlyMap<number, RuntimeCollider>
+): { colliders: RuntimeCollider[]; diagnostic: RuntimeColliderBindingDiagnostic } {
+  const decisionCollidersByRoot = buildDecisionCollidersByRoot(bindingDecision, colliderByIndex);
+  const managerCache = typeof spring.managerPathId === "number"
+    ? managerColliderCacheByPathId.get(spring.managerPathId)
+    : undefined;
+  if (bindingDecision?.sourceKind === "colliderFlag" && decisionCollidersByRoot.size > 0) {
+    return resolveRuntimeColliderFlagGroup(
+      group,
+      spring,
+      joint,
+      runtimeUnitySetup,
+      bindingDecision,
+      decisionCollidersByRoot,
+      bindingDecision.defaultRoot,
+      managerCache,
+      "v2"
+    );
+  }
+  if (group.source.sourceKind === "colliderFlag" && group.collidersByRoot.size > 0) {
+    return resolveRuntimeColliderFlagGroup(
+      group,
+      spring,
+      joint,
+      runtimeUnitySetup,
+      bindingDecision,
+      group.collidersByRoot,
+      group.source.defaultRoot,
+      managerCache,
+      "v1"
+    );
+  }
+  const colliders = preferMatchingPoseColliders(group.colliders, spring, joint);
+  return {
+    colliders,
+    diagnostic: buildColliderBindingDiagnostic(
+      group,
+      spring,
+      joint,
+      bindingDecision,
+      null,
+      null,
+      null,
+      "direct collider group / pose root preference",
+      colliders
+    ),
+  };
+}
+
+function resolveRuntimeColliderFlagGroup(
+  group: RuntimeColliderGroup,
+  spring: CandidateSpring,
+  joint: CandidateJoint,
+  runtimeUnitySetup: RuntimeUnitySetup | null,
+  bindingDecision: RuntimeBindingDecision | undefined,
+  candidateRoots: ReadonlyMap<string, RuntimeCollider[]>,
+  defaultRoot: string | null | undefined,
+  managerCache: RuntimeManagerColliderCacheBinding | undefined,
+  sourceVersion: "v1" | "v2"
+): { colliders: RuntimeCollider[]; diagnostic: RuntimeColliderBindingDiagnostic } {
+  const constrainedRoots = constrainColliderRootsByManagerCache(candidateRoots, managerCache);
+  if (constrainedRoots.size === 0) {
+    return {
+      colliders: [],
+      diagnostic: buildColliderBindingDiagnostic(
+        group,
+        spring,
+        joint,
+        bindingDecision,
+        candidateRoots,
+        defaultRoot,
+        null,
+        `${sourceVersion} no collider after manager cache constraint; ${managerCacheSummary(managerCache)}`,
+        []
+      ),
+    };
+  }
+
+  const selection = selectUnityColliderRoot(
+    group,
     spring,
-    joint
+    joint,
+    runtimeUnitySetup,
+    bindingDecision,
+    constrainedRoots
   );
-  return colliders;
+  const colliders = selection.root
+    ? constrainedRoots.get(selection.root) ?? []
+    : [];
+  if (colliders.length === 0) {
+    return {
+      colliders: [],
+      diagnostic: buildColliderBindingDiagnostic(
+        group,
+        spring,
+        joint,
+        bindingDecision,
+        candidateRoots,
+        defaultRoot,
+        selection.root,
+        `${sourceVersion} no matching runtime root after manager cache constraint; ${selection.reason}; ${managerCacheSummary(managerCache)}`,
+        []
+      ),
+    };
+  }
+
+  return {
+    colliders,
+    diagnostic: buildColliderBindingDiagnostic(
+      group,
+      spring,
+      joint,
+      bindingDecision,
+      candidateRoots,
+      defaultRoot,
+      selection.root,
+      `${sourceVersion} ${selection.reason}; manager cache constrained roots; ${managerCacheSummary(managerCache)}`,
+      colliders
+    ),
+  };
+}
+
+function selectUnityColliderRoot(
+  group: RuntimeColliderGroup,
+  spring: CandidateSpring,
+  joint: CandidateJoint,
+  runtimeUnitySetup: RuntimeUnitySetup | null,
+  bindingDecision: RuntimeBindingDecision | undefined,
+  availableRoots: ReadonlyMap<string, RuntimeCollider[]>
+): RuntimeColliderRootSelection {
+  if (availableRoots.size === 1) {
+    const root = availableRoots.keys().next().value as string;
+    return { root, reason: "single manager-cache root" };
+  }
+  const jointRoot = normalizeRootName(rootNameFromPath(joint.nodePath));
+  if (jointRoot && availableRoots.has(jointRoot)) {
+    return { root: jointRoot, reason: "joint root matched candidate root" };
+  }
+  if (spring.name?.startsWith("Head:") || jointRoot === "face") {
+    const defaultBodyRoot = normalizeRootName(
+      runtimeUnitySetup?.rootSelectionProfile?.defaultBodyRoot ??
+      runtimeUnitySetup?.activeRootProfile?.defaultBodyRoot
+    );
+    if (defaultBodyRoot && availableRoots.has(defaultBodyRoot)) {
+      return { root: defaultBodyRoot, reason: "head/face uses runtime defaultBodyRoot" };
+    }
+    if (availableRoots.has("body")) {
+      return { root: "body", reason: "head/face body fallback" };
+    }
+  }
+  const decisionDefaultRoot = normalizeRootName(bindingDecision?.defaultRoot);
+  if (decisionDefaultRoot && availableRoots.has(decisionDefaultRoot)) {
+    return { root: decisionDefaultRoot, reason: "v2 bindingDecision.defaultRoot" };
+  }
+  const activeRoots = runtimeUnitySetup?.activeRootProfile?.activeRoots ?? [];
+  for (const activeRoot of activeRoots) {
+    const root = normalizeRootName(activeRoot);
+    if (root && availableRoots.has(root)) {
+      return { root, reason: "activeRootProfile active root" };
+    }
+  }
+  const groupDefaultRoot = normalizeRootName(group.source.defaultRoot);
+  if (groupDefaultRoot && availableRoots.has(groupDefaultRoot)) {
+    return { root: groupDefaultRoot, reason: "group.defaultRoot" };
+  }
+  return {
+    root: null,
+    reason: groupDefaultRoot
+      ? `group.defaultRoot ${groupDefaultRoot} not available after manager cache`
+      : "no matching root",
+  };
+}
+
+function buildColliderBindingDiagnostic(
+  group: RuntimeColliderGroup,
+  spring: CandidateSpring,
+  joint: CandidateJoint,
+  bindingDecision: RuntimeBindingDecision | undefined,
+  candidateRoots: ReadonlyMap<string, RuntimeCollider[]> | null,
+  defaultRoot: string | null | undefined,
+  selectedRoot: string | null,
+  selectionReason: string,
+  selectedColliders: readonly RuntimeCollider[]
+): RuntimeColliderBindingDiagnostic {
+  return {
+    sourceKind: bindingDecision?.sourceKind ?? group.source.sourceKind ?? "direct",
+    colliderFlag: bindingDecision?.colliderFlag ?? group.source.colliderFlag ?? null,
+    colliderGroupIndex: typeof group.source.index === "number" ? group.source.index : null,
+    springName: spring.name ?? "spring",
+    boneName: joint.nodeName ?? null,
+    bonePath: joint.nodePath ?? null,
+    sourceSpringBonePathId: typeof joint.sourcePathId === "number" ? joint.sourcePathId : null,
+    candidateRoots: candidateRoots
+      ? [...candidateRoots.entries()].map(([root, colliders]) => ({
+        root,
+        colliderCount: colliders.length,
+        colliderSourcePathIds: colliders
+          .map((collider) => collider.source.sourcePathId)
+          .filter((pathId): pathId is number => typeof pathId === "number"),
+      }))
+      : [],
+    defaultRoot: normalizeRootName(defaultRoot),
+    selectedRoot,
+    selectedColliderCount: selectedColliders.length,
+    selectedColliderSourcePathIds: selectedColliders
+      .map((collider) => collider.source.sourcePathId)
+      .filter((pathId): pathId is number => typeof pathId === "number"),
+    selectionReason,
+  };
+}
+
+function cloneColliderBindingDiagnostic(
+  diagnostic: RuntimeColliderBindingDiagnostic
+): RuntimeColliderBindingDiagnostic {
+  return {
+    ...diagnostic,
+    candidateRoots: diagnostic.candidateRoots.map((candidate) => ({
+      ...candidate,
+      colliderSourcePathIds: [...candidate.colliderSourcePathIds],
+    })),
+    selectedColliderSourcePathIds: [...diagnostic.selectedColliderSourcePathIds],
+  };
+}
+
+function buildRuntimeBindingDecisionMap(
+  runtimeUnitySetup: RuntimeUnitySetup | null
+): Map<number, RuntimeBindingDecision> {
+  const result = new Map<number, RuntimeBindingDecision>();
+  for (const decision of runtimeUnitySetup?.bindingDecisions ?? []) {
+    if (typeof decision.sourceSpringBonePathId === "number") {
+      result.set(decision.sourceSpringBonePathId, decision);
+    }
+  }
+  return result;
+}
+
+function buildRuntimeManagerColliderCacheMap(
+  runtimeUnitySetup: RuntimeUnitySetup | null
+): Map<number, RuntimeManagerColliderCacheBinding> {
+  const result = new Map<number, RuntimeManagerColliderCacheBinding>();
+  for (const cache of runtimeUnitySetup?.managerColliderCaches ?? []) {
+    if (typeof cache.managerPathId !== "number") {
+      continue;
+    }
+    const colliderIndexes = new Set<number>();
+    for (const index of [
+      ...(cache.sphereColliderIndexes ?? []),
+      ...(cache.capsuleColliderIndexes ?? []),
+      ...(cache.panelColliderIndexes ?? []),
+    ]) {
+      if (typeof index === "number") {
+        colliderIndexes.add(index);
+      }
+    }
+    result.set(cache.managerPathId, {
+      source: cache,
+      colliderIndexes,
+    });
+  }
+  return result;
+}
+
+function buildDecisionCollidersByRoot(
+  bindingDecision: RuntimeBindingDecision | undefined,
+  colliderByIndex: ReadonlyMap<number, RuntimeCollider>
+): Map<string, RuntimeCollider[]> {
+  const result = new Map<string, RuntimeCollider[]>();
+  for (const [rootName, indexes] of Object.entries(bindingDecision?.candidateRoots ?? {})) {
+    const colliders = indexes
+      .map((index) => colliderByIndex.get(index))
+      .filter((collider): collider is RuntimeCollider => Boolean(collider));
+    if (colliders.length > 0) {
+      result.set(rootName, colliders);
+    }
+  }
+  return result;
+}
+
+function filterCollidersByManagerCache(
+  colliders: RuntimeCollider[],
+  managerCache: RuntimeManagerColliderCacheBinding | undefined
+): RuntimeCollider[] {
+  if (!managerCache || managerCache.colliderIndexes.size === 0) {
+    return colliders;
+  }
+  return colliders.filter((collider) =>
+    typeof collider.source.index === "number" &&
+    managerCache.colliderIndexes.has(collider.source.index)
+  );
+}
+
+function constrainColliderRootsByManagerCache(
+  candidateRoots: ReadonlyMap<string, RuntimeCollider[]>,
+  managerCache: RuntimeManagerColliderCacheBinding | undefined
+): Map<string, RuntimeCollider[]> {
+  const result = new Map<string, RuntimeCollider[]>();
+  for (const [root, colliders] of candidateRoots.entries()) {
+    const filtered = filterCollidersByManagerCache(colliders, managerCache);
+    if (filtered.length > 0) {
+      result.set(root, filtered);
+    }
+  }
+  return result;
+}
+
+function managerCacheSummary(
+  managerCache: RuntimeManagerColliderCacheBinding | undefined
+): string {
+  if (!managerCache) {
+    return "no manager cache available";
+  }
+  const managerName = managerCache.source.managerNodeName ?? "manager";
+  const sphereCount = managerCache.source.sphereColliderIndexes?.length ?? 0;
+  const capsuleCount = managerCache.source.capsuleColliderIndexes?.length ?? 0;
+  const panelCount = managerCache.source.panelColliderIndexes?.length ?? 0;
+  return `${managerName} manager cache (${sphereCount} sphere, ${capsuleCount} capsule, ${panelCount} panel)`;
 }
 
 function preferMatchingPoseColliders(
@@ -1680,6 +2233,21 @@ function preferredColliderRoot(spring: CandidateSpring, joint: CandidateJoint): 
   return spring.name?.startsWith("Head:") || joint.nodePath?.startsWith("face/")
     ? "body/"
     : null;
+}
+
+function rootNameFromPath(path?: string | null): string | null {
+  if (!path) {
+    return null;
+  }
+  const slashIndex = path.indexOf("/");
+  return slashIndex < 0 ? path : path.slice(0, slashIndex);
+}
+
+function normalizeRootName(root?: string | null): string | null {
+  if (!root) {
+    return null;
+  }
+  return root.endsWith("/") ? root.slice(0, -1) : root;
 }
 
 function resolveJointColliderGroupsByOrder(
@@ -1761,17 +2329,16 @@ function getUtjObjectDepth(node: THREE.Object3D): number {
 }
 
 function collectSpringBoneChildExclusionNodes(
-  pivots: readonly CandidateSpringBonePivot[] | undefined,
+  springs: readonly CandidateSpring[] | undefined,
   resolution: NodeResolution
 ): Set<THREE.Object3D> {
   const nodes = new Set<THREE.Object3D>();
-  for (const pivot of pivots ?? []) {
-    const pivotNode = resolveNode(resolution, pivot.nodePath, pivot.nodeName, {
-      allowNameFallback: false,
-      allowSitBodyAlias: false,
-    });
-    if (pivotNode) {
-      nodes.add(pivotNode);
+  for (const spring of springs ?? []) {
+    for (const joint of spring.joints ?? []) {
+      const jointNode = resolveSpringJointNode(resolution, joint);
+      if (jointNode) {
+        nodes.add(jointNode);
+      }
     }
   }
   return nodes;
@@ -1780,7 +2347,7 @@ function collectSpringBoneChildExclusionNodes(
 function computeUtjChildPosition(
   node: THREE.Object3D,
   childExclusionNodes: ReadonlySet<THREE.Object3D>
-): THREE.Vector3 {
+): RuntimeTailBindingDiagnostic {
   node.updateMatrixWorld(true);
   const headPosition = node.getWorldPosition(new THREE.Vector3());
   const right = new THREE.Vector3(1, 0, 0).transformDirection(node.matrixWorld);
@@ -1789,13 +2356,27 @@ function computeUtjChildPosition(
     !childExclusionNodes.has(child) &&
     !child.name.endsWith("_spring_tail")
   );
+  const childNames = validChildren.map((child) => child.name);
+  const childPaths = validChildren.map((child) => getObjectPath(child));
 
   if (validChildren.length === 0) {
-    return fallback;
+    return {
+      mode: "fallback",
+      childCount: 0,
+      childNames,
+      childPaths,
+      tailPosition: fallback,
+    };
   }
 
   if (validChildren.length === 1) {
-    return validChildren[0].getWorldPosition(new THREE.Vector3());
+    return {
+      mode: "singleChild",
+      childCount: 1,
+      childNames,
+      childPaths,
+      tailPosition: validChildren[0].getWorldPosition(new THREE.Vector3()),
+    };
   }
 
   const averagePosition = new THREE.Vector3();
@@ -1810,9 +2391,21 @@ function computeUtjChildPosition(
 
   const direction = averagePosition.sub(headPosition);
   if (direction.lengthSq() <= 0.00000001) {
-    return headPosition.clone();
+    return {
+      mode: "averageChildren",
+      childCount: validChildren.length,
+      childNames,
+      childPaths,
+      tailPosition: headPosition.clone(),
+    };
   }
-  return headPosition.clone().addScaledVector(direction.normalize(), averageDistance);
+  return {
+    mode: "averageChildren",
+    childCount: validChildren.length,
+    childNames,
+    childPaths,
+    tailPosition: headPosition.clone().addScaledVector(direction.normalize(), averageDistance),
+  };
 }
 
 function buildNodeResolution(root: THREE.Object3D): NodeResolution {

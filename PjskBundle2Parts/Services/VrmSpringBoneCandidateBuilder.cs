@@ -21,14 +21,12 @@ public sealed class VrmSpringBoneCandidateBuilder
     public VrmSpringBoneCandidate Build(CombinedSpringBoneExport raw)
     {
         var warnings = new List<string>();
-        var springBonePivots = new List<VrmSpringBonePivotCandidate>();
         var colliders = new List<VrmSpringBoneColliderCandidate>();
         var colliderGroups = new List<VrmSpringBoneColliderGroupCandidate>();
         var springs = new List<VrmSpringBoneSpringCandidate>();
         var colliderIndexByKey = new Dictionary<SpringColliderKey, int>();
+        var springBonePivots = BuildSpringBonePivots(raw.Body, raw.Head);
 
-        AddSpringBonePivots(raw.Body, springBonePivots);
-        AddSpringBonePivots(raw.Head, springBonePivots);
         AddColliders(raw.Body, colliders, colliderIndexByKey, warnings);
         AddColliders(raw.Head, colliders, colliderIndexByKey, warnings);
         var allForceProviders = raw.Body.ForceProviders
@@ -85,57 +83,80 @@ public sealed class VrmSpringBoneCandidateBuilder
         );
     }
 
-    private static void AddSpringBonePivots(
-        SpringBoneExport part,
-        List<VrmSpringBonePivotCandidate> springBonePivots
+    private static IReadOnlyList<VrmSpringBonePivotCandidate> BuildSpringBonePivots(
+        params SpringBoneExport[] parts
     )
     {
-        var knownPivotKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var pivot in part.SpringBonePivots)
+        var pivots = new List<VrmSpringBonePivotCandidate>();
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var part in parts)
         {
-            var key = BuildSpringBonePivotKey(part.PartKind, pivot.PathId, pivot.GameObject?.TransformPath);
-            if (!knownPivotKeys.Add(key))
+            foreach (var pivot in part.SpringBonePivots)
             {
-                continue;
+                AddSpringBonePivot(
+                    pivots,
+                    keys,
+                    new VrmSpringBonePivotCandidate(
+                        PartKind: part.PartKind,
+                        SourcePathId: pivot.GameObject?.PathId ?? pivot.PathId,
+                        ScriptName: string.IsNullOrWhiteSpace(pivot.ScriptName)
+                            ? "SpringBonePivot"
+                            : pivot.ScriptName,
+                        NodeName: pivot.GameObject?.Name,
+                        NodePath: pivot.GameObject?.TransformPath
+                    )
+                );
             }
-            springBonePivots.Add(new VrmSpringBonePivotCandidate(
-                PartKind: part.PartKind,
-                SourcePathId: pivot.PathId,
-                ScriptName: pivot.ScriptName,
-                NodeName: pivot.GameObject?.Name,
-                NodePath: pivot.GameObject?.TransformPath
-            ));
+
+            foreach (var pivotNode in part.Bones.Select(bone => bone.PivotNode))
+            {
+                if (pivotNode is null)
+                {
+                    continue;
+                }
+
+                AddSpringBonePivot(
+                    pivots,
+                    keys,
+                    new VrmSpringBonePivotCandidate(
+                        PartKind: part.PartKind,
+                        SourcePathId: pivotNode.PathId,
+                        ScriptName: "SpringBonePivot",
+                        NodeName: pivotNode.Name,
+                        NodePath: pivotNode.TransformPath
+                    )
+                );
+            }
         }
 
-        foreach (var bone in part.Bones)
-        {
-            var pivot = bone.PivotNode;
-            if (pivot is null)
-            {
-                continue;
-            }
-
-            var key = BuildSpringBonePivotKey(part.PartKind, pivot.PathId, pivot.TransformPath);
-            if (!knownPivotKeys.Add(key))
-            {
-                continue;
-            }
-
-            springBonePivots.Add(new VrmSpringBonePivotCandidate(
-                PartKind: part.PartKind,
-                SourcePathId: pivot.PathId,
-                ScriptName: "SpringBonePivot",
-                NodeName: pivot.Name,
-                NodePath: pivot.TransformPath
-            ));
-        }
+        return pivots
+            .OrderBy(pivot => pivot.PartKind, StringComparer.Ordinal)
+            .ThenBy(pivot => pivot.NodePath ?? string.Empty, StringComparer.Ordinal)
+            .ThenBy(pivot => pivot.SourcePathId)
+            .ToList();
     }
 
-    private static string BuildSpringBonePivotKey(string partKind, long sourcePathId, string? nodePath)
+    private static void AddSpringBonePivot(
+        List<VrmSpringBonePivotCandidate> pivots,
+        HashSet<string> keys,
+        VrmSpringBonePivotCandidate pivot
+    )
     {
-        return sourcePathId != 0
-            ? $"{partKind}:id:{sourcePathId}"
-            : $"{partKind}:path:{nodePath ?? string.Empty}";
+        if (string.IsNullOrWhiteSpace(pivot.NodePath) && string.IsNullOrWhiteSpace(pivot.NodeName))
+        {
+            return;
+        }
+
+        var key = string.IsNullOrWhiteSpace(pivot.NodePath)
+            ? $"{pivot.PartKind}:pathId:{pivot.SourcePathId}"
+            : $"{pivot.PartKind}:path:{pivot.NodePath}";
+        if (!keys.Add(key))
+        {
+            return;
+        }
+
+        pivots.Add(pivot);
     }
 
     private static void AddColliders(
@@ -211,6 +232,7 @@ public sealed class VrmSpringBoneCandidateBuilder
             Node: null,
             NodeName: collider.GameObject?.Name,
             NodePath: collider.GameObject?.TransformPath,
+            PoseRoot: ExtractPoseRoot(collider.GameObject?.TransformPath),
             Shape: shape
         ));
         colliderIndexByKey[key] = index;
@@ -270,7 +292,12 @@ public sealed class VrmSpringBoneCandidateBuilder
                             PartKind: part.PartKind,
                             SourceSpringBonePathId: bone.PathId,
                             Colliders: colliderIndexes,
-                            SourceColliderPathIds: colliderPathIds
+                            SourceColliderPathIds: colliderPathIds,
+                            SourceKind: "direct",
+                            ColliderFlag: null,
+                            MatchedPrefixes: null,
+                            CollidersByRoot: null,
+                            DefaultRoot: ExtractPoseRoot(bone.GameObject?.TransformPath)
                         ));
                         springColliderGroups.Add(groupIndex);
                         SetJointColliderGroups(
@@ -463,16 +490,40 @@ public sealed class VrmSpringBoneCandidateBuilder
             .Where(collider => collider.GameObject?.ActiveInHierarchy != false)
             .Where(collider => MatchesRuntimeColliderFlag(collider, matchedBindings))
             .ToList();
-        sourceColliders = PreferMatchingPoseColliders(part, bone, sourceColliders);
-        var colliderIndexes = sourceColliders
-            .Select(collider => colliderIndexByKey.TryGetValue(
-                new SpringColliderKey(colliderSourcePart.PartKind, collider.PathId),
-                out var index)
+        var colliderIndexesByCollider = sourceColliders
+            .Select(collider => new
+            {
+                Collider = collider,
+                Index = colliderIndexByKey.TryGetValue(
+                    new SpringColliderKey(colliderSourcePart.PartKind, collider.PathId),
+                    out var index)
                     ? index
-                    : (int?)null)
-            .Where(index => index is not null)
-            .Select(index => index!.Value)
+                    : (int?)null
+            })
+            .Where(item => item.Index is not null)
             .ToList();
+        var collidersByRoot = colliderIndexesByCollider
+            .GroupBy(
+                item => ExtractPoseRoot(item.Collider.GameObject?.TransformPath) ?? "unknown",
+                StringComparer.Ordinal
+            )
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<int>)group
+                    .Select(item => item.Index!.Value)
+                    .Distinct()
+                    .ToList(),
+                StringComparer.Ordinal
+            );
+        var defaultRoot = PreferredRuntimeColliderRoot(part, bone);
+        var colliderIndexes = defaultRoot is not null &&
+            collidersByRoot.TryGetValue(defaultRoot, out var defaultRootIndexes) &&
+            defaultRootIndexes.Count > 0
+                ? defaultRootIndexes.ToList()
+                : colliderIndexesByCollider
+                    .Select(item => item.Index!.Value)
+                    .Distinct()
+                    .ToList();
 
         if (colliderIndexes.Count == 0)
         {
@@ -493,7 +544,12 @@ public sealed class VrmSpringBoneCandidateBuilder
             PartKind: colliderSourcePart.PartKind,
             SourceSpringBonePathId: bone.PathId,
             Colliders: colliderIndexes,
-            SourceColliderPathIds: sourcePathIds
+            SourceColliderPathIds: sourcePathIds,
+            SourceKind: "colliderFlag",
+            ColliderFlag: colliderFlag,
+            MatchedPrefixes: matchedBindings.Select(binding => binding.Prefix).ToList(),
+            CollidersByRoot: collidersByRoot.Count == 0 ? null : collidersByRoot,
+            DefaultRoot: defaultRoot
         );
     }
 
@@ -541,10 +597,32 @@ public sealed class VrmSpringBoneCandidateBuilder
         {
             return "body/";
         }
+        return null;
+    }
+
+    private static string? PreferredRuntimeColliderRoot(SpringBoneExport part, SpringBoneEntry bone)
+    {
+        var poseRoot = ExtractPoseRoot(bone.GameObject?.TransformPath);
+        if (poseRoot is "body" or "sit_body" or "guitar_body")
+        {
+            return poseRoot;
+        }
         return string.Equals(part.PartKind, "Head", StringComparison.OrdinalIgnoreCase) ||
-            bonePath?.StartsWith("face/", StringComparison.Ordinal) == true
-                ? "body/"
+            poseRoot == "face"
+                ? "body"
                 : null;
+    }
+
+    private static string? ExtractPoseRoot(string? transformPath)
+    {
+        if (string.IsNullOrWhiteSpace(transformPath))
+        {
+            return null;
+        }
+        var slashIndex = transformPath.IndexOf('/');
+        return slashIndex < 0
+            ? transformPath
+            : transformPath[..slashIndex];
     }
 
     private static bool MatchesRuntimeColliderFlag(

@@ -124,7 +124,141 @@ public sealed record PjskSekaiRuntimeMotionPackage(
 
 public sealed record PjskSekaiRuntimeSpringBonePayload(
     [property: JsonPropertyName("raw")] CombinedSpringBoneExport Raw,
-    [property: JsonPropertyName("vrmCandidate")] VrmSpringBoneCandidate VrmCandidate
+    [property: JsonPropertyName("vrmCandidate")] VrmSpringBoneCandidate VrmCandidate,
+    [property: JsonPropertyName("runtimeUnitySetup")] PjskSpringBoneRuntimeUnitySetup RuntimeUnitySetup
+);
+
+public sealed record PjskSpringBoneRuntimeUnitySetup(
+    [property: JsonPropertyName("version")] int Version,
+    [property: JsonPropertyName("unityVersion")] string UnityVersion,
+    [property: JsonPropertyName("prefabGraphs")] IReadOnlyList<SpringPrefabGraph> PrefabGraphs,
+    [property: JsonPropertyName("rootSelectionProfile")] PjskSpringBoneRootSelectionProfile RootSelectionProfile,
+    [property: JsonPropertyName("setupPlan")] PjskSpringBoneSetupPlan SetupPlan,
+    [property: JsonPropertyName("bindingDecisions")] IReadOnlyList<PjskSpringBoneBindingDecision> BindingDecisions,
+    [property: JsonPropertyName("activeRootProfile")] PjskSpringBoneActiveRootProfile ActiveRootProfile,
+    [property: JsonPropertyName("managerColliderCaches")] IReadOnlyList<PjskSpringBoneRuntimeManagerColliderCache> ManagerColliderCaches,
+    [property: JsonPropertyName("managers")] IReadOnlyList<PjskSpringBoneRuntimeManager> Managers,
+    [property: JsonPropertyName("bones")] IReadOnlyList<PjskSpringBoneRuntimeBone> Bones,
+    [property: JsonPropertyName("colliders")] IReadOnlyList<PjskSpringBoneRuntimeCollider> Colliders,
+    [property: JsonPropertyName("colliderBindings")] IReadOnlyList<PjskSpringBoneRuntimeColliderBinding> ColliderBindings,
+    [property: JsonPropertyName("warnings")] IReadOnlyList<string> Warnings
+);
+
+public sealed record PjskSpringBoneRootSelectionProfile(
+    [property: JsonPropertyName("policy")] string Policy,
+    [property: JsonPropertyName("defaultBodyRoot")] string DefaultBodyRoot,
+    [property: JsonPropertyName("rootCandidates")] IReadOnlyList<PjskSpringBoneRootCandidate> RootCandidates
+);
+
+public sealed record PjskSpringBoneRootCandidate(
+    [property: JsonPropertyName("root")] string Root,
+    [property: JsonPropertyName("partKind")] string PartKind,
+    [property: JsonPropertyName("staticActive")] bool? StaticActive,
+    [property: JsonPropertyName("defaultPriority")] int DefaultPriority,
+    [property: JsonPropertyName("managerPathIds")] IReadOnlyList<long> ManagerPathIds,
+    [property: JsonPropertyName("bonePathIds")] IReadOnlyList<long> BonePathIds,
+    [property: JsonPropertyName("colliderIndexes")] IReadOnlyList<int> ColliderIndexes,
+    [property: JsonPropertyName("rendererPathIds")] IReadOnlyList<long> RendererPathIds,
+    [property: JsonPropertyName("reason")] string Reason
+);
+
+public sealed record PjskSpringBoneSetupPlan(
+    [property: JsonPropertyName("discoveryMode")] string DiscoveryMode,
+    [property: JsonPropertyName("rootPolicy")] string RootPolicy,
+    [property: JsonPropertyName("managerPathIds")] IReadOnlyList<long> ManagerPathIds,
+    [property: JsonPropertyName("orderedSteps")] IReadOnlyList<string> OrderedSteps,
+    [property: JsonPropertyName("directBindingCount")] int DirectBindingCount,
+    [property: JsonPropertyName("colliderFlagBindingCount")] int ColliderFlagBindingCount
+);
+
+public sealed record PjskSpringBoneBindingDecision(
+    [property: JsonPropertyName("sourceKind")] string SourceKind,
+    [property: JsonPropertyName("partKind")] string PartKind,
+    [property: JsonPropertyName("sourceSpringBonePathId")] long SourceSpringBonePathId,
+    [property: JsonPropertyName("nodePath")] string? NodePath,
+    [property: JsonPropertyName("poseRoot")] string? PoseRoot,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("colliderFlag")] int? ColliderFlag,
+    [property: JsonPropertyName("directColliderPathIds")] IReadOnlyList<long> DirectColliderPathIds,
+    [property: JsonPropertyName("candidateRoots")] IReadOnlyDictionary<string, IReadOnlyList<int>> CandidateRoots,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("defaultRoot")] string? DefaultRoot,
+    [property: JsonPropertyName("selectedColliderIndexes")] IReadOnlyList<int> SelectedColliderIndexes,
+    [property: JsonPropertyName("reason")] string Reason
+);
+
+public sealed record PjskSpringBoneActiveRootProfile(
+    [property: JsonPropertyName("defaultBodyRoot")] string DefaultBodyRoot,
+    [property: JsonPropertyName("activeRoots")] IReadOnlyList<string> ActiveRoots,
+    [property: JsonPropertyName("inactiveRoots")] IReadOnlyList<string> InactiveRoots
+);
+
+public sealed record PjskSpringBoneRuntimeManagerColliderCache(
+    [property: JsonPropertyName("managerPathId")] long ManagerPathId,
+    [property: JsonPropertyName("partKind")] string PartKind,
+    [property: JsonPropertyName("sourcePoseRoot")] string? SourcePoseRoot,
+    [property: JsonPropertyName("runtimeRoot")] string RuntimeRoot,
+    [property: JsonPropertyName("managerNodeName")] string? ManagerNodeName,
+    [property: JsonPropertyName("managerNodePath")] string? ManagerNodePath,
+    [property: JsonPropertyName("springBonePathIds")] IReadOnlyList<long> SpringBonePathIds,
+    [property: JsonPropertyName("sphereColliderIndexes")] IReadOnlyList<int> SphereColliderIndexes,
+    [property: JsonPropertyName("capsuleColliderIndexes")] IReadOnlyList<int> CapsuleColliderIndexes,
+    [property: JsonPropertyName("panelColliderIndexes")] IReadOnlyList<int> PanelColliderIndexes,
+    [property: JsonPropertyName("reason")] string Reason
+);
+
+public sealed record PjskSpringBoneRuntimeManager(
+    [property: JsonPropertyName("partKind")] string PartKind,
+    [property: JsonPropertyName("pathId")] long PathId,
+    [property: JsonPropertyName("nodeName")] string? NodeName,
+    [property: JsonPropertyName("nodePath")] string? NodePath,
+    [property: JsonPropertyName("poseRoot")] string? PoseRoot,
+    [property: JsonPropertyName("activeSelf")] bool? ActiveSelf,
+    [property: JsonPropertyName("activeInHierarchy")] bool? ActiveInHierarchy,
+    [property: JsonPropertyName("enabled")] bool Enabled,
+    [property: JsonPropertyName("automaticUpdates")] bool AutomaticUpdates,
+    [property: JsonPropertyName("bonePathIds")] IReadOnlyList<long> BonePathIds
+);
+
+public sealed record PjskSpringBoneRuntimeBone(
+    [property: JsonPropertyName("partKind")] string PartKind,
+    [property: JsonPropertyName("pathId")] long PathId,
+    [property: JsonPropertyName("nodeName")] string? NodeName,
+    [property: JsonPropertyName("nodePath")] string? NodePath,
+    [property: JsonPropertyName("poseRoot")] string? PoseRoot,
+    [property: JsonPropertyName("activeSelf")] bool? ActiveSelf,
+    [property: JsonPropertyName("activeInHierarchy")] bool? ActiveInHierarchy,
+    [property: JsonPropertyName("enabled")] bool Enabled,
+    [property: JsonPropertyName("pivotNodePath")] string? PivotNodePath,
+    [property: JsonPropertyName("directColliderPathIds")] IReadOnlyList<long> DirectColliderPathIds,
+    [property: JsonPropertyName("colliderFlag")] int ColliderFlag
+);
+
+public sealed record PjskSpringBoneRuntimeCollider(
+    [property: JsonPropertyName("partKind")] string PartKind,
+    [property: JsonPropertyName("index")] int Index,
+    [property: JsonPropertyName("pathId")] long PathId,
+    [property: JsonPropertyName("scriptName")] string ScriptName,
+    [property: JsonPropertyName("nodeName")] string? NodeName,
+    [property: JsonPropertyName("nodePath")] string? NodePath,
+    [property: JsonPropertyName("poseRoot")] string? PoseRoot,
+    [property: JsonPropertyName("enabled")] bool Enabled
+);
+
+public sealed record PjskSpringBoneRuntimeColliderBinding(
+    [property: JsonPropertyName("sourceKind")] string SourceKind,
+    [property: JsonPropertyName("partKind")] string PartKind,
+    [property: JsonPropertyName("sourceSpringBonePathId")] long SourceSpringBonePathId,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("colliderFlag")] int? ColliderFlag,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("matchedPrefixes")] IReadOnlyList<string>? MatchedPrefixes,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("collidersByRoot")] IReadOnlyDictionary<string, IReadOnlyList<int>>? CollidersByRoot,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("defaultRoot")] string? DefaultRoot,
+    [property: JsonPropertyName("sourceColliderPathIds")] IReadOnlyList<long> SourceColliderPathIds,
+    [property: JsonPropertyName("colliders")] IReadOnlyList<int> Colliders
 );
 
 public sealed record PjskSekaiRuntimeCharacterControllers(

@@ -242,8 +242,10 @@ export type AnimationTrackDebug = {
   headTrackCount: number;
   neckTrackCount: number;
   upperBodyTrackCount: number;
+  utjControlledTrackCount: number;
   sampleHairTracks: string[];
   sampleHeadTracks: string[];
+  sampleUtjControlledTracks: string[];
 };
 
 export type FaceMotionKeyframe = {
@@ -1368,7 +1370,10 @@ function isHeadMotionTrack(track: THREE.KeyframeTrack) {
   return /^(Head|Neck)\.(position|quaternion|scale)$/.test(track.name);
 }
 
-function makeAnimationTrackDebug(clip: THREE.AnimationClip | null): AnimationTrackDebug | null {
+function makeAnimationTrackDebug(
+  clip: THREE.AnimationClip | null,
+  utjControlledNodeNames: ReadonlySet<string> = new Set()
+): AnimationTrackDebug | null {
   if (!clip) {
     return null;
   }
@@ -1381,6 +1386,9 @@ function makeAnimationTrackDebug(clip: THREE.AnimationClip | null): AnimationTra
   const transformTracks = clip.tracks.filter((track) =>
     /\.(position|quaternion|scale)$/.test(track.name)
   );
+  const utjControlledTracks = clip.tracks.filter((track) =>
+    isUtjControlledTrack(track, utjControlledNodeNames)
+  );
   return {
     trackCount: clip.tracks.length,
     transformTrackCount: transformTracks.length,
@@ -1388,9 +1396,22 @@ function makeAnimationTrackDebug(clip: THREE.AnimationClip | null): AnimationTra
     headTrackCount: headTracks.length,
     neckTrackCount: neckTracks.length,
     upperBodyTrackCount: upperBodyTracks.length,
+    utjControlledTrackCount: utjControlledTracks.length,
     sampleHairTracks: hairTracks.slice(0, 12).map((track) => track.name),
     sampleHeadTracks: [...headTracks, ...neckTracks].slice(0, 12).map((track) => track.name),
+    sampleUtjControlledTracks: utjControlledTracks.slice(0, 12).map((track) => track.name),
   };
+}
+
+function isUtjControlledTrack(
+  track: THREE.KeyframeTrack,
+  utjControlledNodeNames: ReadonlySet<string>
+) {
+  if (utjControlledNodeNames.size === 0) {
+    return false;
+  }
+  const nodeName = track.name.split(".")[0];
+  return utjControlledNodeNames.has(nodeName);
 }
 
 function filterBodyHeadMotionTracks(clip: THREE.AnimationClip) {
@@ -2096,6 +2117,9 @@ export class PjskViewerApp {
   }
 
   getAnimationSnapshot(): AnimationPlaybackSnapshot {
+    const utjControlledNodeNames =
+      this.currentUtjSpringBoneRuntime?.getControlledTrackNodeNames() ??
+      new Set<string>();
     return {
       selectedUrl: this.currentAnimationUrl,
       selectedLoopUrl: this.currentAnimationLoopUrl,
@@ -2108,10 +2132,12 @@ export class PjskViewerApp {
       faceMotionEnabled: this.faceMotionEnabled,
       bodyHeadTracksEnabled: this.bodyHeadTracksEnabled,
       bodyTrackDebug: makeAnimationTrackDebug(
-        this.currentAnimationAction?.getClip() ?? null
+        this.currentAnimationAction?.getClip() ?? null,
+        utjControlledNodeNames
       ),
       bodyLoopTrackDebug: makeAnimationTrackDebug(
-        this.currentLoopAction?.getClip() ?? null
+        this.currentLoopAction?.getClip() ?? null,
+        utjControlledNodeNames
       ),
       error: this.currentAnimationError,
     };

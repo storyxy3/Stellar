@@ -36,7 +36,7 @@ public sealed class VrmcSpringBoneExtensionBuilder
             }
 
             var node = nodes[nodeIndex] as JsonObject;
-            if (node is null || HasSpringTailChild(node, nodes))
+            if (node is null || HasAnyChild(node))
             {
                 continue;
             }
@@ -328,25 +328,6 @@ public sealed class VrmcSpringBoneExtensionBuilder
             ));
         }
 
-        var lastJoint = sourceJoints.Count > 0
-            ? sourceJoints[sourceJoints.Count - 1]
-            : null;
-        if (
-            lastJoint is not null &&
-            !string.IsNullOrWhiteSpace(lastJoint.PivotNodePath) &&
-            !string.IsNullOrWhiteSpace(lastJoint.NodePath) &&
-            !string.Equals(lastJoint.PivotNodePath, lastJoint.NodePath, StringComparison.Ordinal)
-        )
-        {
-            AddRuntimeJointIfNew(runtimeJoints, new VrmcRuntimeSpringJoint(
-                Source: lastJoint,
-                Kind: "joint_tail",
-                NodeName: BuildSpringTailName(lastJoint.NodeName),
-                PrimaryPath: BuildSpringTailPath(lastJoint.NodePath, lastJoint.NodeName),
-                FallbackPath: null
-            ));
-        }
-
         return runtimeJoints;
     }
 
@@ -541,18 +522,9 @@ public sealed class VrmcSpringBoneExtensionBuilder
         }
     }
 
-    private static bool HasSpringTailChild(JsonObject node, JsonArray nodes)
+    private static bool HasAnyChild(JsonObject node)
     {
-        if (node["children"] is not JsonArray children)
-        {
-            return false;
-        }
-
-        return children
-            .Select(child => child?.GetValue<int>() ?? -1)
-            .Where(index => index >= 0 && index < nodes.Count)
-            .Select(index => nodes[index] as JsonObject)
-            .Any(child => child?["name"]?.GetValue<string>()?.EndsWith("_spring_tail", StringComparison.Ordinal) == true);
+        return node["children"] is JsonArray children && children.Count > 0;
     }
 
     private static JsonArray EnsureArray(JsonObject root, string key)
@@ -570,11 +542,6 @@ public sealed class VrmcSpringBoneExtensionBuilder
     private static string BuildSpringTailName(string? nodeName)
     {
         return $"{(string.IsNullOrWhiteSpace(nodeName) ? "spring" : nodeName)}_spring_tail";
-    }
-
-    private static string BuildSpringTailPath(string? nodePath, string? nodeName)
-    {
-        return $"{nodePath}/{BuildSpringTailName(nodeName)}";
     }
 
     private sealed record VrmcRuntimeSpringJoint(

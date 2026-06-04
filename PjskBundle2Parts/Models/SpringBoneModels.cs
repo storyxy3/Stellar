@@ -7,6 +7,7 @@ public sealed record SpringBoneExport(
     int Version,
     string BundlePath,
     string PartKind,
+    SpringPrefabGraph PrefabGraph,
     IReadOnlyList<SpringMonoBehaviourEntry> Managers,
     IReadOnlyList<SpringBoneEntry> Bones,
     IReadOnlyList<SpringColliderEntry> SphereColliders,
@@ -24,6 +25,85 @@ public sealed record CombinedSpringBoneExport(
     int Version,
     SpringBoneExport Body,
     SpringBoneExport Head
+);
+
+public sealed record SpringPrefabGraph(
+    [property: JsonPropertyName("version")] int Version,
+    [property: JsonPropertyName("partKind")] string PartKind,
+    [property: JsonPropertyName("bundlePath")] string BundlePath,
+    [property: JsonPropertyName("gameObjects")] IReadOnlyList<SpringPrefabGameObject> GameObjects,
+    [property: JsonPropertyName("transforms")] IReadOnlyList<SpringPrefabTransform> Transforms,
+    [property: JsonPropertyName("renderers")] IReadOnlyList<SpringPrefabRenderer> Renderers,
+    [property: JsonPropertyName("animators")] IReadOnlyList<SpringPrefabAnimator> Animators,
+    [property: JsonPropertyName("monoBehaviours")] IReadOnlyList<SpringPrefabMonoBehaviour> MonoBehaviours,
+    [property: JsonPropertyName("rootTransformPathIds")] IReadOnlyList<long> RootTransformPathIds
+);
+
+public sealed record SpringPrefabGameObject(
+    [property: JsonPropertyName("pathId")] long PathId,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("activeSelf")] bool? ActiveSelf,
+    [property: JsonPropertyName("activeInHierarchy")] bool? ActiveInHierarchy,
+    [property: JsonPropertyName("transformPathId")] long? TransformPathId,
+    [property: JsonPropertyName("transformPath")] string? TransformPath,
+    [property: JsonPropertyName("componentPathIds")] IReadOnlyList<long> ComponentPathIds
+);
+
+public sealed record SpringPrefabTransform(
+    [property: JsonPropertyName("pathId")] long PathId,
+    [property: JsonPropertyName("gameObjectPathId")] long? GameObjectPathId,
+    [property: JsonPropertyName("name")] string? Name,
+    [property: JsonPropertyName("transformPath")] string? TransformPath,
+    [property: JsonPropertyName("poseRoot")] string? PoseRoot,
+    [property: JsonPropertyName("parentPathId")] long? ParentPathId,
+    [property: JsonPropertyName("childPathIds")] IReadOnlyList<long> ChildPathIds,
+    [property: JsonPropertyName("localPosition")] SpringVector3 LocalPosition,
+    [property: JsonPropertyName("localRotation")] SpringQuaternion LocalRotation,
+    [property: JsonPropertyName("localScale")] SpringVector3 LocalScale
+);
+
+public sealed record SpringPrefabRenderer(
+    [property: JsonPropertyName("pathId")] long PathId,
+    [property: JsonPropertyName("typeName")] string TypeName,
+    [property: JsonPropertyName("gameObjectPathId")] long? GameObjectPathId,
+    [property: JsonPropertyName("name")] string? Name,
+    [property: JsonPropertyName("transformPath")] string? TransformPath,
+    [property: JsonPropertyName("poseRoot")] string? PoseRoot,
+    [property: JsonPropertyName("enabled")] bool Enabled,
+    [property: JsonPropertyName("materialPathIds")] IReadOnlyList<long> MaterialPathIds
+);
+
+public sealed record SpringPrefabAnimator(
+    [property: JsonPropertyName("pathId")] long PathId,
+    [property: JsonPropertyName("gameObjectPathId")] long? GameObjectPathId,
+    [property: JsonPropertyName("name")] string? Name,
+    [property: JsonPropertyName("transformPath")] string? TransformPath,
+    [property: JsonPropertyName("poseRoot")] string? PoseRoot,
+    [property: JsonPropertyName("enabled")] bool Enabled,
+    [property: JsonPropertyName("hasTransformHierarchy")] bool HasTransformHierarchy,
+    [property: JsonPropertyName("avatarPathId")] long? AvatarPathId,
+    [property: JsonPropertyName("controllerPathId")] long? ControllerPathId
+);
+
+public sealed record SpringPrefabMonoBehaviour(
+    [property: JsonPropertyName("pathId")] long PathId,
+    [property: JsonPropertyName("scriptName")] string ScriptName,
+    [property: JsonPropertyName("gameObjectPathId")] long? GameObjectPathId,
+    [property: JsonPropertyName("name")] string? Name,
+    [property: JsonPropertyName("transformPath")] string? TransformPath,
+    [property: JsonPropertyName("poseRoot")] string? PoseRoot,
+    [property: JsonPropertyName("enabled")] bool? Enabled,
+    [property: JsonPropertyName("objectReferenceFields")] IReadOnlyList<SpringPrefabObjectReferenceField> ObjectReferenceFields
+);
+
+public sealed record SpringPrefabObjectReferenceField(
+    [property: JsonPropertyName("fieldPath")] string FieldPath,
+    [property: JsonPropertyName("references")] IReadOnlyList<SpringPrefabObjectReference> References
+);
+
+public sealed record SpringPrefabObjectReference(
+    [property: JsonPropertyName("fileId")] int FileId,
+    [property: JsonPropertyName("pathId")] long PathId
 );
 
 public sealed record SpringObjectRef(
@@ -114,6 +194,13 @@ public sealed record SpringVector3(
     float Z
 );
 
+public sealed record SpringQuaternion(
+    [property: JsonPropertyName("x")] float X,
+    [property: JsonPropertyName("y")] float Y,
+    [property: JsonPropertyName("z")] float Z,
+    [property: JsonPropertyName("w")] float W
+);
+
 public sealed record SpringColor(
     float R,
     float G,
@@ -190,6 +277,8 @@ public sealed record VrmSpringBoneColliderCandidate(
     [property: JsonPropertyName("node")] int? Node,
     [property: JsonPropertyName("nodeName")] string? NodeName,
     [property: JsonPropertyName("nodePath")] string? NodePath,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("poseRoot")] string? PoseRoot,
     [property: JsonPropertyName("shape")] VrmSpringBoneColliderShapeCandidate Shape
 );
 
@@ -231,7 +320,17 @@ public sealed record VrmSpringBoneColliderGroupCandidate(
     [property: JsonPropertyName("partKind")] string PartKind,
     [property: JsonPropertyName("sourceSpringBonePathId")] long SourceSpringBonePathId,
     [property: JsonPropertyName("colliders")] IReadOnlyList<int> Colliders,
-    [property: JsonPropertyName("sourceColliderPathIds")] IReadOnlyList<long> SourceColliderPathIds
+    [property: JsonPropertyName("sourceColliderPathIds")] IReadOnlyList<long> SourceColliderPathIds,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("sourceKind")] string? SourceKind,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("colliderFlag")] int? ColliderFlag,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("matchedPrefixes")] IReadOnlyList<string>? MatchedPrefixes,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("collidersByRoot")] IReadOnlyDictionary<string, IReadOnlyList<int>>? CollidersByRoot,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("defaultRoot")] string? DefaultRoot
 );
 
 public sealed record VrmSpringBoneSpringCandidate(

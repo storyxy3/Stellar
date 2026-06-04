@@ -1429,10 +1429,10 @@ function renderAnimationStatus(
   const trackDebug = lastAnimationSnapshot?.bodyTrackDebug;
   const loopDebug = lastAnimationSnapshot?.bodyLoopTrackDebug;
   const debugInfo = trackDebug
-    ? ` | Body Tracks: ${trackDebug.trackCount}, Hair: ${trackDebug.hairTrackCount}, Head/Neck: ${trackDebug.headTrackCount + trackDebug.neckTrackCount}, Upper: ${trackDebug.upperBodyTrackCount}`
+    ? ` | Body Tracks: ${trackDebug.trackCount}, Hair: ${trackDebug.hairTrackCount}, Head/Neck: ${trackDebug.headTrackCount + trackDebug.neckTrackCount}, Upper: ${trackDebug.upperBodyTrackCount}, UTJ Tracks: ${trackDebug.utjControlledTrackCount}`
     : "";
   const loopDebugInfo = loopDebug
-    ? ` | Loop Tracks: ${loopDebug.trackCount}, Hair: ${loopDebug.hairTrackCount}, Head/Neck: ${loopDebug.headTrackCount + loopDebug.neckTrackCount}`
+    ? ` | Loop Tracks: ${loopDebug.trackCount}, Hair: ${loopDebug.hairTrackCount}, Head/Neck: ${loopDebug.headTrackCount + loopDebug.neckTrackCount}, UTJ Tracks: ${loopDebug.utjControlledTrackCount}`
     : "";
   const togglesInfo = lastAnimationSnapshot
     ? ` | Face Morphs: ${lastAnimationSnapshot.faceMotionEnabled ? "on" : "off"} | Head Tracks: ${lastAnimationSnapshot.bodyHeadTracksEnabled ? "on" : "off"}`
@@ -1572,10 +1572,45 @@ function renderSpringBoneStatus(loading = false) {
   }
 
   const utj = snapshot.utjRuntime
-    ? ` | UTJ Runtime yes S${snapshot.utjRuntime.springCount}/B${snapshot.utjRuntime.boneCount}/C${snapshot.utjRuntime.colliderCount}/M${snapshot.utjRuntime.missingNodeCount}/Sleeve${snapshot.utjRuntime.maxSleeveOffset.toFixed(3)}/Skirt${snapshot.utjRuntime.maxSkirtOffset.toFixed(3)}/Skin${snapshot.utjRuntime.skinnedBoneMatches}:${snapshot.utjRuntime.skinnedBoneMisses}`
+    ? ` | UTJ Runtime yes S${snapshot.utjRuntime.springCount}/B${snapshot.utjRuntime.boneCount}/C${snapshot.utjRuntime.colliderCount}/M${snapshot.utjRuntime.missingNodeCount}/Sleeve${snapshot.utjRuntime.maxSleeveOffset.toFixed(3)}/Skirt${snapshot.utjRuntime.maxSkirtOffset.toFixed(3)}/Skin${snapshot.utjRuntime.skinnedBoneMatches}:${snapshot.utjRuntime.skinnedBoneMisses}${formatUtjSpringBoneBindingSummary(snapshot.utjRuntime)}`
     : " | UTJ Runtime no";
   status.textContent =
     `SpringBone metadata | Body Managers ${snapshot.bodyManagerCount}, Bones ${snapshot.bodySpringBoneCount}, ExtraBone ${snapshot.bodyExtraBoneCount}, Colliders S${snapshot.bodySphereColliderCount}/C${snapshot.bodyCapsuleColliderCount}/P${snapshot.bodyPanelColliderCount} | Head Managers ${snapshot.headManagerCount}, Bones ${snapshot.headSpringBoneCount}, ExtraBone ${snapshot.headExtraBoneCount}, Colliders S${snapshot.headSphereColliderCount}/C${snapshot.headCapsuleColliderCount}/P${snapshot.headPanelColliderCount} | CharacterHair ${snapshot.characterHairPresent ? "yes" : "no"} | CharacterEye ${snapshot.characterEyePresent ? "yes" : "no"} | VRM Manager ${snapshot.vrmSpringBoneManagerPresent ? "yes" : "no"}${utj}`;
+}
+
+function formatUtjSpringBoneBindingSummary(
+  runtime: NonNullable<SpringBoneRuntimeSnapshot["utjRuntime"]>
+): string {
+  const diagnostics = runtime.bindingDiagnostics ?? [];
+  if (!diagnostics.length) {
+    return "";
+  }
+
+  const colliderFlagDiagnostics = diagnostics.filter(
+    (diagnostic) => diagnostic.sourceKind === "colliderFlag"
+  );
+  const selectedRootCounts = new Map<string, number>();
+  let dualBodySitCandidates = 0;
+  for (const diagnostic of colliderFlagDiagnostics) {
+    const selectedRoot = diagnostic.selectedRoot ?? "none";
+    selectedRootCounts.set(selectedRoot, (selectedRootCounts.get(selectedRoot) ?? 0) + 1);
+    const candidateRootNames = new Set(diagnostic.candidateRoots.map((candidate) => candidate.root));
+    if (candidateRootNames.has("body") && candidateRootNames.has("sit_body")) {
+      dualBodySitCandidates += 1;
+    }
+  }
+
+  const rootSummary = [...selectedRootCounts.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([root, count]) => `${root}:${count}`)
+    .join(",");
+  const topBindings = colliderFlagDiagnostics
+    .slice(0, 4)
+    .map((diagnostic) =>
+      `${diagnostic.boneName ?? diagnostic.bonePath ?? "bone"}=>${diagnostic.selectedRoot ?? "none"}:${diagnostic.selectedColliderCount}(${diagnostic.selectionReason})`
+    )
+    .join(" ; ");
+  return ` | Binding colliderFlag ${colliderFlagDiagnostics.length}/${diagnostics.length} roots[${rootSummary || "none"}] body+sit candidates ${dualBodySitCandidates}${topBindings ? ` | ${topBindings}` : ""}`;
 }
 
 async function applyBodyAnimation(bodyAsset: BodyAssetManifest) {
