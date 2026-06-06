@@ -52,6 +52,9 @@ let lastAnimationSnapshot: AnimationPlaybackSnapshot | null = null;
 let lastFaceMotionSnapshot: FaceMotionPlaybackSnapshot | null = null;
 let lastSpringBoneSnapshot: SpringBoneRuntimeSnapshot | null = null;
 const renderState = { ...defaultRenderState };
+let renderIsolationMode: RenderIsolationMode = readRenderIsolationMode(
+  new URLSearchParams(window.location.search)
+);
 const animationState = { ...defaultAnimationState };
 
 type UnknownRecord = Record<string, unknown>;
@@ -171,6 +174,31 @@ root.innerHTML = `
           <option value="180">180 deg</option>
           </select>
         </label>
+        <label>
+          <span>Render Isolation</span>
+          <select data-render-key="renderIsolationMode">
+            <option value="normal" selected>Normal</option>
+            <option value="no_eye_through_hair">No Eye Through Hair</option>
+            <option value="eye_through_hair_only">Eye Through Hair Only</option>
+            <option value="eye_through_hair_eye_only">Through Hair Eye Only</option>
+            <option value="eye_through_hair_eyebrow_only">Through Hair Eyebrow Only</option>
+            <option value="eye_through_hair_eyelash_only">Through Hair Eyelash Only</option>
+            <option value="no_eye_through_hair_eye">No Through Hair Eye</option>
+            <option value="no_eye_through_hair_eyebrow">No Through Hair Eyebrow</option>
+            <option value="no_eye_through_hair_eyelash">No Through Hair Eyelash</option>
+            <option value="no_eye_through_hair_eyelash_overlay">No Eyelash Overlay</option>
+            <option value="no_eye_through_hair_eyelash_prepass">No Eyelash Prepass</option>
+            <option value="no_outline">No Outline</option>
+            <option value="outline_only">Outline Only</option>
+            <option value="no_face_layers">No Face Layers</option>
+            <option value="no_face_outline">No Face Outline</option>
+            <option value="no_hair_outline">No Hair Outline</option>
+            <option value="no_body_outline">No Body Outline</option>
+            <option value="eyelight_only">Eye/Eyelight Only</option>
+            <option value="no_eyelight">No Eyelight</option>
+            <option value="face_sdf">Face SDF Debug</option>
+          </select>
+        </label>
       </section>
 
       <section class="group controls">
@@ -260,6 +288,13 @@ viewer.setToonShadowPreview(
   valueShadowInfluenceByMode[renderState.valueShadowInfluenceMode]
 );
 viewer.setCharacterYawDegrees(characterYawDegreesByMode[renderState.characterYawMode]);
+viewer.setRenderIsolationMode(renderIsolationMode);
+const renderIsolationSelect = document.querySelector<HTMLSelectElement>(
+  'select[data-render-key="renderIsolationMode"]'
+);
+if (renderIsolationSelect) {
+  renderIsolationSelect.value = renderIsolationMode;
+}
 
 function copyBodyAsset(base: BodyAssetManifest): BodyAssetManifest {
   return {
@@ -2192,6 +2227,16 @@ function readRenderIsolationMode(params: URLSearchParams): RenderIsolationMode {
     case "face_sdf":
     case "no_face_sdf":
     case "no_face_layers":
+    case "no_eye_through_hair":
+    case "eye_through_hair_only":
+    case "eye_through_hair_eye_only":
+    case "eye_through_hair_eyebrow_only":
+    case "eye_through_hair_eyelash_only":
+    case "no_eye_through_hair_eye":
+    case "no_eye_through_hair_eyebrow":
+    case "no_eye_through_hair_eyelash":
+    case "no_eye_through_hair_eyelash_overlay":
+    case "no_eye_through_hair_eyelash_prepass":
     case "eyelight_only":
     case "no_eyelight":
     case "outline_only":
@@ -2357,6 +2402,10 @@ document
       if (key === "characterYawMode") {
         renderState.characterYawMode = select.value as CharacterYawMode;
         viewer.setCharacterYawDegrees(characterYawDegreesByMode[renderState.characterYawMode]);
+      }
+      if (key === "renderIsolationMode") {
+        renderIsolationMode = select.value as RenderIsolationMode;
+        viewer.setRenderIsolationMode(renderIsolationMode);
       }
     });
   });

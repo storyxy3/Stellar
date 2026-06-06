@@ -44,6 +44,7 @@ export type BodyMaterialUniforms = {
   neckContactStrength?: number;
   bodyDebugMode?: number;
   skinTintEnabled?: boolean;
+  alphaCutoff?: number;
 };
 
 export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
@@ -116,6 +117,7 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
       uShadowTexWeight: { value: initial.shadowTexWeight ?? 1 },
       uSaturation: { value: initial.saturation ?? 0.5 },
       uSkinTintEnabled: { value: initial.skinTintEnabled === false ? 0.0 : 1.0 },
+      uAlphaCutoff: { value: initial.alphaCutoff ?? 0.0 },
     },
     vertexShader: `
       #include <common>
@@ -200,6 +202,7 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
       uniform float uShadowTexWeight;
       uniform float uSaturation;
       uniform float uSkinTintEnabled;
+      uniform float uAlphaCutoff;
 
       varying vec3 vWorldPosition;
       varying vec3 vWorldNormal;
@@ -233,6 +236,9 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
         vec3 mainColor = uBaseColor;
         if (uUseMainTex > 0.5) {
           mainSample = texture2D(uMainTex, vUv);
+          if (uAlphaCutoff > 0.0 && mainSample.a < uAlphaCutoff) {
+            discard;
+          }
           mainColor = mainSample.rgb;
         }
         vec3 rawMainColor = mainColor;
@@ -494,6 +500,9 @@ export function updateSekaiBodyMaterial(
   material.uniforms.uUseMainTex.value = next.mainTex ? 1.0 : 0.0;
   material.uniforms.uUseShadowTex.value = next.shadowTex ? 1.0 : 0.0;
   material.uniforms.uUseValueTex.value = next.valueTex ? 1.0 : 0.0;
+  if (material.uniforms.uAlphaCutoff) {
+    material.uniforms.uAlphaCutoff.value = next.alphaCutoff ?? 0.0;
+  }
   material.uniforms.uLightDirection.value.copy(
     next.lightDirection.clone().normalize()
   );

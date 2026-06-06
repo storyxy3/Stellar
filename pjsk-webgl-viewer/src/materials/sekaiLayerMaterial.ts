@@ -28,6 +28,7 @@ export type SekaiLayerOptions = {
   distortionTexTilingY?: number | null;
   threshold?: number | null;
   alphaScale?: number | null;
+  strictAlpha?: boolean | null;
 };
 
 export function createSekaiLayerMaterial(
@@ -92,6 +93,7 @@ export function createSekaiLayerMaterial(
       },
       uThreshold: { value: THREE.MathUtils.clamp(options?.threshold ?? 0.5, 0.0, 1.0) },
       uAlphaScale: { value: THREE.MathUtils.clamp(options?.alphaScale ?? 1.0, 0.0, 1.0) },
+      uStrictAlpha: { value: options?.strictAlpha ? 1.0 : 0.0 },
     },
     vertexShader: `
       #include <common>
@@ -149,6 +151,7 @@ export function createSekaiLayerMaterial(
       uniform vec2 uDistortionTexTiling;
       uniform float uThreshold;
       uniform float uAlphaScale;
+      uniform float uStrictAlpha;
 
       varying vec2 vUv;
       varying vec3 vViewNormal;
@@ -188,7 +191,7 @@ export function createSekaiLayerMaterial(
         }
         vec4 sampleColor = uUseMainTex > 0.5 ? texture2D(uMainTex, uv) : vec4(1.0);
         float alpha = sampleColor.a;
-        if (uMode > 1.5) {
+        if (uMode > 1.5 && uStrictAlpha < 0.5) {
           float brightness = max(max(sampleColor.r, sampleColor.g), sampleColor.b);
           float alphaHigh = mix(0.055, 0.14, uThreshold);
           float brightnessAlpha = smoothstep(0.004, alphaHigh, brightness);
