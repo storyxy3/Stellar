@@ -29,6 +29,7 @@ function parseArgs(argv) {
     input: "",
     out: "",
     phase: 0.5,
+    clip: "motion_loop",
     width: 1400,
     height: 1000,
     timeoutMs: 45000,
@@ -36,7 +37,8 @@ function parseArgs(argv) {
     warmupFrames: 0,
     warmupMode: "animation",
     yaw: "",
-    utjSpringBone: false,
+    renderIsolation: "normal",
+    springRuntimeMode: "off",
     traceUtjBones: [],
     traceUtjMaxEvents: 240,
     traceOut: "",
@@ -60,6 +62,8 @@ function parseArgs(argv) {
       options.out = readValue();
     } else if (arg === "--phase") {
       options.phase = Number(readValue());
+    } else if (arg === "--clip") {
+      options.clip = readValue();
     } else if (arg === "--width") {
       options.width = Number(readValue());
     } else if (arg === "--height") {
@@ -74,10 +78,18 @@ function parseArgs(argv) {
       options.warmupMode = readValue();
     } else if (arg === "--yaw") {
       options.yaw = readValue();
+    } else if (arg === "--render-isolation") {
+      options.renderIsolation = readValue();
+    } else if (arg === "--spring-runtime-mode") {
+      const mode = readValue();
+      if (!["off", "webgl-utj", "unity-prefab"].includes(mode)) {
+        throw new Error(`Invalid --spring-runtime-mode ${mode}`);
+      }
+      options.springRuntimeMode = mode;
     } else if (arg === "--utj-springbone") {
-      options.utjSpringBone = true;
+      options.springRuntimeMode = "webgl-utj";
     } else if (arg === "--no-utj-springbone") {
-      options.utjSpringBone = false;
+      options.springRuntimeMode = "off";
     } else if (arg === "--trace-utj-bone") {
       options.traceUtjBones.push(readValue());
     } else if (arg === "--trace-utj-max-events") {
@@ -107,6 +119,9 @@ function parseArgs(argv) {
     options.phase = 0.5;
   }
   options.phase = Math.min(Math.max(options.phase, 0), 1);
+  if (options.clip !== "motion" && options.clip !== "motion_loop") {
+    throw new Error("--clip must be motion or motion_loop.");
+  }
   options.width = Math.max(Math.trunc(options.width) || 1400, 320);
   options.height = Math.max(Math.trunc(options.height) || 1000, 320);
   options.timeoutMs = Math.max(Math.trunc(options.timeoutMs) || 45000, 5000);
@@ -115,6 +130,22 @@ function parseArgs(argv) {
   options.traceUtjMaxEvents = Math.max(Math.trunc(options.traceUtjMaxEvents) || 240, 1);
   if (options.warmupMode !== "animation" && options.warmupMode !== "runtime") {
     throw new Error("--warmup-mode must be animation or runtime.");
+  }
+  const renderIsolationModes = new Set([
+    "normal",
+    "face_sdf",
+    "no_face_sdf",
+    "no_face_layers",
+    "eyelight_only",
+    "no_eyelight",
+    "outline_only",
+    "no_outline",
+    "no_body_outline",
+    "no_hair_outline",
+    "no_face_outline",
+  ]);
+  if (!renderIsolationModes.has(options.renderIsolation)) {
+    throw new Error(`Invalid --render-isolation ${options.renderIsolation}`);
   }
   options.input = path.resolve(options.input);
   options.out = path.resolve(options.out || path.join(process.cwd(), "capture.png"));
@@ -128,6 +159,7 @@ function printHelp() {
 
 Options:
   --phase <0..1>       Loop phase to capture. Default: 0.5
+  --clip <name>        Clip to capture: motion or motion_loop. Default: motion_loop
   --width <px>         Browser viewport width. Default: 1400
   --height <px>        Browser viewport height. Default: 1000
   --timeout-ms <ms>    Capture-ready timeout. Default: 45000
@@ -135,8 +167,12 @@ Options:
   --warmup-frames <n>  Deterministically step n frames at 60fps instead of real-time warmup
   --warmup-mode <mode> animation advances the loop; runtime freezes animation and settles UTJ. Default: animation
   --yaw <mode>         Character yaw mode: 0, 45, -45, 90, -90, 180
-  --utj-springbone     Enable the UTJ runtime before capture. Default: off
-  --no-utj-springbone  Keep the UTJ runtime disabled before capture
+  --render-isolation <mode>
+                       Render isolation/debug mode. Default: normal
+  --spring-runtime-mode <mode>
+                       Spring runtime: off, webgl-utj, unity-prefab. Default: off
+  --utj-springbone     Compatibility alias for --spring-runtime-mode webgl-utj
+  --no-utj-springbone  Compatibility alias for --spring-runtime-mode off
   --trace-utj-bone <s> Trace UTJ stages for bones whose name/path contains this text
   --trace-utj-max-events <n>
                        Maximum retained UTJ trace events. Default: 240
@@ -484,10 +520,12 @@ async function capture(options) {
   const debugPort = await getFreePort();
   const pageUrl =
     `http://127.0.0.1:${port}/?captureBase=/capture-input/&capturePhase=${options.phase}` +
+    `&captureClip=${encodeURIComponent(options.clip)}` +
     `&captureWarmupMs=${options.warmupMs}` +
     `&captureWarmupFrames=${options.warmupFrames}` +
     `&captureWarmupMode=${encodeURIComponent(options.warmupMode)}` +
-    `&utjSpringBoneEnabled=${options.utjSpringBone ? "true" : "false"}` +
+    `&renderIsolation=${encodeURIComponent(options.renderIsolation)}` +
+    `&springRuntimeMode=${encodeURIComponent(options.springRuntimeMode)}` +
     `&utjTraceMaxEvents=${options.traceUtjMaxEvents}` +
     options.traceUtjBones.map((filter) => `&utjTraceBone=${encodeURIComponent(filter)}`).join("") +
     (options.yaw ? `&characterYawMode=${encodeURIComponent(options.yaw)}` : "");
@@ -546,6 +584,7 @@ async function capture(options) {
       traceOutput: options.traceOut || null,
       input: options.input,
       phase: options.phase,
+      renderIsolation: options.renderIsolation,
       width: options.width,
       height: options.height,
       snapshot,

@@ -240,14 +240,33 @@ public sealed class SpringBoneExporter
             .Select(renderer =>
             {
                 var gameObject = ResolveGameObject(renderer.m_GameObject);
+                var transformPathId = gameObject?.TransformPathId;
+                var meshPathId = ResolveRendererMeshPathId(renderer, gameObject);
+                var meshName = ResolveRendererMeshName(renderer, gameObject);
+                var skinnedMeshBones = renderer is SkinnedMeshRenderer skinnedMeshRenderer
+                    ? skinnedMeshRenderer.m_Bones
+                        .Select(bone => bone.m_PathID)
+                        .Where(pathId => pathId != 0)
+                        .ToList()
+                    : new List<long>();
+                var rootBonePathId = renderer is SkinnedMeshRenderer { m_RootBone.m_PathID: not 0 } rootBoneRenderer
+                    ? rootBoneRenderer.m_RootBone.m_PathID
+                    : (long?)null;
                 return new SpringPrefabRenderer(
                     PathId: renderer.m_PathID,
                     TypeName: renderer.type.ToString(),
                     GameObjectPathId: renderer.m_GameObject.m_PathID == 0 ? null : renderer.m_GameObject.m_PathID,
+                    TransformPathId: transformPathId,
                     Name: gameObject?.Name,
                     TransformPath: gameObject?.TransformPath,
                     PoseRoot: ExtractPoseRoot(gameObject?.TransformPath),
+                    ActiveSelf: gameObject?.ActiveSelf,
+                    ActiveInHierarchy: gameObject?.ActiveInHierarchy,
                     Enabled: renderer.m_Enabled,
+                    MeshPathId: meshPathId,
+                    MeshName: meshName,
+                    SkinnedMeshBones: skinnedMeshBones,
+                    RootBonePathId: rootBonePathId,
                     MaterialPathIds: renderer.m_Materials
                         .Select(material => material.m_PathID)
                         .Where(pathId => pathId != 0)
@@ -457,9 +476,45 @@ public sealed class SpringBoneExporter
             TransformPath: gameObject.m_Transform is null
                 ? null
                 : BuildTransformPath(gameObject.m_Transform),
+            TransformPathId: gameObject.m_Transform?.m_PathID,
             ActiveSelf: ReadGameObjectActiveSelf(gameObject),
             ActiveInHierarchy: ReadGameObjectActiveInHierarchy(gameObject)
         );
+    }
+
+    private static long? ResolveRendererMeshPathId(Renderer renderer, SpringObjectRef? gameObject)
+    {
+        if (renderer is SkinnedMeshRenderer skinnedMeshRenderer)
+        {
+            return skinnedMeshRenderer.m_Mesh.m_PathID == 0 ? null : skinnedMeshRenderer.m_Mesh.m_PathID;
+        }
+
+        if (!renderer.m_GameObject.TryGet(out GameObject resolvedGameObject) ||
+            resolvedGameObject.m_MeshFilter is null)
+        {
+            return null;
+        }
+
+        var meshPathId = resolvedGameObject.m_MeshFilter.m_Mesh.m_PathID;
+        return meshPathId == 0 ? null : meshPathId;
+    }
+
+    private static string? ResolveRendererMeshName(Renderer renderer, SpringObjectRef? gameObject)
+    {
+        if (renderer is SkinnedMeshRenderer skinnedMeshRenderer &&
+            skinnedMeshRenderer.m_Mesh.TryGet(out Mesh skinnedMesh))
+        {
+            return skinnedMesh.m_Name;
+        }
+
+        if (!renderer.m_GameObject.TryGet(out GameObject resolvedGameObject) ||
+            resolvedGameObject.m_MeshFilter is null ||
+            !resolvedGameObject.m_MeshFilter.m_Mesh.TryGet(out Mesh mesh))
+        {
+            return null;
+        }
+
+        return mesh.m_Name;
     }
 
     private static bool? ReadGameObjectActiveSelf(GameObject gameObject)

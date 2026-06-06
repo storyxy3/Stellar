@@ -27,6 +27,7 @@ export type SekaiLayerOptions = {
   distortionTexTilingX?: number | null;
   distortionTexTilingY?: number | null;
   threshold?: number | null;
+  alphaScale?: number | null;
 };
 
 export function createSekaiLayerMaterial(
@@ -45,12 +46,16 @@ export function createSekaiLayerMaterial(
     transparent: true,
     depthWrite: false,
     depthTest: true,
+    depthFunc: THREE.LessEqualDepth,
     side: THREE.DoubleSide,
     vertexColors: useVertexBViewOffset,
-    blending: isAdditive ? THREE.AdditiveBlending : THREE.NormalBlending,
+    blending: isAdditive ? THREE.CustomBlending : THREE.NormalBlending,
+    blendSrc: isAdditive ? THREE.SrcAlphaFactor : undefined,
+    blendDst: isAdditive ? THREE.OneFactor : undefined,
+    blendEquation: isAdditive ? THREE.AddEquation : undefined,
     polygonOffset: true,
-    polygonOffsetFactor: isEyelight ? -2 : -1,
-    polygonOffsetUnits: isEyelight ? -2 : -1,
+    polygonOffsetFactor: isEyelight ? -0.5 : -1,
+    polygonOffsetUnits: isEyelight ? -0.5 : -1,
     uniforms: {
       uMainTex: { value: texture },
       uUseMainTex: { value: texture ? 1.0 : 0.0 },
@@ -59,7 +64,7 @@ export function createSekaiLayerMaterial(
       uEmissionColor: { value: new THREE.Color(options?.emissionColor ?? "#000000") },
       uAtlasTile: { value: new THREE.Vector2(atlasTileX, atlasTileY) },
       uAtlasSample: { value: atlasSample },
-      uUseAtlas: { value: atlas?.enabled === false ? 0.0 : atlas ? 1.0 : 0.0 },
+      uUseAtlas: { value: 0.0 },
       uTime: { value: 0.0 },
       uLightInfluence: { value: THREE.MathUtils.clamp(options?.lightInfluence ?? 1.0, 0.0, 1.0) },
       uHighlightInfluence: { value: THREE.MathUtils.clamp(options?.highlightInfluence ?? 1.0, 0.0, 1.0) },
@@ -86,6 +91,7 @@ export function createSekaiLayerMaterial(
         ),
       },
       uThreshold: { value: THREE.MathUtils.clamp(options?.threshold ?? 0.5, 0.0, 1.0) },
+      uAlphaScale: { value: THREE.MathUtils.clamp(options?.alphaScale ?? 1.0, 0.0, 1.0) },
     },
     vertexShader: `
       #include <common>
@@ -142,6 +148,7 @@ export function createSekaiLayerMaterial(
       uniform float uDistortionScrollSpeed;
       uniform vec2 uDistortionTexTiling;
       uniform float uThreshold;
+      uniform float uAlphaScale;
 
       varying vec2 vUv;
       varying vec3 vViewNormal;
@@ -183,9 +190,14 @@ export function createSekaiLayerMaterial(
         float alpha = sampleColor.a;
         if (uMode > 1.5) {
           float brightness = max(max(sampleColor.r, sampleColor.g), sampleColor.b);
-          float alphaHigh = mix(0.075, 0.18, uThreshold);
-          alpha = smoothstep(0.012, alphaHigh, brightness);
+          float alphaHigh = mix(0.055, 0.14, uThreshold);
+          float brightnessAlpha = smoothstep(0.004, alphaHigh, brightness);
+          alpha = max(sampleColor.a, brightnessAlpha);
         }
+        if (alpha < 0.001) {
+          discard;
+        }
+        alpha *= uAlphaScale;
         if (alpha < 0.001) {
           discard;
         }
@@ -196,8 +208,8 @@ export function createSekaiLayerMaterial(
         if (uMode > 1.5) {
           float brightness = max(max(sampleColor.r, sampleColor.g), sampleColor.b);
           color = max(color, vec3(brightness) * uTintColor);
-          color *= 0.95 + alpha * mix(0.45, 0.72, uHighlightInfluence);
-          alpha = clamp(alpha * mix(0.9, 1.2, uHighlightInfluence), 0.0, 1.0);
+          color *= 1.05 + alpha * mix(0.65, 1.05, uHighlightInfluence);
+          alpha = clamp(alpha * mix(1.1, 1.55, uHighlightInfluence), 0.0, 1.0);
         }
         gl_FragColor = vec4(outputColor(clamp(color, 0.0, 1.0)), alpha);
       }

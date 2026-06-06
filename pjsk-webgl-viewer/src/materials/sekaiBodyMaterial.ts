@@ -125,6 +125,7 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
 
       varying vec3 vWorldPosition;
       varying vec3 vWorldNormal;
+      varying vec3 vViewPosition;
       varying vec3 vModelPosition;
       varying vec2 vUv;
 
@@ -139,11 +140,13 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
         #include <skinning_vertex>
 
         vec4 worldPosition = modelMatrix * vec4(transformed, 1.0);
+        vec4 viewPosition = viewMatrix * worldPosition;
         vWorldPosition = worldPosition.xyz;
         vWorldNormal = normalize(mat3(modelMatrix) * objectNormal);
+        vViewPosition = viewPosition.xyz;
         vModelPosition = transformed;
         vUv = uv;
-        gl_Position = projectionMatrix * viewMatrix * worldPosition;
+        gl_Position = projectionMatrix * viewPosition;
       }
     `,
     fragmentShader: `
@@ -200,6 +203,7 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
 
       varying vec3 vWorldPosition;
       varying vec3 vWorldNormal;
+      varying vec3 vViewPosition;
       varying vec3 vModelPosition;
       varying vec2 vUv;
 

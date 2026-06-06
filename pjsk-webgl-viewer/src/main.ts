@@ -16,11 +16,13 @@ import {
 import {
   PjskViewerApp,
   type AnimationPlaybackSnapshot,
+  type BodyAnimationKind,
   type BodyAnimationSelection,
   type FaceMotionPlaybackSnapshot,
   type FaceMotionSet,
   type MaterialBindingMode,
   type PartImportSnapshot,
+  type RenderIsolationMode,
   type RuntimeCombinedCharacterAsset,
   type SpringBoneRuntimeSnapshot,
 } from "./engine/PjskViewerApp";
@@ -31,6 +33,7 @@ import {
   toonShadowSmoothByMode,
   valueShadowInfluenceByMode,
   type CharacterYawMode,
+  type SpringRuntimeMode,
   type ToonShadowSmoothMode,
   type ValueShadowInfluenceMode,
 } from "./config/viewerConfig";
@@ -93,8 +96,6 @@ const localAssetState = {
   converterRuntimeExtension: null as UnknownRecord | null,
   converterCombinedCharacter: null as RuntimeCombinedCharacterAsset | null,
   converterCombinedFile: null as File | null,
-  converterBodyMotionPath: null as string | null,
-  converterBodyMotionUrl: null as string | null,
   converterEmbeddedFaceMotionData: null as FaceMotionSet | null,
   converterEmbeddedLightMotionData: null as LightMotionSet | null,
   converterLightControllerPreview: null as LightControllerPreview | null,
@@ -125,8 +126,8 @@ root.innerHTML = `
         </div>
         <div class="callout">
           Required runtime import is the whole converter output folder:
-          <code>character/character.vrm</code> plus <code>pjsk-sekai-runtime.extension.json</code>.
-          Body motion and face clips are discovered from the runtime extension when exported.
+          <code>character/unity-runtime.json</code> plus <code>pjsk-sekai-runtime.extension.json</code>.
+          Body motion, face clips, and light clips are discovered from the runtime extension when exported.
         </div>
       </section>
 
@@ -136,7 +137,7 @@ root.innerHTML = `
           <span>Binding Strategy</span>
           <select data-render-key="materialBindingMode">
             <option value="manifest" selected>Manifest Rebind</option>
-            <option value="glb">GLB Original</option>
+            <option value="glb">Source Original</option>
           </select>
         </label>
         <label>
@@ -199,8 +200,12 @@ root.innerHTML = `
           <input id="body-head-tracks-enabled" type="checkbox" checked />
         </label>
         <label>
-          <span>UTJ SpringBone</span>
-          <input id="utj-springbone-enabled" type="checkbox" />
+          <span>Spring Runtime</span>
+          <select id="spring-runtime-mode">
+            <option value="off">Off</option>
+            <option value="webgl-utj">WebGL UTJ</option>
+            <option value="unity-prefab">Unity Prefab</option>
+          </select>
         </label>
         <label>
           <span>Seek Time</span>
@@ -766,6 +771,16 @@ function normalizeRuntimeExtension(raw: unknown) {
   };
 }
 
+async function normalizeRuntimeWithUnityRuntimeJson(
+  runtimeExtension: UnknownRecord,
+  unityRuntimeJsonUrl: string | null | undefined
+) {
+  if (!unityRuntimeJsonUrl) {
+    return normalizeRuntimeExtension(runtimeExtension);
+  }
+  return normalizeRuntimeExtension(await fetchRuntimeJson(unityRuntimeJsonUrl));
+}
+
 function readRuntimePreviewLight(extension: UnknownRecord) {
   const profile = asRecord(
     extension.sekaiRuntimeMaterialProfile ?? extension.SekaiRuntimeMaterialProfile
@@ -1045,9 +1060,14 @@ function applyLightControllerPreview(preview: LightControllerPreview | null) {
   }
 }
 
-function readEmbeddedBodyMotionPath(extension: UnknownRecord) {
+function readEmbeddedUnityMotionPath(extension: UnknownRecord) {
   const motionPackage = readRuntimeMotionPackage(extension);
-  return readString(motionPackage.bodyMotionGlb ?? motionPackage.BodyMotionGlb) || null;
+  return readString(motionPackage.unityMotionJson ?? motionPackage.UnityMotionJson) || null;
+}
+
+function readUnityRuntimeJsonPath(extension: UnknownRecord) {
+  const container = asRecord(extension.container ?? extension.Container);
+  return readString(container.unityRuntimeJson ?? container.UnityRuntimeJson) || null;
 }
 
 function findRuntimeExtensionCandidate(files: File[]) {
@@ -1055,12 +1075,8 @@ function findRuntimeExtensionCandidate(files: File[]) {
 }
 
 function findCombinedCharacterFile(files: File[]) {
-  return files.find((file) => /character\.vrm$/i.test(file.name))
-    ?? files.find((file) => /character\.vrm-candidate\.glb$/i.test(file.name))
-    ?? files.find((file) => /character\.vrm-core\.glb$/i.test(file.name))
-    ?? files.find((file) => /character\.springbone\.glb$/i.test(file.name))
-    ?? files.find((file) => /character\.glb$/i.test(file.name))
-    ?? null;
+  void files;
+  return null;
 }
 
 async function parseConverterFolder(files: File[]) {
@@ -1075,8 +1091,6 @@ async function parseConverterFolder(files: File[]) {
   localAssetState.converterRuntimeExtension = null;
   localAssetState.converterCombinedCharacter = null;
   localAssetState.converterCombinedFile = null;
-  localAssetState.converterBodyMotionPath = null;
-  localAssetState.converterBodyMotionUrl = null;
   localAssetState.converterEmbeddedFaceMotionData = null;
   localAssetState.converterEmbeddedLightMotionData = null;
   localAssetState.converterLightControllerPreview = null;
@@ -1095,34 +1109,51 @@ async function parseConverterFolder(files: File[]) {
   const runtimeExtensionFile = findRuntimeExtensionCandidate(files);
   const combinedCharacterFile = findCombinedCharacterFile(files);
 
-  if (!runtimeExtensionFile || !combinedCharacterFile) {
+  if (!runtimeExtensionFile) {
     localAssetState.converterError =
-      "Converter output must contain character/character.vrm and pjsk-sekai-runtime.extension.json.";
+      "Converter output must contain pjsk-sekai-runtime.extension.json.";
     return;
   }
 
   try {
-    const runtime = normalizeRuntimeExtension(
-      JSON.parse(await runtimeExtensionFile.text())
-    );
-    const relativePath = getNormalizedRelativePath(combinedCharacterFile);
-    const meshUrl =
-      localAssetState.converterUrlByPath.get(relativePath) ??
-      localAssetState.converterUrlByPath.get(combinedCharacterFile.name) ??
-      URL.createObjectURL(combinedCharacterFile);
+    const baseRuntimeExtension = asRecord(JSON.parse(await runtimeExtensionFile.text()));
+    const unityRuntimeJsonPath = readUnityRuntimeJsonPath(baseRuntimeExtension);
+    const unityRuntimeJsonUrl = unityRuntimeJsonPath
+      ? findConverterUrl(unityRuntimeJsonPath)
+      : null;
+    const runtime = unityRuntimeJsonUrl
+      ? normalizeRuntimeExtension(JSON.parse(await (await fetch(unityRuntimeJsonUrl, { cache: "no-store" })).text()))
+      : normalizeRuntimeExtension(baseRuntimeExtension);
+    if (!unityRuntimeJsonUrl) {
+      localAssetState.converterError =
+        "Pure Unity converter output must contain character/unity-runtime.json.";
+      return;
+    }
+    const meshUrl = "";
     localAssetState.converterRuntimeExtension = runtime.extension;
     localAssetState.converterCombinedFile = combinedCharacterFile;
+    if (unityRuntimeJsonUrl && unityRuntimeJsonPath) {
+      localAssetState.converterDisplayNameByUrl.set(
+        unityRuntimeJsonUrl,
+        unityRuntimeJsonPath
+      );
+    }
+    const prefabRuntimeMeshUrl = undefined;
     const runtimePreview = readRuntimePreviewLight(runtime.extension);
     if (runtimePreview) {
       Object.assign(previewState, runtimePreview);
       viewer.updatePreviewLight(previewState);
     }
-    const bodyMotionPath = readEmbeddedBodyMotionPath(runtime.extension);
-    const bodyMotionUrl = bodyMotionPath
-      ? findConverterUrl(bodyMotionPath)
+    const unityMotionJsonPath = readEmbeddedUnityMotionPath(runtime.extension);
+    const unityMotionJsonUrl = unityMotionJsonPath
+      ? findConverterUrl(unityMotionJsonPath)
       : null;
-    localAssetState.converterBodyMotionPath = bodyMotionPath;
-    localAssetState.converterBodyMotionUrl = bodyMotionUrl;
+    if (unityMotionJsonUrl && unityMotionJsonPath) {
+      localAssetState.converterDisplayNameByUrl.set(
+        unityMotionJsonUrl,
+        unityMotionJsonPath
+      );
+    }
     const embeddedFaceMotion = readEmbeddedFaceMotion(runtime.extension);
     localAssetState.converterEmbeddedFaceMotionData = embeddedFaceMotion;
     localAssetState.converterEmbeddedLightMotionData =
@@ -1135,21 +1166,26 @@ async function parseConverterFolder(files: File[]) {
       localAssetState.faceMotionError = "";
     }
     localAssetState.converterCombinedCharacter = {
-      id: `runtime-${runtime.bodyAsset.characterId ?? "unknown"}-${combinedCharacterFile.name}`,
-      displayName: `Runtime ${combinedCharacterFile.name}`,
+      id: `runtime-${runtime.bodyAsset.characterId ?? "unknown"}-unity-runtime.json`,
+      displayName: "Runtime unity-runtime.json",
       meshUrl,
+      prefabRuntimeMeshUrl,
+      unityRuntimeJsonUrl: unityRuntimeJsonUrl ?? undefined,
+      unityRuntimeJsonPath: unityRuntimeJsonPath ?? undefined,
+      unityMotionJsonUrl: unityMotionJsonUrl ?? undefined,
+      unityMotionJsonPath: unityMotionJsonPath ?? undefined,
       bodyAsset: runtime.bodyAsset,
       headAsset: runtime.headAsset,
       runtimeExtension: runtime.extension,
     };
     localAssetState.converterBodyManifest = runtime.bodyAsset;
     localAssetState.converterHeadManifest = runtime.headAsset;
-    if (bodyMotionUrl) {
+    if (unityMotionJsonUrl) {
       localAssetState.converterBodyManifest = {
         ...localAssetState.converterBodyManifest,
         source: {
           ...localAssetState.converterBodyManifest.source,
-          animationUrls: [bodyMotionUrl],
+          animationUrls: [unityMotionJsonUrl],
         },
       };
       localAssetState.converterCombinedCharacter.bodyAsset =
@@ -1170,21 +1206,6 @@ async function fetchRuntimeJson(url: string) {
   return response.json();
 }
 
-async function findExistingConverterUrl(baseUrl: string, relativePaths: string[]) {
-  for (const relativePath of relativePaths) {
-    const url = resolveConverterBaseUrl(baseUrl, relativePath);
-    try {
-      const response = await fetch(url, { method: "HEAD", cache: "no-store" });
-      if (response.ok) {
-        return { relativePath, url };
-      }
-    } catch {
-      // Some static hosts do not support HEAD cleanly; try the next candidate.
-    }
-  }
-  return null;
-}
-
 async function parseConverterBaseUrl(baseUrl: string) {
   localAssetState.converterFiles = [];
   for (const url of new Set(localAssetState.converterUrlByPath.values())) {
@@ -1197,8 +1218,6 @@ async function parseConverterBaseUrl(baseUrl: string) {
   localAssetState.converterRuntimeExtension = null;
   localAssetState.converterCombinedCharacter = null;
   localAssetState.converterCombinedFile = null;
-  localAssetState.converterBodyMotionPath = null;
-  localAssetState.converterBodyMotionUrl = null;
   localAssetState.converterEmbeddedFaceMotionData = null;
   localAssetState.converterEmbeddedLightMotionData = null;
   localAssetState.converterLightControllerPreview = null;
@@ -1211,47 +1230,44 @@ async function parseConverterBaseUrl(baseUrl: string) {
       baseUrl,
       "pjsk-sekai-runtime.extension.json"
     );
-    const combined = await findExistingConverterUrl(baseUrl, [
-      "character/character.vrm",
-      "character/character.vrm-candidate.glb",
-      "character/character.vrm-core.glb",
-      "character/character.springbone.glb",
-      "character/character.glb",
-      "character.vrm",
-      "character.vrm-candidate.glb",
-      "character.vrm-core.glb",
-      "character.springbone.glb",
-      "character.glb",
-    ]);
-    if (!combined) {
-      throw new Error(
-        "Converter output must contain character/character.vrm or a known character GLB."
-      );
-    }
-
-    const runtime = normalizeRuntimeExtension(
-      await fetchRuntimeJson(runtimeUrl)
+    const baseRuntimeExtension = asRecord(await fetchRuntimeJson(runtimeUrl));
+    const unityRuntimeJsonPath = readUnityRuntimeJsonPath(baseRuntimeExtension);
+    const unityRuntimeJsonUrl = unityRuntimeJsonPath
+      ? resolveConverterBaseUrl(baseUrl, unityRuntimeJsonPath)
+      : undefined;
+    const runtime = await normalizeRuntimeWithUnityRuntimeJson(
+      baseRuntimeExtension,
+      unityRuntimeJsonUrl
     );
     localAssetState.converterRuntimeExtension = runtime.extension;
+    if (!unityRuntimeJsonUrl) {
+      throw new Error(
+        "Pure Unity converter output must contain character/unity-runtime.json."
+      );
+    }
+    if (unityRuntimeJsonUrl && unityRuntimeJsonPath) {
+      localAssetState.converterDisplayNameByUrl.set(
+        unityRuntimeJsonUrl,
+        unityRuntimeJsonPath.split("/").pop() ?? unityRuntimeJsonPath
+      );
+    }
+    const prefabRuntimeMeshUrl = undefined;
     const runtimePreview = readRuntimePreviewLight(runtime.extension);
     if (runtimePreview) {
       Object.assign(previewState, runtimePreview);
       viewer.updatePreviewLight(previewState);
     }
 
-    const bodyMotionPath = readEmbeddedBodyMotionPath(runtime.extension);
-    const bodyMotionUrl = bodyMotionPath
-      ? findConverterUrl(bodyMotionPath)
-      : null;
-    localAssetState.converterBodyMotionPath = bodyMotionPath;
-    localAssetState.converterBodyMotionUrl = bodyMotionUrl;
-    if (bodyMotionUrl && bodyMotionPath) {
+    const unityMotionJsonPath = readEmbeddedUnityMotionPath(runtime.extension);
+    const unityMotionJsonUrl = unityMotionJsonPath
+      ? resolveConverterBaseUrl(baseUrl, unityMotionJsonPath)
+      : undefined;
+    if (unityMotionJsonUrl && unityMotionJsonPath) {
       localAssetState.converterDisplayNameByUrl.set(
-        bodyMotionUrl,
-        bodyMotionPath.split("/").pop() ?? bodyMotionPath
+        unityMotionJsonUrl,
+        unityMotionJsonPath.split("/").pop() ?? unityMotionJsonPath
       );
     }
-
     const embeddedFaceMotion = readEmbeddedFaceMotion(runtime.extension);
     localAssetState.converterEmbeddedFaceMotionData = embeddedFaceMotion;
     localAssetState.converterEmbeddedLightMotionData =
@@ -1265,21 +1281,26 @@ async function parseConverterBaseUrl(baseUrl: string) {
     }
 
     localAssetState.converterCombinedCharacter = {
-      id: `runtime-${runtime.bodyAsset.characterId ?? "unknown"}-${combined.relativePath}`,
-      displayName: `Runtime ${combined.relativePath.split("/").pop() ?? combined.relativePath}`,
-      meshUrl: combined.url,
+      id: `runtime-${runtime.bodyAsset.characterId ?? "unknown"}-unity-runtime.json`,
+      displayName: "Runtime unity-runtime.json",
+      meshUrl: "",
+      prefabRuntimeMeshUrl,
+      unityRuntimeJsonUrl,
+      unityRuntimeJsonPath: unityRuntimeJsonPath ?? undefined,
+      unityMotionJsonUrl,
+      unityMotionJsonPath: unityMotionJsonPath ?? undefined,
       bodyAsset: runtime.bodyAsset,
       headAsset: runtime.headAsset,
       runtimeExtension: runtime.extension,
     };
     localAssetState.converterBodyManifest = runtime.bodyAsset;
     localAssetState.converterHeadManifest = runtime.headAsset;
-    if (bodyMotionUrl) {
+    if (unityMotionJsonUrl) {
       localAssetState.converterBodyManifest = {
         ...localAssetState.converterBodyManifest,
         source: {
           ...localAssetState.converterBodyManifest.source,
-          animationUrls: [bodyMotionUrl],
+          animationUrls: [unityMotionJsonUrl],
         },
       };
       localAssetState.converterCombinedCharacter.bodyAsset =
@@ -1331,6 +1352,58 @@ function formatAnimationLabel(url: string) {
   return basename.replace(/\.[^.]+$/, "");
 }
 
+function formatRuntimeRequestUrl(url: string | undefined) {
+  if (!url) {
+    return "<none>";
+  }
+  const displayName = localAssetState.converterDisplayNameByUrl.get(url);
+  if (displayName) {
+    return displayName;
+  }
+  const marker = "/capture-input/";
+  const markerIndex = url.indexOf(marker);
+  if (markerIndex >= 0) {
+    return url.slice(markerIndex + marker.length);
+  }
+  const normalized = url.replace(/\\/g, "/");
+  const segments = normalized.split("/").filter(Boolean);
+  return segments.slice(-2).join("/") || url;
+}
+
+function formatPrefabHeadFollowLine() {
+  const debug = lastAnimationSnapshot?.bodyRetargetDebug?.prefabHeadFollow;
+  if (!debug) {
+    return "";
+  }
+  const state = debug.active ? "active" : `inactive: ${debug.reason ?? "unknown"}`;
+  const source = debug.sourcePath ?? "<none>";
+  const target = debug.targetPath ?? "<none>";
+  return `<code>Unity Assembly: ${state} | body attach ${source} -> head origin ${target} | setup ${debug.setupVersion ?? "<none>"}</code>`;
+}
+
+function formatUnityRuntimeSpaceLine() {
+  const extension = localAssetState.converterRuntimeExtension;
+  if (!extension) {
+    return "";
+  }
+  const springBone = asRecord(extension.pjskSpringBone ?? extension.PjskSpringBone);
+  const setup = asRecord(springBone.runtimeUnitySetup ?? springBone.RuntimeUnitySetup);
+  const coordinateSpace = asRecord(setup.coordinateSpace ?? setup.CoordinateSpace);
+  const source = readString(coordinateSpace.source ?? coordinateSpace.Source, "<unknown>");
+  const viewer = readString(coordinateSpace.viewer ?? coordinateSpace.Viewer, "<unknown>");
+  if (source === "<unknown>" && viewer === "<unknown>") {
+    return "";
+  }
+  const positionConversion = readString(
+    coordinateSpace.positionConversion ?? coordinateSpace.PositionConversion
+  );
+  const rotationConversion = readString(
+    coordinateSpace.rotationConversion ?? coordinateSpace.RotationConversion
+  );
+  const conversions = [positionConversion, rotationConversion].filter(Boolean).join(" / ");
+  return `<code>Unity Runtime Space: ${source} -> ${viewer}${conversions ? ` | ${conversions}` : ""}</code>`;
+}
+
 function getAnimationBasename(url: string) {
   return formatAnimationLabel(url);
 }
@@ -1347,6 +1420,30 @@ function isMergedBodyMotionUrl(url: string) {
   return /body[_-]?motion/i.test(getAnimationBasename(url));
 }
 
+function isUnityMotionJsonUrl(url: string) {
+  return /(?:^|\/)unity-motion\.json(?:$|[?#])/i.test(url);
+}
+
+type AnimationOption = {
+  url: string;
+  label: string;
+  isLoop: boolean;
+  kind: BodyAnimationKind;
+};
+
+function getAnimationKind(url: string): BodyAnimationKind {
+  const combinedAsset = localAssetState.converterCombinedCharacter;
+  const displayName = localAssetState.converterDisplayNameByUrl.get(url);
+  if (
+    url === combinedAsset?.unityMotionJsonUrl ||
+    isUnityMotionJsonUrl(url) ||
+    Boolean(displayName && isUnityMotionJsonUrl(displayName))
+  ) {
+    return "unity-json";
+  }
+  return "gltf";
+}
+
 function getAnimationOptions(bodyAsset: BodyAssetManifest) {
   return (bodyAsset.source.animationUrls ?? [])
     .filter((url) => !isFaceAnimationUrl(url))
@@ -1354,6 +1451,7 @@ function getAnimationOptions(bodyAsset: BodyAssetManifest) {
       url,
       label: formatAnimationLabel(url),
       isLoop: isLoopAnimationUrl(url),
+      kind: getAnimationKind(url),
     }));
 }
 
@@ -1378,7 +1476,7 @@ function syncAnimationSelection(bodyAsset: BodyAssetManifest) {
   if (
     !animationState.selectedLoopUrl &&
     options.length === 1 &&
-    isMergedBodyMotionUrl(options[0].url)
+    (isMergedBodyMotionUrl(options[0].url) || options[0].kind === "unity-json")
   ) {
     animationState.selectedLoopUrl = options[0].url;
   }
@@ -1392,15 +1490,21 @@ function buildBodyAnimationSelection(
   if (!options.length || !animationState.selectedMotionUrl) {
     return null;
   }
+  const selectedMotion = options.find((option) => option.url === animationState.selectedMotionUrl);
+  const selectedLoop = options.find((option) => option.url === animationState.selectedLoopUrl);
   return {
     motionUrl: animationState.selectedMotionUrl,
+    motionKind: selectedMotion?.kind ?? getAnimationKind(animationState.selectedMotionUrl),
     loopUrl: animationState.selectedLoopUrl || null,
+    loopKind: animationState.selectedLoopUrl
+      ? selectedLoop?.kind ?? getAnimationKind(animationState.selectedLoopUrl)
+      : null,
   };
 }
 
 function renderAnimationStatus(
   status: HTMLElement,
-  options: { url: string; label: string; isLoop: boolean }[],
+  options: AnimationOption[],
   loading = false
 ) {
   if (loading) {
@@ -1437,6 +1541,10 @@ function renderAnimationStatus(
   const togglesInfo = lastAnimationSnapshot
     ? ` | Face Morphs: ${lastAnimationSnapshot.faceMotionEnabled ? "on" : "off"} | Head Tracks: ${lastAnimationSnapshot.bodyHeadTracksEnabled ? "on" : "off"}`
     : "";
+  const retargetDebug = lastAnimationSnapshot?.bodyRetargetDebug;
+  const retargetInfo = retargetDebug?.mode === "unity-prefab"
+    ? ` | Retarget: ${retargetDebug.emittedTrackCount} tracks, Body targets: ${retargetDebug.resolvedBodyTargetCount}, Face targets: ${retargetDebug.resolvedFaceTargetCount}`
+    : "";
 
   if (lastAnimationSnapshot?.activeClipName) {
     const faceInfo = lastFaceMotionSnapshot?.activeClipName
@@ -1446,11 +1554,11 @@ function renderAnimationStatus(
       lastAnimationSnapshot.duration > 0
         ? ` | Time: ${lastAnimationSnapshot.currentTime.toFixed(2)} / ${lastAnimationSnapshot.duration.toFixed(2)}`
         : "";
-    status.textContent = `Active clip: ${lastAnimationSnapshot.activeClipName}${lastAnimationSnapshot.queuedLoopClipName ? ` -> Loop: ${lastAnimationSnapshot.queuedLoopClipName}` : ""}${configuredLoopInfo}${faceInfo} | Speed: ${animationState.speed.toFixed(2)}${animationState.paused ? " | Paused" : ""}${timeInfo}${togglesInfo}${debugInfo}${loopDebugInfo}`;
+    status.textContent = `Active clip: ${lastAnimationSnapshot.activeClipName}${lastAnimationSnapshot.queuedLoopClipName ? ` -> Loop: ${lastAnimationSnapshot.queuedLoopClipName}` : ""}${configuredLoopInfo}${faceInfo} | Speed: ${animationState.speed.toFixed(2)}${animationState.paused ? " | Paused" : ""}${timeInfo}${togglesInfo}${debugInfo}${loopDebugInfo}${retargetInfo}`;
     return;
   }
 
-  status.textContent = `Selected clip: ${formatAnimationLabel(animationState.selectedMotionUrl)}${configuredLoopInfo}${animationState.paused ? " | Paused" : ""}${togglesInfo}${debugInfo}${loopDebugInfo}`;
+  status.textContent = `Selected clip: ${formatAnimationLabel(animationState.selectedMotionUrl)}${configuredLoopInfo}${animationState.paused ? " | Paused" : ""}${togglesInfo}${debugInfo}${loopDebugInfo}${retargetInfo}`;
 }
 
 function getConfiguredFaceMotionSelection() {
@@ -1485,8 +1593,8 @@ function renderAnimationControls(loading = false) {
   const bodyHeadTracksEnabled = document.querySelector<HTMLInputElement>(
     "#body-head-tracks-enabled"
   );
-  const utjSpringBoneEnabled = document.querySelector<HTMLInputElement>(
-    "#utj-springbone-enabled"
+  const springRuntimeMode = document.querySelector<HTMLSelectElement>(
+    "#spring-runtime-mode"
   );
   const seek = document.querySelector<HTMLInputElement>("#animation-seek");
   const status = document.querySelector<HTMLElement>("#animation-status");
@@ -1498,7 +1606,7 @@ function renderAnimationControls(loading = false) {
     !paused ||
     !faceMotionEnabled ||
     !bodyHeadTracksEnabled ||
-    !utjSpringBoneEnabled ||
+    !springRuntimeMode ||
     !seek ||
     !status
   ) {
@@ -1515,8 +1623,10 @@ function renderAnimationControls(loading = false) {
     : '<option value="">No body animations</option>';
   const loopOptions = options.filter((option) => option.isLoop);
   const mergedLoopOption =
-    !loopOptions.length && options.length === 1 && isMergedBodyMotionUrl(options[0].url)
-      ? { url: options[0].url, label: "motion_loop", isLoop: true }
+    !loopOptions.length &&
+    options.length === 1 &&
+    (isMergedBodyMotionUrl(options[0].url) || options[0].kind === "unity-json")
+      ? { url: options[0].url, label: "motion_loop", isLoop: true, kind: options[0].kind }
       : null;
   const visibleLoopOptions = mergedLoopOption ? [mergedLoopOption] : loopOptions;
   loopSelect.innerHTML = loopOptions.length
@@ -1539,13 +1649,13 @@ function renderAnimationControls(loading = false) {
   paused.disabled = !options.length;
   faceMotionEnabled.disabled = !options.length;
   bodyHeadTracksEnabled.disabled = !options.length || loading;
-  utjSpringBoneEnabled.disabled = loading;
+  springRuntimeMode.disabled = loading;
   seek.disabled = !options.length || !lastAnimationSnapshot?.duration;
   speed.value = String(animationState.speed);
   paused.checked = animationState.paused;
   faceMotionEnabled.checked = renderState.faceMotionEnabled;
   bodyHeadTracksEnabled.checked = renderState.bodyHeadTracksEnabled;
-  utjSpringBoneEnabled.checked = renderState.utjSpringBoneEnabled;
+  springRuntimeMode.value = renderState.springRuntimeMode;
   const duration = lastAnimationSnapshot?.duration ?? 5;
   seek.max = String(Math.max(duration, 0.01));
   seek.value = String(Math.min(animationState.seekTime, duration));
@@ -1567,7 +1677,7 @@ function renderSpringBoneStatus(loading = false) {
   const snapshot = lastSpringBoneSnapshot;
   if (!snapshot || !snapshot.present) {
     status.textContent =
-      "No PJSK springBone metadata. Use character.vrm plus PJSK_sekai_runtime.";
+      "No PJSK springBone metadata. Use character/unity-runtime.json plus PJSK_sekai_runtime.";
     return;
   }
 
@@ -1688,8 +1798,6 @@ function resetLocalOverrides() {
   localAssetState.converterRuntimeExtension = null;
   localAssetState.converterCombinedCharacter = null;
   localAssetState.converterCombinedFile = null;
-  localAssetState.converterBodyMotionPath = null;
-  localAssetState.converterBodyMotionUrl = null;
   localAssetState.converterEmbeddedFaceMotionData = null;
   localAssetState.converterEmbeddedLightMotionData = null;
   localAssetState.converterLightControllerPreview = null;
@@ -1719,14 +1827,18 @@ function renderImportSummary(loading = false) {
   const bodyStatus = loading
     ? "Loading..."
     : bodyImport?.sourceMode === "glb"
-      ? "GLB Loaded"
+      ? "Runtime Source Loaded"
+      : bodyImport?.sourceMode === "unity-runtime"
+        ? "Unity Runtime Loaded"
       : bodyImport?.sourceMode === "proxy"
         ? "Proxy Fallback"
         : "Pending";
   const headStatus = loading
     ? "Loading..."
     : headImport?.sourceMode === "glb"
-      ? "GLB Loaded"
+      ? "Runtime Source Loaded"
+      : headImport?.sourceMode === "unity-runtime"
+        ? "Unity Runtime Loaded"
       : headImport?.sourceMode === "proxy"
         ? "Proxy Fallback"
         : "Pending";
@@ -1735,32 +1847,40 @@ function renderImportSummary(loading = false) {
   const runtimeMode = loading
     ? "Preparing..."
     : runtimeComposition?.mode ?? "unknown";
-  const combinedFileName =
-    localAssetState.converterCombinedFile?.name ?? "character.vrm-candidate.glb";
-  const runtimeBodyMotionStatus = localAssetState.converterRuntimeExtension
-    ? localAssetState.converterBodyMotionPath
-      ? localAssetState.converterBodyMotionUrl
-        ? `found: ${localAssetState.converterBodyMotionPath}`
-        : `missing file: ${localAssetState.converterBodyMotionPath}`
-      : "not exported"
-    : "";
+  const unityRuntimeFileName = combinedAsset?.unityRuntimeJsonUrl
+    ? combinedAsset.unityRuntimeJsonPath
+      ?? localAssetState.converterDisplayNameByUrl.get(combinedAsset.unityRuntimeJsonUrl)
+      ?? combinedAsset.unityRuntimeJsonUrl.split("/").pop()
+      ?? "unity-runtime.json"
+    : "missing";
+  const unityMotionFileName = combinedAsset?.unityMotionJsonUrl
+    ? combinedAsset.unityMotionJsonPath
+      ?? localAssetState.converterDisplayNameByUrl.get(combinedAsset.unityMotionJsonUrl)
+      ?? combinedAsset.unityMotionJsonUrl.split("/").pop()
+      ?? "unity-motion.json"
+    : "not exported";
   const bodySourceLines = `
-    <code>Runtime GLB: ${combinedFileName}</code>
+    <code>Unity Runtime JSON: ${unityRuntimeFileName}</code>
+    ${bodyImport ? `<code>Loaded Runtime Source: ${formatRuntimeRequestUrl(bodyImport.requestedUrl)}</code>` : ""}
     ${bodyImport ? `<code>Combined Meshes: ${bodyImport.meshCount}</code>` : ""}
     <code>Body Material Slots: ${bodyAsset.bodyMaterials.length}</code>
   `;
   const headSourceLines = `
-    <code>Runtime GLB: ${combinedFileName}</code>
+    <code>Unity Runtime JSON: ${unityRuntimeFileName}</code>
+    ${headImport ? `<code>Loaded Runtime Source: ${formatRuntimeRequestUrl(headImport.requestedUrl)}</code>` : ""}
     ${headImport ? `<code>Combined Meshes: ${headImport.meshCount}</code>` : ""}
     <code>Head Material Slots: ${headAsset.faceMaterials.length}</code>
   `;
   const compositionDetail = `
-    <code>Single combined GLB with unified body/head skeleton.</code>
+    <code>Unity source-space prefab assembly.</code>
     ${
       runtimeComposition
         ? `<code>Runtime Bone Links: ${runtimeComposition.linkedBoneCount}</code>`
         : ""
     }
+    <code>Spring Runtime Mode: ${renderState.springRuntimeMode}</code>
+    ${formatUnityRuntimeSpaceLine()}
+    ${formatPrefabHeadFollowLine()}
     ${
       runtimeComposition?.missingBodyBones.length
         ? runtimeComposition.missingBodyBones
@@ -1823,18 +1943,13 @@ function renderImportSummary(loading = false) {
           : ""
       }
       ${
-        localAssetState.converterCombinedCharacter
-          ? `<code>Runtime GLB: ${combinedFileName}</code>`
-          : ""
-      }
-      ${
         localAssetState.converterRuntimeExtension
           ? `<code>PJSK_sekai_runtime: active</code>`
           : ""
       }
       ${
         localAssetState.converterRuntimeExtension
-          ? `<code>Motion Package Body: ${runtimeBodyMotionStatus}</code>`
+          ? `<code>Motion Package Unity JSON: ${unityMotionFileName}</code>`
           : ""
       }
       ${
@@ -1895,8 +2010,8 @@ function renderImportSummary(loading = false) {
       selectedBodyLoopMotionLabel: animationState.selectedLoopUrl ? resolveAnimationDisplayName(animationState.selectedLoopUrl) : null,
       runtimeCombinedModel: localAssetState.converterCombinedFile?.name ?? null,
       runtimeExtensionLoaded: Boolean(localAssetState.converterRuntimeExtension),
-      runtimeBodyMotionPath: localAssetState.converterBodyMotionPath,
-      runtimeBodyMotionResolved: Boolean(localAssetState.converterBodyMotionUrl),
+      runtimeBodyMotionPath: null,
+      runtimeBodyMotionResolved: false,
       embeddedFaceMotionClips:
         localAssetState.converterEmbeddedFaceMotionData?.clips.map((clip) => clip.name) ?? [],
       embeddedLightMotionClips:
@@ -1942,6 +2057,7 @@ async function applyCharacterImport() {
     bodyHeadTracksEnabled: renderState.bodyHeadTracksEnabled,
     bodyTrackDebug: null,
     bodyLoopTrackDebug: null,
+    bodyRetargetDebug: null,
     error: null,
   };
   lastFaceMotionSnapshot = {
@@ -2004,10 +2120,12 @@ renderSpringBoneStatus();
 type CaptureConfig = {
   baseUrl: string;
   phase: number;
+  clip: "motion" | "motion_loop";
   warmupMs: number;
   warmupFrames: number;
   warmupMode: "animation" | "runtime";
-  utjSpringBoneEnabled: boolean;
+  renderIsolation: RenderIsolationMode;
+  springRuntimeMode: SpringRuntimeMode;
   utjTraceBones: string[];
   utjTraceMaxEvents: number;
 };
@@ -2032,6 +2150,8 @@ function readCaptureConfig(): CaptureConfig | null {
   viewer.setCapturePresentation(true);
 
   const phase = Number(params.get("capturePhase") ?? "0.5");
+  const clipParam = params.get("captureClip");
+  const clip = clipParam === "motion" ? "motion" : "motion_loop";
   const yawMode = params.get("characterYawMode");
   if (yawMode) {
     renderState.characterYawMode = yawMode as CharacterYawMode;
@@ -2040,26 +2160,60 @@ function readCaptureConfig(): CaptureConfig | null {
   const warmupFrames = Number(params.get("captureWarmupFrames") ?? "0");
   const warmupModeParam = params.get("captureWarmupMode");
   const warmupMode = warmupModeParam === "runtime" ? "runtime" : "animation";
-  const utjSpringBoneEnabled = params.get("utjSpringBoneEnabled") === "true";
+  const renderIsolation = readRenderIsolationMode(params);
+  const springRuntimeMode = readSpringRuntimeMode(params);
   const utjTraceBones = params
     .getAll("utjTraceBone")
     .flatMap((value) => value.split(","))
     .map((value) => value.trim())
     .filter(Boolean);
   const traceMaxEvents = Number(params.get("utjTraceMaxEvents") ?? "240");
-  renderState.utjSpringBoneEnabled = utjSpringBoneEnabled;
-  viewer.setUtjSpringBoneEnabled(utjSpringBoneEnabled);
+  renderState.springRuntimeMode = springRuntimeMode;
+  viewer.setSpringRuntimeMode(springRuntimeMode);
+  viewer.setRenderIsolationMode(renderIsolation);
 
   return {
     baseUrl,
     phase: THREE.MathUtils.clamp(Number.isFinite(phase) ? phase : 0.5, 0, 1),
+    clip,
     warmupMs: Math.max(Math.trunc(Number.isFinite(warmupMs) ? warmupMs : 0), 0),
     warmupFrames: Math.max(Math.trunc(Number.isFinite(warmupFrames) ? warmupFrames : 0), 0),
     warmupMode,
-    utjSpringBoneEnabled,
+    renderIsolation,
+    springRuntimeMode,
     utjTraceBones,
     utjTraceMaxEvents: Math.max(Math.trunc(Number.isFinite(traceMaxEvents) ? traceMaxEvents : 240), 1),
   };
+}
+
+function readRenderIsolationMode(params: URLSearchParams): RenderIsolationMode {
+  const mode = params.get("renderIsolation");
+  switch (mode) {
+    case "face_sdf":
+    case "no_face_sdf":
+    case "no_face_layers":
+    case "eyelight_only":
+    case "no_eyelight":
+    case "outline_only":
+    case "no_outline":
+    case "no_body_outline":
+    case "no_hair_outline":
+    case "no_face_outline":
+      return mode;
+    default:
+      return "normal";
+  }
+}
+
+function readSpringRuntimeMode(params: URLSearchParams): SpringRuntimeMode {
+  const mode = params.get("springRuntimeMode");
+  if (mode === "webgl-utj" || mode === "unity-prefab") {
+    return mode;
+  }
+  if (params.get("utjSpringBoneEnabled") === "true") {
+    return "webgl-utj";
+  }
+  return "off";
 }
 
 function setCaptureError(error: unknown) {
@@ -2084,7 +2238,9 @@ function waitForAnimationFrames(count: number) {
 async function prepareCaptureFrame(config: CaptureConfig) {
   animationState.paused = true;
   viewer.setAnimationPaused(true);
-  lastAnimationSnapshot = viewer.seekAnimationLoopPhase(config.phase);
+  lastAnimationSnapshot = config.clip === "motion"
+    ? viewer.seekAnimationPhase(config.phase)
+    : viewer.seekAnimationLoopPhase(config.phase);
   if (config.warmupFrames > 0) {
     const advanceAnimation = config.warmupMode === "animation";
     animationState.paused = !advanceAnimation;
@@ -2116,9 +2272,13 @@ async function prepareCaptureFrame(config: CaptureConfig) {
   const captureWindow = getCaptureWindow();
   captureWindow.__PJSK_CAPTURE_SNAPSHOT__ = {
     phase: config.phase,
+    requestedClip: config.clip,
+    renderIsolation: config.renderIsolation,
+    import: lastImportSnapshot,
     animation: lastAnimationSnapshot,
     faceMotion: lastFaceMotionSnapshot,
     springBone: lastSpringBoneSnapshot,
+    materialDebug: viewer.getRuntimeDebugSnapshot(),
     utjSpringBoneTrace: viewer.getUtjSpringBoneTraceSnapshot(),
   };
   captureWindow.__PJSK_CAPTURE_READY__ = true;
@@ -2286,15 +2446,13 @@ bodyHeadTracksEnabled?.addEventListener("change", () => {
   });
 });
 
-const utjSpringBoneEnabled = document.querySelector<HTMLInputElement>(
-  "#utj-springbone-enabled"
+const springRuntimeMode = document.querySelector<HTMLSelectElement>(
+  "#spring-runtime-mode"
 );
-utjSpringBoneEnabled?.addEventListener("change", () => {
-  renderState.utjSpringBoneEnabled = utjSpringBoneEnabled.checked;
-  viewer.setUtjSpringBoneEnabled(renderState.utjSpringBoneEnabled);
-  lastSpringBoneSnapshot = viewer.getSpringBoneSnapshot();
-  renderAnimationControls();
-  renderSpringBoneStatus();
+springRuntimeMode?.addEventListener("change", () => {
+  renderState.springRuntimeMode = springRuntimeMode.value as SpringRuntimeMode;
+  viewer.setSpringRuntimeMode(renderState.springRuntimeMode);
+  void applyCharacterImport();
 });
 
 const animationSeek = document.querySelector<HTMLInputElement>("#animation-seek");

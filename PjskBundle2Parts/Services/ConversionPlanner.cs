@@ -73,6 +73,9 @@ public sealed class ConversionPlanner
             Path.Combine(normalizedOut, "pjsk-sekai-runtime.extension.json"),
             Path.Combine(normalizedOut, "pjsk-sekai-runtime.resolve-report.json"),
             Path.Combine(normalizedOut, "character", "character.springbone.glb"),
+            Path.Combine(normalizedOut, "character", "character.prefab-runtime.glb"),
+            Path.Combine(normalizedOut, "character", "unity-runtime.json"),
+            Path.Combine(normalizedOut, "character", "unity-runtime.bin"),
             Path.Combine(normalizedOut, "character", "character.vrm-core.glb"),
             Path.Combine(normalizedOut, "character", "character.vrm-candidate.glb"),
             Path.Combine(normalizedOut, "character", "character.vrm"),
@@ -177,8 +180,8 @@ public sealed class ConversionPlanner
             Source: new AssetSource(
                 BundleRoot: body.ResolvedBundlePath,
                 ManifestUrl: "body.manifest.json",
-                MeshUrl: "body.glb",
-                SkeletonUrl: "body.skeleton.glb",
+                MeshUrl: "character/unity-runtime.json",
+                SkeletonUrl: "character/unity-runtime.json",
                 AnimationUrls: Array.Empty<string>()
             ),
             NeckAnchor: new Vec3(0f, 1.75f, 0.15f),
@@ -252,9 +255,9 @@ public sealed class ConversionPlanner
         return new SekaiVrmMigrationProfile(
             Version: 1,
             TargetContainer: new VrmTargetContainerProfile(
-                Preferred: "VRM 1.0",
-                Fallback: "glTF 2.0 GLB",
-                CurrentPhase: "vrmc_vrm_springbone_with_pjsk_runtime_embedded_candidate"
+                Preferred: "unity-runtime.json",
+                Fallback: "none",
+                CurrentPhase: "pure_unity_runtime_json_0414"
             ),
             StandardVrmFallback: new StandardVrmFallbackProfile(
                 HumanoidBoneMap: new Dictionary<string, string>
@@ -399,7 +402,7 @@ public sealed class ConversionPlanner
             Source: new AssetSource(
                 BundleRoot: head.ResolvedBundlePath,
                 ManifestUrl: "head.manifest.json",
-                MeshUrl: "head.glb",
+                MeshUrl: "character/unity-runtime.json",
                 SkeletonUrl: null,
                 AnimationUrls: Array.Empty<string>()
             ),

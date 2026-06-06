@@ -66,10 +66,17 @@ public sealed record SpringPrefabRenderer(
     [property: JsonPropertyName("pathId")] long PathId,
     [property: JsonPropertyName("typeName")] string TypeName,
     [property: JsonPropertyName("gameObjectPathId")] long? GameObjectPathId,
+    [property: JsonPropertyName("transformPathId")] long? TransformPathId,
     [property: JsonPropertyName("name")] string? Name,
     [property: JsonPropertyName("transformPath")] string? TransformPath,
     [property: JsonPropertyName("poseRoot")] string? PoseRoot,
+    [property: JsonPropertyName("activeSelf")] bool? ActiveSelf,
+    [property: JsonPropertyName("activeInHierarchy")] bool? ActiveInHierarchy,
     [property: JsonPropertyName("enabled")] bool Enabled,
+    [property: JsonPropertyName("meshPathId")] long? MeshPathId,
+    [property: JsonPropertyName("meshName")] string? MeshName,
+    [property: JsonPropertyName("skinnedMeshBones")] IReadOnlyList<long> SkinnedMeshBones,
+    [property: JsonPropertyName("rootBonePathId")] long? RootBonePathId,
     [property: JsonPropertyName("materialPathIds")] IReadOnlyList<long> MaterialPathIds
 );
 
@@ -111,6 +118,7 @@ public sealed record SpringObjectRef(
     long PathId,
     string? Name,
     string? TransformPath,
+    long? TransformPathId = null,
     bool? ActiveSelf = null,
     bool? ActiveInHierarchy = null
 );

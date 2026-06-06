@@ -32,13 +32,13 @@ public sealed class Character3dCostumeResolver
             ?? throw new InvalidOperationException($"character3d id {character3dId} was not found.");
         var character = gameCharacters.FirstOrDefault(entry => entry.Id == character3d.CharacterId)
             ?? throw new InvalidOperationException($"game character id {character3d.CharacterId} was not found.");
-        var costumeById = costumeModels
+        var costumesById = costumeModels
             .GroupBy(entry => entry.Costume3dId)
-            .ToDictionary(group => group.Key, group => group.First());
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<Costume3dModelMaster>)group.ToList());
 
-        var body = ResolveCostume(costumeById, character3d.BodyCostume3dId, "body");
-        var hair = ResolveCostume(costumeById, character3d.HairCostume3dId, "hair");
-        var head = ResolveCostume(costumeById, character3d.HeadCostume3dId, "head");
+        var body = ResolveCostume(costumesById, character3d.BodyCostume3dId, character3d.Unit, "body");
+        var hair = ResolveCostume(costumesById, character3d.HairCostume3dId, character3d.Unit, "hair");
+        var head = ResolveCostume(costumesById, character3d.HeadCostume3dId, character3d.Unit, "head");
 
         var bodyPath = ResolveBodyBundlePath(normalizedAssetRoot, body.AssetbundleName!, character);
         var hairPath = ResolveFaceBundlePath(normalizedAssetRoot, hair.AssetbundleName!, "hair");
@@ -114,16 +114,21 @@ public sealed class Character3dCostumeResolver
     }
 
     private static Costume3dModelMaster ResolveCostume(
-        IReadOnlyDictionary<int, Costume3dModelMaster> costumeById,
+        IReadOnlyDictionary<int, IReadOnlyList<Costume3dModelMaster>> costumesById,
         int costume3dId,
+        string unit,
         string label
     )
     {
-        if (!costumeById.TryGetValue(costume3dId, out var costume))
+        if (!costumesById.TryGetValue(costume3dId, out var costumes) || costumes.Count == 0)
         {
             throw new InvalidOperationException($"{label} costume3dId {costume3dId} was not found.");
         }
-        return costume;
+        return string.IsNullOrWhiteSpace(unit)
+            ? costumes.First()
+            : costumes.FirstOrDefault(entry =>
+                string.Equals(entry.Unit, unit, StringComparison.OrdinalIgnoreCase)
+            ) ?? costumes.First();
     }
 
     private static string ResolveBodyBundlePath(

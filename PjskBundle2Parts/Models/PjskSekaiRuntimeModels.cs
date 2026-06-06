@@ -29,6 +29,128 @@ public sealed record PjskSekaiRuntimeExtension(
     [property: JsonPropertyName("notes")] IReadOnlyList<string> Notes
 );
 
+public sealed record PjskUnityRuntimePackage(
+    [property: JsonPropertyName("version")] string Version,
+    [property: JsonPropertyName("unityVersion")] string UnityVersion,
+    [property: JsonPropertyName("coordinateSpace")] PjskUnityRuntimeCoordinateSpace CoordinateSpace,
+    [property: JsonPropertyName("assemblyDiagnostics")] PjskUnityRuntimeAssemblyDiagnostics AssemblyDiagnostics,
+    [property: JsonPropertyName("character")] PjskSekaiRuntimeCharacter Character,
+    [property: JsonPropertyName("container")] PjskSekaiRuntimeContainer Container,
+    [property: JsonPropertyName("bodyManifest")] BodyAssetManifest BodyManifest,
+    [property: JsonPropertyName("headManifest")] HeadAssetManifest HeadManifest,
+    [property: JsonPropertyName("materialSlots")] PjskSekaiRuntimeMaterialSlots MaterialSlots,
+    [property: JsonPropertyName("textureRoles")] IReadOnlyList<PjskSekaiRuntimeTextureRole> TextureRoles,
+    [property: JsonPropertyName("characterTextures")] IReadOnlyDictionary<string, string> CharacterTextures,
+    [property: JsonPropertyName("morphChannelBindings")] IReadOnlyList<HeadMorphChannel> MorphChannelBindings,
+    [property: JsonPropertyName("nativeMeshes")] PjskUnityRuntimeNativeMeshSet NativeMeshes,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("motionPackage")] PjskSekaiRuntimeMotionPackage? MotionPackage,
+    [property: JsonPropertyName("characterControllers")] PjskSekaiRuntimeCharacterControllers CharacterControllers,
+    [property: JsonPropertyName("pjskSpringBone")] PjskSekaiRuntimeSpringBonePayload PjskSpringBone,
+    [property: JsonPropertyName("runtimeUnitySetup")] PjskSpringBoneRuntimeUnitySetup RuntimeUnitySetup,
+    [property: JsonPropertyName("notes")] IReadOnlyList<string> Notes
+);
+
+public sealed record PjskUnityRuntimeAssemblyDiagnostics(
+    [property: JsonPropertyName("version")] string Version,
+    [property: JsonPropertyName("bodyRootPath")] string? BodyRootPath,
+    [property: JsonPropertyName("headRootPath")] string? HeadRootPath,
+    [property: JsonPropertyName("bodyAttachPath")] string? BodyAttachPath,
+    [property: JsonPropertyName("headOriginPath")] string? HeadOriginPath,
+    [property: JsonPropertyName("coordinateSpaceSource")] string CoordinateSpaceSource,
+    [property: JsonPropertyName("coordinateSpaceViewer")] string CoordinateSpaceViewer,
+    [property: JsonPropertyName("keyPathResolutions")] IReadOnlyList<PjskUnityRuntimeKeyPathResolution> KeyPathResolutions,
+    [property: JsonPropertyName("rendererDiagnostics")] IReadOnlyList<PjskUnityRuntimeRendererDiagnostic> RendererDiagnostics,
+    [property: JsonPropertyName("motionTargetCoverage")] PjskUnityRuntimeMotionTargetCoverage MotionTargetCoverage,
+    [property: JsonPropertyName("warnings")] IReadOnlyList<string> Warnings
+);
+
+public sealed record PjskUnityRuntimeKeyPathResolution(
+    [property: JsonPropertyName("label")] string Label,
+    [property: JsonPropertyName("partKind")] string PartKind,
+    [property: JsonPropertyName("expectedPath")] string? ExpectedPath,
+    [property: JsonPropertyName("resolved")] bool Resolved,
+    [property: JsonPropertyName("pathId")] long? PathId,
+    [property: JsonPropertyName("nodeName")] string? NodeName,
+    [property: JsonPropertyName("resolvedPath")] string? ResolvedPath
+);
+
+public sealed record PjskUnityRuntimeRendererDiagnostic(
+    [property: JsonPropertyName("partKind")] string PartKind,
+    [property: JsonPropertyName("rendererPathId")] long PathId,
+    [property: JsonPropertyName("rendererName")] string? Name,
+    [property: JsonPropertyName("transformPath")] string? TransformPath,
+    [property: JsonPropertyName("meshName")] string? MeshName,
+    [property: JsonPropertyName("enabled")] bool Enabled,
+    [property: JsonPropertyName("rootBonePathId")] long? RootBonePathId,
+    [property: JsonPropertyName("rootBonePath")] string? RootBonePath,
+    [property: JsonPropertyName("skinnedBoneCount")] int SkinnedBoneCount,
+    [property: JsonPropertyName("resolvedSkinnedBoneCount")] int ResolvedSkinnedBoneCount,
+    [property: JsonPropertyName("sampleSkinnedBonePaths")] IReadOnlyList<string> SampleSkinnedBonePaths,
+    [property: JsonPropertyName("missingSkinnedBonePathIds")] IReadOnlyList<long> MissingSkinnedBonePathIds
+);
+
+public sealed record PjskUnityRuntimeMotionTargetCoverage(
+    [property: JsonPropertyName("bindingCount")] int BindingCount,
+    [property: JsonPropertyName("resolvedBindingCount")] int ResolvedBindingCount,
+    [property: JsonPropertyName("unresolvedBindingCount")] int UnresolvedBindingCount,
+    [property: JsonPropertyName("totalTargetCount")] int TotalTargetCount,
+    [property: JsonPropertyName("bodyTargetCount")] int BodyTargetCount,
+    [property: JsonPropertyName("headTargetCount")] int HeadTargetCount,
+    [property: JsonPropertyName("sampleUnresolvedBindings")] IReadOnlyList<string> SampleUnresolvedBindings
+);
+
+public sealed record PjskUnityRuntimeNativeMeshSet(
+    [property: JsonPropertyName("version")] string Version,
+    [property: JsonPropertyName("coordinateSpace")] string CoordinateSpace,
+    [property: JsonPropertyName("meshes")] IReadOnlyList<PjskUnityRuntimeNativeMesh> Meshes,
+    [property: JsonPropertyName("warnings")] IReadOnlyList<string> Warnings
+);
+
+public sealed record PjskUnityRuntimeNativeMesh(
+    [property: JsonPropertyName("partKind")] string PartKind,
+    [property: JsonPropertyName("meshPath")] string MeshPath,
+    [property: JsonPropertyName("meshName")] string MeshName,
+    [property: JsonPropertyName("rendererPathId")] long RendererPathId,
+    [property: JsonPropertyName("rendererTransformPath")] string RendererTransformPath,
+    [property: JsonPropertyName("rootBonePath")] string? RootBonePath,
+    [property: JsonPropertyName("bonePaths")] IReadOnlyList<string> BonePaths,
+    [property: JsonPropertyName("boneInverseBindMatrices")] IReadOnlyList<float> BoneInverseBindMatrices,
+    [property: JsonPropertyName("submeshes")] IReadOnlyList<PjskUnityRuntimeNativeSubmesh> Submeshes,
+    [property: JsonPropertyName("positions")] IReadOnlyList<float> Positions,
+    [property: JsonPropertyName("normals")] IReadOnlyList<float> Normals,
+    [property: JsonPropertyName("uv0")] IReadOnlyList<float> Uv0,
+    [property: JsonPropertyName("uv1")] IReadOnlyList<float> Uv1,
+    [property: JsonPropertyName("colors")] IReadOnlyList<float> Colors,
+    [property: JsonPropertyName("skinIndices")] IReadOnlyList<ushort> SkinIndices,
+    [property: JsonPropertyName("skinWeights")] IReadOnlyList<float> SkinWeights,
+    [property: JsonPropertyName("morphTargets")] IReadOnlyList<PjskUnityRuntimeNativeMorphTarget> MorphTargets
+);
+
+public sealed record PjskUnityRuntimeNativeSubmesh(
+    [property: JsonPropertyName("materialName")] string MaterialName,
+    [property: JsonPropertyName("start")] int Start,
+    [property: JsonPropertyName("count")] int Count,
+    [property: JsonPropertyName("indices")] IReadOnlyList<int> Indices
+);
+
+public sealed record PjskUnityRuntimeNativeMorphTarget(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("indices")] IReadOnlyList<int> Indices,
+    [property: JsonPropertyName("positionDeltas")] IReadOnlyList<float> PositionDeltas,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("normalDeltas")] IReadOnlyList<float>? NormalDeltas
+);
+
+public sealed record PjskUnityRuntimeCoordinateSpace(
+    [property: JsonPropertyName("source")] string Source,
+    [property: JsonPropertyName("viewer")] string Viewer,
+    [property: JsonPropertyName("positionConversion")] string PositionConversion,
+    [property: JsonPropertyName("rotationConversion")] string RotationConversion,
+    [property: JsonPropertyName("scaleConversion")] string ScaleConversion,
+    [property: JsonPropertyName("notes")] IReadOnlyList<string> Notes
+);
+
 public sealed record PjskSekaiRuntimeCharacter(
     [property: JsonPropertyName("characterId")] string CharacterId,
     [property: JsonPropertyName("skeletonId")] string SkeletonId,
@@ -67,7 +189,12 @@ public sealed record PjskSekaiRuntimeCostumeMetadata(
 );
 
 public sealed record PjskSekaiRuntimeContainer(
-    [property: JsonPropertyName("sourceGlb")] string SourceGlb,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("sourceGlb")] string? SourceGlb,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("prefabRuntimeGlb")] string? PrefabRuntimeGlb,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("unityRuntimeJson")] string? UnityRuntimeJson,
     [property: JsonPropertyName("preferredContainer")] string PreferredContainer,
     [property: JsonPropertyName("fallbackContainer")] string FallbackContainer,
     [property: JsonPropertyName("phase")] string Phase,
@@ -117,6 +244,10 @@ public sealed record PjskSekaiRuntimeMotionPackage(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     [property: JsonPropertyName("bodyMotionGlb")] string? BodyMotionGlb,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("unityMotionJson")] string? UnityMotionJson,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("bodyMotionBindings")] PjskBodyMotionBindingSet? BodyMotionBindings,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     [property: JsonPropertyName("faceMotion")] PjskFaceMotionSet? FaceMotion,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     [property: JsonPropertyName("lightMotion")] PjskLightMotionSet? LightMotion
@@ -129,9 +260,11 @@ public sealed record PjskSekaiRuntimeSpringBonePayload(
 );
 
 public sealed record PjskSpringBoneRuntimeUnitySetup(
-    [property: JsonPropertyName("version")] int Version,
+    [property: JsonPropertyName("version")] string Version,
     [property: JsonPropertyName("unityVersion")] string UnityVersion,
+    [property: JsonPropertyName("coordinateSpace")] PjskUnityRuntimeCoordinateSpace CoordinateSpace,
     [property: JsonPropertyName("prefabGraphs")] IReadOnlyList<SpringPrefabGraph> PrefabGraphs,
+    [property: JsonPropertyName("bodyHeadAssembly")] PjskUnityRuntimeBodyHeadAssembly BodyHeadAssembly,
     [property: JsonPropertyName("rootSelectionProfile")] PjskSpringBoneRootSelectionProfile RootSelectionProfile,
     [property: JsonPropertyName("setupPlan")] PjskSpringBoneSetupPlan SetupPlan,
     [property: JsonPropertyName("bindingDecisions")] IReadOnlyList<PjskSpringBoneBindingDecision> BindingDecisions,
@@ -142,6 +275,19 @@ public sealed record PjskSpringBoneRuntimeUnitySetup(
     [property: JsonPropertyName("colliders")] IReadOnlyList<PjskSpringBoneRuntimeCollider> Colliders,
     [property: JsonPropertyName("colliderBindings")] IReadOnlyList<PjskSpringBoneRuntimeColliderBinding> ColliderBindings,
     [property: JsonPropertyName("warnings")] IReadOnlyList<string> Warnings
+);
+
+public sealed record PjskUnityRuntimeBodyHeadAssembly(
+    [property: JsonPropertyName("version")] string Version,
+    [property: JsonPropertyName("sourceKind")] string SourceKind,
+    [property: JsonPropertyName("parentRootPath")] string? ParentRootPath,
+    [property: JsonPropertyName("parentAttachPath")] string? ParentAttachPath,
+    [property: JsonPropertyName("childRootPath")] string? ChildRootPath,
+    [property: JsonPropertyName("childOriginPath")] string? ChildOriginPath,
+    [property: JsonPropertyName("runtimeMountPath")] string? RuntimeMountPath,
+    [property: JsonPropertyName("parentingMode")] string ParentingMode,
+    [property: JsonPropertyName("coordinateSpace")] string CoordinateSpace,
+    [property: JsonPropertyName("notes")] IReadOnlyList<string> Notes
 );
 
 public sealed record PjskSpringBoneRootSelectionProfile(
@@ -217,6 +363,21 @@ public sealed record PjskSpringBoneRuntimeManager(
     [property: JsonPropertyName("activeInHierarchy")] bool? ActiveInHierarchy,
     [property: JsonPropertyName("enabled")] bool Enabled,
     [property: JsonPropertyName("automaticUpdates")] bool AutomaticUpdates,
+    [property: JsonPropertyName("enableLengthLimits")] bool EnableLengthLimits,
+    [property: JsonPropertyName("enableAngleLimits")] bool EnableAngleLimits,
+    [property: JsonPropertyName("enableCollision")] bool EnableCollision,
+    [property: JsonPropertyName("collideWithGround")] bool CollideWithGround,
+    [property: JsonPropertyName("groundHeight")] float GroundHeight,
+    [property: JsonPropertyName("isSumOfForcesOnBone")] bool IsSumOfForcesOnBone,
+    [property: JsonPropertyName("isPaused")] bool IsPaused,
+    [property: JsonPropertyName("dynamicRatio")] float DynamicRatio,
+    [property: JsonPropertyName("simulationFrameRate")] int SimulationFrameRate,
+    [property: JsonPropertyName("slowMotionScale")] float SlowMotionScale,
+    [property: JsonPropertyName("bounce")] float Bounce,
+    [property: JsonPropertyName("friction")] float Friction,
+    [property: JsonPropertyName("animatedBoneNames")] IReadOnlyList<string> AnimatedBoneNames,
+    [property: JsonPropertyName("rawGravity")] SpringVector3? RawGravity,
+    [property: JsonPropertyName("forceProviders")] IReadOnlyList<VrmSpringBoneForceProviderCandidate> ForceProviders,
     [property: JsonPropertyName("bonePathIds")] IReadOnlyList<long> BonePathIds
 );
 
@@ -230,6 +391,21 @@ public sealed record PjskSpringBoneRuntimeBone(
     [property: JsonPropertyName("activeInHierarchy")] bool? ActiveInHierarchy,
     [property: JsonPropertyName("enabled")] bool Enabled,
     [property: JsonPropertyName("pivotNodePath")] string? PivotNodePath,
+    [property: JsonPropertyName("pivotNodeName")] string? PivotNodeName,
+    [property: JsonPropertyName("pivotSourcePathId")] long? PivotSourcePathId,
+    [property: JsonPropertyName("hitRadius")] float HitRadius,
+    [property: JsonPropertyName("stiffness")] float Stiffness,
+    [property: JsonPropertyName("dragForce")] float DragForce,
+    [property: JsonPropertyName("gravityPower")] float GravityPower,
+    [property: JsonPropertyName("gravityDir")] float[] GravityDir,
+    [property: JsonPropertyName("rawStiffnessForce")] float? RawStiffnessForce,
+    [property: JsonPropertyName("rawDragForce")] float? RawDragForce,
+    [property: JsonPropertyName("rawSpringForce")] SpringVector3? RawSpringForce,
+    [property: JsonPropertyName("rawWindInfluence")] float? RawWindInfluence,
+    [property: JsonPropertyName("rawAngularStiffness")] float? RawAngularStiffness,
+    [property: JsonPropertyName("rawSpringConstant")] float? RawSpringConstant,
+    [property: JsonPropertyName("lengthLimitTargets")] IReadOnlyList<VrmSpringBoneLengthLimitTargetCandidate> LengthLimitTargets,
+    [property: JsonPropertyName("rawAngleLimits")] VrmSpringBoneAngleLimitsCandidate RawAngleLimits,
     [property: JsonPropertyName("directColliderPathIds")] IReadOnlyList<long> DirectColliderPathIds,
     [property: JsonPropertyName("colliderFlag")] int ColliderFlag
 );
@@ -242,7 +418,11 @@ public sealed record PjskSpringBoneRuntimeCollider(
     [property: JsonPropertyName("nodeName")] string? NodeName,
     [property: JsonPropertyName("nodePath")] string? NodePath,
     [property: JsonPropertyName("poseRoot")] string? PoseRoot,
-    [property: JsonPropertyName("enabled")] bool Enabled
+    [property: JsonPropertyName("enabled")] bool Enabled,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("linkedRenderer")] VrmSpringBoneObjectRefCandidate? LinkedRenderer,
+    [property: JsonPropertyName("linkedRendererEnabled")] bool? LinkedRendererEnabled,
+    [property: JsonPropertyName("shape")] VrmSpringBoneColliderShapeCandidate Shape
 );
 
 public sealed record PjskSpringBoneRuntimeColliderBinding(
@@ -287,7 +467,8 @@ public sealed record PjskSekaiRuntimeViewerHints(
 public sealed record PjskSekaiRuntimeResolveReport(
     [property: JsonPropertyName("version")] int Version,
     [property: JsonPropertyName("extensionName")] string ExtensionName,
-    [property: JsonPropertyName("sourceGlb")] string SourceGlb,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("sourceGlb")] string? SourceGlb,
     [property: JsonPropertyName("bodyMaterialSlotCount")] int BodyMaterialSlotCount,
     [property: JsonPropertyName("headMaterialSlotCount")] int HeadMaterialSlotCount,
     [property: JsonPropertyName("textureRoleCount")] int TextureRoleCount,

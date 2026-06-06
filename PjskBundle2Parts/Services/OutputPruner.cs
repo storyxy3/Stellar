@@ -4,8 +4,7 @@ public sealed class OutputPruner
 {
     public void Prune(string outputDirectory)
     {
-        DeleteDirectory(Path.Combine(outputDirectory, "body"));
-        DeleteDirectory(Path.Combine(outputDirectory, "head"));
+        PruneLegacyContainers(outputDirectory);
 
         DeleteFile(Path.Combine(outputDirectory, "conversion-plan.json"));
         DeleteFile(Path.Combine(outputDirectory, "body.inventory.json"));
@@ -16,12 +15,20 @@ public sealed class OutputPruner
         DeleteFile(Path.Combine(outputDirectory, "vrmc-vrm.extension.json"));
         DeleteFile(Path.Combine(outputDirectory, "vrmc-vrm.resolve-report.json"));
         DeleteFile(Path.Combine(outputDirectory, "pjsk-sekai-runtime.resolve-report.json"));
+    }
+
+    public void PruneLegacyContainers(string outputDirectory)
+    {
+        DeleteDirectory(Path.Combine(outputDirectory, "body"));
+        DeleteDirectory(Path.Combine(outputDirectory, "head"));
 
         var characterDirectory = Path.Combine(outputDirectory, "character");
         DeleteFile(Path.Combine(characterDirectory, "character.glb"));
         DeleteFile(Path.Combine(characterDirectory, "character.springbone.glb"));
+        DeleteFile(Path.Combine(characterDirectory, "character.prefab-runtime.glb"));
         DeleteFile(Path.Combine(characterDirectory, "character.vrm-core.glb"));
         DeleteFile(Path.Combine(characterDirectory, "character.vrm-candidate.glb"));
+        DeleteFile(Path.Combine(characterDirectory, "character.vrm"));
     }
 
     private static void DeleteFile(string path)

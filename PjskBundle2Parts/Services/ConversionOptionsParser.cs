@@ -14,9 +14,9 @@ public static class ConversionOptionsParser
         "  --master reads gameCharacters.json for character heights; with --character3d-id it also resolves character3ds.json and costume3dModels.json\n" +
         "  --character3d-id resolves body/hair/head from gameCharacters.json, character3ds.json, and costume3dModels.json\n" +
         "  --asset-root points at the AssetBundles root containing live_pv/model/characterv2\n" +
-        "  --motion accepts a costume_setting bundle or a folder containing motion.glb/motion_loop.glb/face_motion.json\n" +
+        "  --motion accepts a costume_setting bundle or a folder containing unity-motion.json/face_motion.json/light_motion.json\n" +
         "  --head-root selects a specific root GameObject from the head bundle, for example face or mdl_chr_IDL_A_00\n" +
-        "  lean output is the default; use --keep-intermediate to keep debug GLBs, manifests, inventories, and reports";
+        "  lean output is the default; use --keep-intermediate to keep diagnostic manifests, inventories, and reports";
 
     public static ParseResult Parse(string[] args)
     {

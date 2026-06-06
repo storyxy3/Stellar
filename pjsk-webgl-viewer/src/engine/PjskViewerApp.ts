@@ -28,23 +28,37 @@ import {
   type UtjSpringBoneRuntimeSnapshot,
   type UtjSpringBoneTraceSnapshot,
 } from "./utjSpringBoneRuntimeAdapter";
+import { UnityPrefabSpringRuntime } from "./unityPrefabSpringRuntimeAdapter";
 import { SekaiExtraBoneRuntime } from "./sekaiExtraBoneRuntime";
+import type { SpringRuntimeMode } from "../config/viewerConfig";
 
 const NECK_CONTACT_SHADOW_STRENGTH = 0.0;
 const DEFAULT_CAMERA_TARGET_SCALE = new THREE.Vector3(0.04835, 0.48222, 0.07241);
 const DEFAULT_CAMERA_OFFSET_SCALE = new THREE.Vector3(-0.08532, 0.12848, 1.93551);
+const EYE_VISIBLE_STENCIL_BIT = 0x01;
+const EYELASH_VISIBLE_STENCIL_BIT = 0x02;
+const EYEBROW_VISIBLE_STENCIL_BIT = 0x04;
+const HAIR_OCCLUDER_STENCIL_BIT = 0x08;
+const EYE_THROUGH_HAIR_ALPHA = 0.42;
+const EYELIGHT_THROUGH_HAIR_ALPHA = 0.35;
+const EYELASH_THROUGH_HAIR_ALPHA = 0.55;
+const EYEBROW_THROUGH_HAIR_ALPHA = 0.55;
+
+type SpringRuntimeController = UtjSpringBoneRuntime | UnityPrefabSpringRuntime;
 
 export type PartImportMode = "glb" | "proxy";
+export type RuntimePartImportMode = PartImportMode | "unity-runtime";
 export type CompositionMode =
   | "separate_parts"
   | "node_attached"
   | "bone_linked"
-  | "combined_glb";
+  | "combined_glb"
+  | "unity_prefab";
 
 export type PartImportStatus = {
   assetId: string;
   displayName: string;
-  sourceMode: PartImportMode;
+  sourceMode: RuntimePartImportMode;
   requestedUrl: string;
   meshCount: number;
   boneCount: number;
@@ -101,9 +115,13 @@ export type RenderIsolationMode =
   | "no_hair_outline"
   | "no_face_outline";
 
+export type BodyAnimationKind = "gltf" | "unity-json";
+
 export type BodyAnimationSelection = {
   motionUrl: string | null;
+  motionKind?: BodyAnimationKind | null;
   loopUrl: string | null;
+  loopKind?: BodyAnimationKind | null;
 };
 
 export type RuntimeMaterialDebug = {
@@ -156,6 +174,16 @@ export type RuntimeMaterialDebug = {
   shaderAtlasTileY?: number | null;
   shaderAtlasSample?: number | null;
   shaderUseAtlas?: number | null;
+  shaderAlphaScale?: number | null;
+  shaderStencilWrite?: boolean | null;
+  shaderStencilRef?: number | null;
+  shaderStencilFunc?: number | null;
+  shaderStencilFuncMask?: number | null;
+  shaderStencilWriteMask?: number | null;
+  shaderStencilZPass?: number | null;
+  shaderDepthFunc?: number | null;
+  shaderDepthWrite?: boolean | null;
+  shaderTransparent?: boolean | null;
   renderOrder?: number;
 };
 
@@ -214,6 +242,11 @@ export type RuntimeCombinedCharacterAsset = {
   id: string;
   displayName: string;
   meshUrl: string;
+  prefabRuntimeMeshUrl?: string;
+  unityRuntimeJsonUrl?: string;
+  unityRuntimeJsonPath?: string;
+  unityMotionJsonUrl?: string;
+  unityMotionJsonPath?: string;
   bodyAsset: BodyAssetManifest;
   headAsset: HeadAssetManifest;
   runtimeExtension?: unknown;
@@ -232,6 +265,7 @@ export type AnimationPlaybackSnapshot = {
   bodyHeadTracksEnabled: boolean;
   bodyTrackDebug: AnimationTrackDebug | null;
   bodyLoopTrackDebug: AnimationTrackDebug | null;
+  bodyRetargetDebug: AnimationRetargetDebug | null;
   error: string | null;
 };
 
@@ -246,6 +280,69 @@ export type AnimationTrackDebug = {
   sampleHairTracks: string[];
   sampleHeadTracks: string[];
   sampleUtjControlledTracks: string[];
+};
+
+export type AnimationRetargetDebug = {
+  mode: "none" | "unity-prefab";
+  bindingCount: number;
+  sourceTrackCount: number;
+  emittedTrackCount: number;
+  resolvedTargetCount: number;
+  resolvedBodyTargetCount: number;
+  resolvedFaceTargetCount: number;
+  unresolvedTrackCount: number;
+  duplicateTargetTrackCount: number;
+  sampleUnresolvedTracks: string[];
+  sampleResolvedHeadTargets: string[];
+  prefabHeadFollow?: PrefabHeadFollowDebug;
+};
+
+type BodyMotionBindingSet = {
+  version: string;
+  bindingMode: string;
+  bindings: BodyMotionBinding[];
+  warnings?: string[];
+};
+
+type BodyMotionBinding = {
+  pathCrc: number;
+  nodeKey: string;
+  leafName: string;
+  importedPath?: string | null;
+  sourceRest?: BodyMotionRestTransform | null;
+  targetCount: number;
+  targets: BodyMotionTarget[];
+};
+
+type BodyMotionTarget = {
+  poseRoot: string;
+  transformPath: string;
+  pathId: number;
+  rest?: BodyMotionRestTransform | null;
+};
+
+type BodyMotionRestTransform = {
+  position: THREE.Vector3;
+  rotation: THREE.Quaternion;
+  scale: THREE.Vector3;
+};
+
+type UnityMotionRuntime0414 = {
+  version: string;
+  clips: UnityMotionClip0414[];
+};
+
+type UnityMotionClip0414 = {
+  name: string;
+  tracks: UnityMotionTrack0414[];
+};
+
+type UnityMotionTrack0414 = {
+  nodeKey: string;
+  property: string;
+  componentCount: number;
+  times: number[];
+  values: number[];
 };
 
 export type FaceMotionKeyframe = {
@@ -288,7 +385,7 @@ export type PartImportSnapshot = {
 
 type LoadedPartResult = {
   root: THREE.Group | null;
-  sourceMode: PartImportMode;
+  sourceMode: RuntimePartImportMode;
   requestedUrl: string;
   meshCount: number;
   boneCount: number;
@@ -297,6 +394,7 @@ type LoadedPartResult = {
   userData?: Record<string, unknown>;
   vrm?: VRM | null;
   springBoneManager?: VRMSpringBoneManager | null;
+  prefabSourceGraph?: UnityPrefabSourceGraph | null;
 };
 
 type BoneLink = {
@@ -304,6 +402,163 @@ type BoneLink = {
   headBone: THREE.Bone;
   bodyName: string;
   headName: string;
+};
+
+type PrefabHeadFollowConstraint = {
+  source: THREE.Object3D;
+  targets: PrefabHeadFollowTarget[];
+  sourcePath: string;
+};
+
+type PrefabHeadFollowTarget = {
+  node: THREE.Object3D;
+  restOffset: THREE.Matrix4;
+  path: string;
+};
+
+type PrefabHeadFollowDebug = {
+  active: boolean;
+  sourcePath: string | null;
+  targetPath: string | null;
+  reason: string | null;
+  setupVersion?: string;
+  targetCount?: number;
+  targetPaths?: string[];
+  positionRoots?: PrefabHeadFollowNodeDebug[];
+  keyNodes?: Record<string, PrefabHeadFollowNodeDebug | null>;
+  assemblyDistances?: {
+    bodyNeckToFaceNeck: number | null;
+    bodyHeadToFaceHead: number | null;
+  };
+};
+
+type PrefabHeadFollowNodeDebug = {
+  path: string;
+  canonicalPath: string;
+  parentPath: string | null;
+  localPosition: { x: number; y: number; z: number };
+  worldPosition: { x: number; y: number; z: number };
+};
+
+type RuntimePrefabTransformSource = {
+  pathId?: number;
+  name?: string | null;
+  transformPath?: string | null;
+  poseRoot?: string | null;
+  parentPathId?: number | null;
+  childPathIds?: number[];
+  localPosition?: {
+    x?: number;
+    y?: number;
+    z?: number;
+    X?: number;
+    Y?: number;
+    Z?: number;
+  };
+  localRotation?: {
+    x?: number;
+    y?: number;
+    z?: number;
+    w?: number;
+    X?: number;
+    Y?: number;
+    Z?: number;
+    W?: number;
+  };
+  localScale?: {
+    x?: number;
+    y?: number;
+    z?: number;
+    X?: number;
+    Y?: number;
+    Z?: number;
+  };
+};
+
+type RuntimePrefabGraphSource = {
+  partKind?: string;
+  transforms?: RuntimePrefabTransformSource[];
+};
+
+type RuntimeUnitySetupSource = {
+  version?: string | number;
+  prefabGraphs?: RuntimePrefabGraphSource[];
+  bodyHeadAssembly?: RuntimeUnityBodyHeadAssemblySource;
+  activeRootProfile?: {
+    defaultBodyRoot?: string;
+    activeRoots?: string[];
+  };
+};
+
+type RuntimeUnityBodyHeadAssemblySource = {
+  version?: string | number;
+  sourceKind?: string;
+  parentRootPath?: string | null;
+  parentAttachPath?: string | null;
+  childRootPath?: string | null;
+  childOriginPath?: string | null;
+  runtimeMountPath?: string | null;
+  parentingMode?: string;
+  coordinateSpace?: string;
+};
+
+type RuntimeNativeMeshSetSource = {
+  version?: string | number;
+  meshes?: RuntimeNativeMeshSource[];
+  warnings?: string[];
+};
+
+type RuntimeNativeMeshSource = {
+  partKind?: string;
+  meshPath?: string;
+  meshName?: string;
+  rendererPathId?: number;
+  rendererTransformPath?: string;
+  rootBonePath?: string | null;
+  bonePaths?: string[];
+  boneInverseBindMatrices?: number[];
+  submeshes?: RuntimeNativeSubmeshSource[];
+  positions?: number[];
+  normals?: number[];
+  uv0?: number[];
+  uv1?: number[];
+  colors?: number[];
+  skinIndices?: number[];
+  skinWeights?: number[];
+  morphTargets?: RuntimeNativeMorphTargetSource[];
+};
+
+type RuntimeNativeSubmeshSource = {
+  materialName?: string;
+  start?: number;
+  count?: number;
+  indices?: number[];
+};
+
+type RuntimeNativeMorphTargetSource = {
+  name?: string;
+  indices?: number[];
+  positionDeltas?: number[];
+  normalDeltas?: number[];
+};
+
+type UnityPrefabSourceGraph = {
+  root: THREE.Group;
+  nodeByPath: Map<string, THREE.Object3D>;
+  meshCarrierBindings: Array<{
+    source: THREE.Object3D;
+    target: THREE.Object3D;
+  }>;
+  bodyAttach: THREE.Object3D | null;
+  bodyAttachPath: string | null;
+  headRoot: THREE.Object3D | null;
+  headRootPath: string | null;
+  headOrigin: THREE.Object3D | null;
+  headOriginPath: string | null;
+  assemblyMount: THREE.Object3D | null;
+  assemblyMountPath: string | null;
+  headOriginRestLocalToHeadRoot: THREE.Matrix4 | null;
+  debug: PrefabHeadFollowDebug;
 };
 
 type HeadMorphRuntime = {
@@ -454,7 +709,10 @@ function getVertexColorRedMax(geometry: THREE.BufferGeometry) {
 }
 
 function isFaceLayerMaterialKind(kind: unknown) {
-  return kind === "eyelash" || kind === "eyebrow" || kind === "eye" || kind === "eyelight";
+  return kind === "eyelash" ||
+    kind === "eyebrow" ||
+    kind === "eye" ||
+    kind === "eyelight";
 }
 
 function getOutlineSourceMaterialKind(mesh: THREE.Mesh) {
@@ -1042,8 +1300,83 @@ function getHeadLayerRenderOrder(kind: string) {
       return 24;
     case "eyelight":
       return 28;
+    case "eyelash_through_hair":
+    case "eyebrow_through_hair":
+      return 30;
+    case "eye_through_hair":
+      return 31;
+    case "eyelight_through_hair":
+      return 32;
     default:
       return 0;
+  }
+}
+
+function configureStencilReplace(
+  material: THREE.Material,
+  ref: number,
+  writeMask: number,
+  replaceOnDepthFail = false
+) {
+  material.stencilWrite = true;
+  material.stencilRef = ref;
+  material.stencilFunc = THREE.AlwaysStencilFunc;
+  material.stencilFuncMask = writeMask;
+  material.stencilWriteMask = writeMask;
+  material.stencilFail = THREE.KeepStencilOp;
+  material.stencilZFail = replaceOnDepthFail
+    ? THREE.ReplaceStencilOp
+    : THREE.KeepStencilOp;
+  material.stencilZPass = THREE.ReplaceStencilOp;
+}
+
+function configureStencilTest(
+  material: THREE.Material,
+  ref: number,
+  mask: number,
+  writeMask = 0x00,
+  zPass: THREE.StencilOp = THREE.KeepStencilOp
+) {
+  material.stencilWrite = true;
+  material.stencilRef = ref;
+  material.stencilFunc = THREE.EqualStencilFunc;
+  material.stencilFuncMask = mask;
+  material.stencilWriteMask = writeMask;
+  material.stencilFail = THREE.KeepStencilOp;
+  material.stencilZFail = THREE.KeepStencilOp;
+  material.stencilZPass = zPass;
+  material.depthTest = true;
+  material.depthWrite = false;
+  material.depthFunc = THREE.AlwaysDepth;
+}
+
+function sortHeadMeshGroupsByMaterialKind(
+  mesh: THREE.Mesh,
+  materials: THREE.Material[]
+) {
+  if (materials.length < 2 || mesh.geometry.groups.length < 2) {
+    return;
+  }
+
+  const orderedGroups = mesh.geometry.groups
+    .map((group, index) => {
+      const material = materials[group.materialIndex ?? 0];
+      const kind = typeof material?.userData.pjskMaterialKind === "string"
+        ? material.userData.pjskMaterialKind
+        : "";
+      return {
+        start: group.start,
+        count: group.count,
+        materialIndex: group.materialIndex ?? 0,
+        order: getHeadLayerRenderOrder(kind),
+        index,
+      };
+    })
+    .sort((a, b) => a.order - b.order || a.index - b.index);
+
+  mesh.geometry.clearGroups();
+  for (const group of orderedGroups) {
+    mesh.geometry.addGroup(group.start, group.count, group.materialIndex);
   }
 }
 
@@ -1162,11 +1495,497 @@ function readCharacterEyeMaterialController(
     ),
     tintColor: readRuntimeColor(eye.tintColor ?? eye.TintColor),
     emissionColor: readRuntimeColor(eye.emissionColor ?? eye.EmissionColor),
-    // The eye mesh UV already spans the left/right eye atlas. Keep this visible in debug
-    // without cropping it again unless we later confirm the exact runtime remap.
-    baseTiling: readRuntimeTiling(eye.baseTiling ?? eye.BaseTiling, false),
-    highlightTiling: readRuntimeTiling(eye.highlightTiling ?? eye.HighlightTiling, false),
+    baseTiling: readRuntimeTiling(eye.baseTiling ?? eye.BaseTiling),
+    highlightTiling: readRuntimeTiling(eye.highlightTiling ?? eye.HighlightTiling),
   };
+}
+
+function readRuntimeUnitySetup0414ForGraph(extension: unknown): RuntimeUnitySetupSource | null {
+  const payload = asRuntimeRecord(extension);
+  const springBone = asRuntimeRecord(payload.pjskSpringBone ?? payload.PjskSpringBone);
+  const setup = asRuntimeRecord(
+    payload.runtimeUnitySetup ?? payload.RuntimeUnitySetup ??
+      springBone.runtimeUnitySetup ?? springBone.RuntimeUnitySetup
+  ) as RuntimeUnitySetupSource;
+  const version = setup.version;
+  return version === "0414" || version === 414 ? setup : null;
+}
+
+function readRuntimeNativeMeshSet0414(extension: unknown): RuntimeNativeMeshSetSource | null {
+  const payload = asRuntimeRecord(extension);
+  const nativeMeshes = asRuntimeRecord(
+    payload.nativeMeshes ?? payload.NativeMeshes
+  ) as RuntimeNativeMeshSetSource;
+  const version = nativeMeshes.version;
+  return version === "0414" || version === 414 ? nativeMeshes : null;
+}
+
+function readRuntimeVector3(
+  value: RuntimePrefabTransformSource["localPosition"] | undefined,
+  fallback: THREE.Vector3
+) {
+  if (!value) {
+    return fallback.clone();
+  }
+  const x = readRuntimeNumber(value.x ?? value.X);
+  const y = readRuntimeNumber(value.y ?? value.Y);
+  const z = readRuntimeNumber(value.z ?? value.Z);
+  return x === null || y === null || z === null
+    ? fallback.clone()
+    : new THREE.Vector3(x, y, z);
+}
+
+function readRuntimeQuaternion(
+  value: RuntimePrefabTransformSource["localRotation"] | undefined
+) {
+  if (!value) {
+    return new THREE.Quaternion();
+  }
+  const x = readRuntimeNumber(value.x ?? value.X);
+  const y = readRuntimeNumber(value.y ?? value.Y);
+  const z = readRuntimeNumber(value.z ?? value.Z);
+  const w = readRuntimeNumber(value.w ?? value.W);
+  return x === null || y === null || z === null || w === null
+    ? new THREE.Quaternion()
+    : new THREE.Quaternion(x, y, z, w).normalize();
+}
+
+function convertUnitySourcePositionToViewer(value: THREE.Vector3) {
+  return new THREE.Vector3(-value.x, value.y, value.z);
+}
+
+function convertUnitySourceQuaternionToViewer(value: THREE.Quaternion) {
+  return new THREE.Quaternion(value.x, -value.y, -value.z, value.w).normalize();
+}
+
+function findPrefabGraphNodeByName(
+  nodeByPath: ReadonlyMap<string, THREE.Object3D>,
+  rootName: string,
+  nodeName: string | undefined
+) {
+  if (!nodeName) {
+    return null;
+  }
+  let best: { path: string; node: THREE.Object3D } | null = null;
+  for (const [path, node] of nodeByPath.entries()) {
+    if (
+      path.startsWith(`${rootName}/`) &&
+      node.name.toLowerCase() === nodeName.toLowerCase() &&
+      (!best || path.length > best.path.length)
+    ) {
+      best = { path, node };
+    }
+  }
+  return best;
+}
+
+function resolvePrefabGraphNode(
+  nodeByPath: ReadonlyMap<string, THREE.Object3D>,
+  candidates: readonly (string | null | undefined)[]
+) {
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+    const node = nodeByPath.get(candidate);
+    if (node) {
+      return { path: candidate, node };
+    }
+  }
+  return null;
+}
+
+function buildUnityPrefabSourceGraph(
+  extension: unknown,
+  bodyAsset: BodyAssetManifest,
+  headAsset: HeadAssetManifest,
+  meshCarrierRoot?: THREE.Object3D | null
+): UnityPrefabSourceGraph | null {
+  const setup = readRuntimeUnitySetup0414ForGraph(extension);
+  if (!setup?.prefabGraphs?.length) {
+    return null;
+  }
+
+  const root = new THREE.Group();
+  root.name = "UnityPrefabSourceRoot";
+  root.userData.pjskUnityPrefabSourceGraph = true;
+  const nodeByPathId = new Map<number, THREE.Object3D>();
+  const sourceByPathId = new Map<number, RuntimePrefabTransformSource>();
+  const nodeByPath = new Map<string, THREE.Object3D>();
+
+  for (const graph of setup.prefabGraphs) {
+    for (const transform of graph.transforms ?? []) {
+      if (typeof transform.pathId !== "number" || !transform.transformPath) {
+        continue;
+      }
+      const node = new THREE.Object3D();
+      node.name = transform.name ?? transform.transformPath.split("/").pop() ?? `path_${transform.pathId}`;
+      node.userData.pjskTransformPath = transform.transformPath;
+      node.userData.pjskPoseRoot = transform.poseRoot ?? null;
+      node.position.copy(convertUnitySourcePositionToViewer(
+        readRuntimeVector3(transform.localPosition, new THREE.Vector3())
+      ));
+      node.quaternion.copy(convertUnitySourceQuaternionToViewer(
+        readRuntimeQuaternion(transform.localRotation)
+      ));
+      node.scale.copy(readRuntimeVector3(transform.localScale, new THREE.Vector3(1, 1, 1)));
+      node.updateMatrix();
+      nodeByPathId.set(transform.pathId, node);
+      sourceByPathId.set(transform.pathId, transform);
+      nodeByPath.set(transform.transformPath, node);
+    }
+  }
+
+  for (const [pathId, node] of nodeByPathId.entries()) {
+    const source = sourceByPathId.get(pathId);
+    const parentPathId = source?.parentPathId;
+    const parent = typeof parentPathId === "number"
+      ? nodeByPathId.get(parentPathId)
+      : null;
+    (parent ?? root).add(node);
+  }
+
+  root.updateMatrixWorld(true);
+  const defaultBodyRoot = setup.activeRootProfile?.defaultBodyRoot ?? "body";
+  const assembly = setup.bodyHeadAssembly;
+  const bodyAttachByName = findPrefabGraphNodeByName(
+    nodeByPath,
+    defaultBodyRoot,
+    bodyAsset.skeleton.neckAttach.nodeName
+  );
+  const bodyAttach = resolvePrefabGraphNode(nodeByPath, [
+    assembly?.parentAttachPath,
+  ]) ?? bodyAttachByName ?? resolvePrefabGraphNode(nodeByPath, [
+    `${defaultBodyRoot}/Position/PositionOffset/Hip/Waist/Spine/Chest/Neck`,
+    `${defaultBodyRoot}/Position/Hip/Waist/Spine/Chest/Neck`,
+  ]);
+  const headRoot = resolvePrefabGraphNode(nodeByPath, [
+    assembly?.childRootPath,
+    "face",
+    headAsset.assembly.rootNodeName,
+  ]);
+  const headOriginByPath = resolvePrefabGraphNode(nodeByPath, [
+    assembly?.childOriginPath,
+    "face/Position",
+    headRoot?.path ? `${headRoot.path}/Position` : null,
+  ]);
+  const headOriginByName = findPrefabGraphNodeByName(
+    nodeByPath,
+    "face",
+    headAsset.assembly.attachOrigin.nodeName
+  );
+  const headOrigin = headOriginByPath ?? headOriginByName;
+
+  let headOriginRestLocalToHeadRoot: THREE.Matrix4 | null = null;
+  if (headRoot && headOrigin) {
+    headRoot.node.updateMatrixWorld(true);
+    headOrigin.node.updateMatrixWorld(true);
+    headOriginRestLocalToHeadRoot = new THREE.Matrix4()
+      .copy(headRoot.node.matrixWorld)
+      .invert()
+      .multiply(headOrigin.node.matrixWorld);
+  }
+
+  let assemblyMount: THREE.Object3D | null = null;
+  let assemblyMountPath: string | null = null;
+  if (bodyAttach && headRoot && assembly?.runtimeMountPath) {
+    assemblyMount = new THREE.Object3D();
+    assemblyMount.name = assembly.runtimeMountPath.split("/").pop() ?? "PJSK_RuntimeMount_face";
+    assemblyMount.userData.pjskTransformPath = assembly.runtimeMountPath;
+    assemblyMount.userData.pjskRuntimeAssemblyMount = true;
+    assemblyMountPath = assembly.runtimeMountPath;
+    bodyAttach.node.add(assemblyMount);
+    if (headRoot.node.parent) {
+      headRoot.node.parent.remove(headRoot.node);
+    }
+    assemblyMount.add(headRoot.node);
+    if (headOriginRestLocalToHeadRoot) {
+      const headRootLocal = new THREE.Matrix4()
+        .copy(headOriginRestLocalToHeadRoot)
+        .invert();
+      headRootLocal.decompose(
+        headRoot.node.position,
+        headRoot.node.quaternion,
+        headRoot.node.scale
+      );
+    } else {
+      headRoot.node.position.set(0, 0, 0);
+      headRoot.node.quaternion.identity();
+      headRoot.node.scale.set(1, 1, 1);
+    }
+    headRoot.node.updateMatrix();
+    nodeByPath.set(assembly.runtimeMountPath, assemblyMount);
+    root.updateMatrixWorld(true);
+  }
+
+  const meshCarrierBindings: UnityPrefabSourceGraph["meshCarrierBindings"] = [];
+  if (meshCarrierRoot) {
+    const carrierNodeByPath = buildPrefabNodePathLookup(meshCarrierRoot);
+    for (const [path, source] of nodeByPath.entries()) {
+      const target = carrierNodeByPath.get(path);
+      if (target) {
+        meshCarrierBindings.push({ source, target });
+      }
+    }
+  }
+
+  const debug: PrefabHeadFollowDebug = {
+    active: Boolean(bodyAttach && headRoot && headOrigin && headOriginRestLocalToHeadRoot),
+    sourcePath: bodyAttach?.path ?? null,
+    targetPath: headOrigin?.path ?? null,
+    reason: bodyAttach
+      ? headRoot
+        ? headOrigin
+          ? headOriginRestLocalToHeadRoot
+            ? null
+            : "head origin rest offset was not computed"
+          : "head origin prefab node was not found"
+        : "head root prefab node was not found"
+      : "body attach prefab node was not found",
+    setupVersion: String(setup.version ?? ""),
+    targetCount: meshCarrierBindings.length,
+    targetPaths: meshCarrierBindings.slice(0, 24).map((binding) =>
+      String(binding.source.userData.pjskTransformPath ?? binding.source.name)
+    ),
+    keyNodes: {
+      runtimeMount: assemblyMount
+        ? makePrefabNodeDebug(assemblyMount, root)
+        : null,
+    },
+  };
+
+  return {
+    root,
+    nodeByPath,
+    meshCarrierBindings,
+    bodyAttach: bodyAttach?.node ?? null,
+    bodyAttachPath: bodyAttach?.path ?? null,
+    headRoot: headRoot?.node ?? null,
+    headRootPath: headRoot?.path ?? null,
+    headOrigin: headOrigin?.node ?? null,
+    headOriginPath: headOrigin?.path ?? null,
+    assemblyMount,
+    assemblyMountPath,
+    headOriginRestLocalToHeadRoot,
+    debug,
+  };
+}
+
+function installUnityRuntimeNativeMeshes(
+  graph: UnityPrefabSourceGraph,
+  extension: unknown
+) {
+  const nativeMeshes = readRuntimeNativeMeshSet0414(extension);
+  const meshes = nativeMeshes?.meshes ?? [];
+  if (!nativeMeshes || meshes.length === 0) {
+    return {
+      meshCount: 0,
+      boneCount: graph.nodeByPath.size,
+      skinnedMeshCount: 0,
+      error: "Unity runtime nativeMeshes version 0414 is missing or empty.",
+      warnings: nativeMeshes?.warnings ?? [],
+    };
+  }
+
+  let meshCount = 0;
+  let skinnedMeshCount = 0;
+  const warnings = [...(nativeMeshes.warnings ?? [])];
+  graph.root.updateMatrixWorld(true);
+
+  for (const source of meshes) {
+    const targetPath = source.rendererTransformPath;
+    const parent = targetPath ? graph.nodeByPath.get(targetPath) : null;
+    if (!parent) {
+      warnings.push(`Native mesh '${source.meshPath ?? source.meshName ?? "<unnamed>"}' skipped: renderer transform '${targetPath ?? "<null>"}' was not found.`);
+      continue;
+    }
+
+    const geometry = buildUnityRuntimeNativeGeometry(source);
+    if (!geometry) {
+      warnings.push(`Native mesh '${source.meshPath ?? source.meshName ?? "<unnamed>"}' skipped: invalid geometry payload.`);
+      continue;
+    }
+
+    const materials = (source.submeshes ?? []).map((submesh) => {
+      const material = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        vertexColors: geometry.hasAttribute("color"),
+      });
+      material.name = submesh.materialName ?? source.meshName ?? source.meshPath ?? "native_material";
+      return material;
+    });
+    const meshMaterials = materials.length > 0 ? materials : [new THREE.MeshBasicMaterial({ color: 0xffffff })];
+    const meshName = source.meshName ?? source.meshPath?.split("/").pop() ?? "UnityNativeMesh";
+    const bonePaths = source.bonePaths ?? [];
+    const bones = bonePaths
+      .map((path) => graph.nodeByPath.get(path))
+      .filter((node): node is THREE.Object3D => Boolean(node));
+
+    let mesh: THREE.Mesh | THREE.SkinnedMesh;
+    let skinnedMeshForBind: THREE.SkinnedMesh | null = null;
+    let skeletonBones: THREE.Object3D[] = [];
+    if (bonePaths.length > 0) {
+      if (bones.length !== bonePaths.length) {
+        warnings.push(`Native mesh '${source.meshPath ?? meshName}' skipped: ${bonePaths.length - bones.length} skin bones were unresolved.`);
+        geometry.dispose();
+        continue;
+      }
+      const skinned = new THREE.SkinnedMesh(geometry, meshMaterials);
+      mesh = skinned;
+      skinnedMeshForBind = skinned;
+      skeletonBones = bones;
+      skinnedMeshCount += 1;
+    } else {
+      mesh = new THREE.Mesh(geometry, meshMaterials);
+    }
+
+    mesh.name = meshName;
+    mesh.userData.pjskNativeUnityMesh = true;
+    mesh.userData.pjskPartKind = source.partKind ?? null;
+    mesh.userData.pjskRendererPathId = source.rendererPathId ?? null;
+    mesh.frustumCulled = false;
+    parent.add(mesh);
+    if (skinnedMeshForBind) {
+      graph.root.updateMatrixWorld(true);
+      skinnedMeshForBind.updateMatrixWorld(true);
+      const skeleton = new THREE.Skeleton(skeletonBones as unknown as THREE.Bone[]);
+      skeleton.calculateInverses();
+      skinnedMeshForBind.bind(skeleton, skinnedMeshForBind.matrixWorld);
+    }
+    meshCount += 1;
+  }
+
+  graph.root.updateMatrixWorld(true);
+  return {
+    meshCount,
+    boneCount: graph.nodeByPath.size,
+    skinnedMeshCount,
+    error: meshCount > 0 ? null : "Unity runtime nativeMeshes did not produce any renderable mesh.",
+    warnings,
+  };
+}
+
+function buildUnityRuntimeBoneInverseBindMatrices(
+  source: RuntimeNativeMeshSource,
+  boneCount: number,
+  warnings: string[]
+) {
+  const values = source.boneInverseBindMatrices ?? [];
+  if (boneCount === 0 || values.length === 0) {
+    return [];
+  }
+  if (values.length !== boneCount * 16) {
+    warnings.push(`Native mesh '${source.meshPath ?? source.meshName ?? "<unnamed>"}' has ${values.length} inverse bind matrix floats for ${boneCount} bones; expected ${boneCount * 16}.`);
+    return [];
+  }
+
+  const matrices: THREE.Matrix4[] = [];
+  for (let offset = 0; offset < values.length; offset += 16) {
+    matrices.push(new THREE.Matrix4().set(
+      values[offset] ?? 1,
+      values[offset + 1] ?? 0,
+      values[offset + 2] ?? 0,
+      values[offset + 3] ?? 0,
+      values[offset + 4] ?? 0,
+      values[offset + 5] ?? 1,
+      values[offset + 6] ?? 0,
+      values[offset + 7] ?? 0,
+      values[offset + 8] ?? 0,
+      values[offset + 9] ?? 0,
+      values[offset + 10] ?? 1,
+      values[offset + 11] ?? 0,
+      values[offset + 12] ?? 0,
+      values[offset + 13] ?? 0,
+      values[offset + 14] ?? 0,
+      values[offset + 15] ?? 1
+    ));
+  }
+  return matrices;
+}
+
+function buildUnityRuntimeNativeGeometry(source: RuntimeNativeMeshSource) {
+  const positions = source.positions ?? [];
+  if (positions.length === 0 || positions.length % 3 !== 0) {
+    return null;
+  }
+  const vertexCount = positions.length / 3;
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  if ((source.normals?.length ?? 0) === vertexCount * 3) {
+    geometry.setAttribute("normal", new THREE.Float32BufferAttribute(source.normals!, 3));
+  }
+  if ((source.uv0?.length ?? 0) === vertexCount * 2) {
+    geometry.setAttribute("uv", new THREE.Float32BufferAttribute(source.uv0!, 2));
+  }
+  if ((source.uv1?.length ?? 0) === vertexCount * 2) {
+    geometry.setAttribute("uv2", new THREE.Float32BufferAttribute(source.uv1!, 2));
+  }
+  if ((source.colors?.length ?? 0) === vertexCount * 4) {
+    geometry.setAttribute("color", new THREE.Float32BufferAttribute(source.colors!, 4));
+  }
+  if ((source.skinIndices?.length ?? 0) === vertexCount * 4) {
+    geometry.setAttribute("skinIndex", new THREE.Uint16BufferAttribute(source.skinIndices!, 4));
+  }
+  if ((source.skinWeights?.length ?? 0) === vertexCount * 4) {
+    geometry.setAttribute("skinWeight", new THREE.Float32BufferAttribute(source.skinWeights!, 4));
+  }
+
+  const allIndices: number[] = [];
+  for (const submesh of source.submeshes ?? []) {
+    const start = allIndices.length;
+    const indices = submesh.indices ?? [];
+    allIndices.push(...indices);
+    geometry.addGroup(start, indices.length, geometry.groups.length);
+  }
+  if (allIndices.length > 0) {
+    geometry.setIndex(allIndices);
+  }
+
+  const morphPositions: THREE.BufferAttribute[] = [];
+  const morphNormals: THREE.BufferAttribute[] = [];
+  for (const target of source.morphTargets ?? []) {
+    const indices = target.indices ?? [];
+    const positionDeltas = target.positionDeltas ?? [];
+    if (indices.length === 0 || positionDeltas.length !== indices.length * 3) {
+      continue;
+    }
+    const positionArray = new Float32Array(vertexCount * 3);
+    const normalArray = target.normalDeltas?.length === indices.length * 3
+      ? new Float32Array(vertexCount * 3)
+      : null;
+    for (let index = 0; index < indices.length; index += 1) {
+      const vertexIndex = indices[index];
+      if (!Number.isInteger(vertexIndex) || vertexIndex < 0 || vertexIndex >= vertexCount) {
+        continue;
+      }
+      positionArray[vertexIndex * 3] = positionDeltas[index * 3] ?? 0;
+      positionArray[vertexIndex * 3 + 1] = positionDeltas[index * 3 + 1] ?? 0;
+      positionArray[vertexIndex * 3 + 2] = positionDeltas[index * 3 + 2] ?? 0;
+      if (normalArray && target.normalDeltas) {
+        normalArray[vertexIndex * 3] = target.normalDeltas[index * 3] ?? 0;
+        normalArray[vertexIndex * 3 + 1] = target.normalDeltas[index * 3 + 1] ?? 0;
+        normalArray[vertexIndex * 3 + 2] = target.normalDeltas[index * 3 + 2] ?? 0;
+      }
+    }
+    const positionAttribute = new THREE.BufferAttribute(positionArray, 3);
+    positionAttribute.name = target.name ?? `morph_${morphPositions.length}`;
+    morphPositions.push(positionAttribute);
+    if (normalArray) {
+      const normalAttribute = new THREE.BufferAttribute(normalArray, 3);
+      normalAttribute.name = positionAttribute.name;
+      morphNormals.push(normalAttribute);
+    }
+  }
+  if (morphPositions.length > 0) {
+    geometry.morphAttributes.position = morphPositions;
+    geometry.morphTargetsRelative = true;
+  }
+  if (morphNormals.length === morphPositions.length && morphNormals.length > 0) {
+    geometry.morphAttributes.normal = morphNormals;
+  }
+
+  geometry.computeBoundingSphere();
+  return geometry;
 }
 
 function isLoopClipName(name: string | undefined, url: string | null) {
@@ -1435,6 +2254,597 @@ function prepareRuntimeAnimationClip(
   return bodyClip;
 }
 
+function isUnityMotionJsonUrl(url: string) {
+  return /(?:^|\/)unity-motion\.json(?:$|[?#])/i.test(url);
+}
+
+function inferBodyAnimationKind(
+  url: string | null,
+  explicitKind?: BodyAnimationKind | null
+): BodyAnimationKind | null {
+  if (!url) {
+    return null;
+  }
+  return explicitKind ?? (isUnityMotionJsonUrl(url) ? "unity-json" : "gltf");
+}
+
+function animationClipCacheKey(url: string, kind: BodyAnimationKind | null) {
+  return `${kind ?? "unknown"}:${url}`;
+}
+
+function readUnityMotionRuntime0414(value: unknown): UnityMotionRuntime0414 {
+  const payload = asRecord(value);
+  const version = String(payload.version ?? payload.Version ?? "");
+  const rawClips = payload.clips ?? payload.Clips;
+  if (version !== "0414" || !Array.isArray(rawClips)) {
+    throw new Error("Unity motion JSON must be version 0414 and contain clips.");
+  }
+
+  const clips = rawClips.map(readUnityMotionClip0414);
+  if (!clips.length) {
+    throw new Error("Unity motion JSON contains no clips.");
+  }
+  return { version, clips };
+}
+
+function readUnityMotionClip0414(value: unknown): UnityMotionClip0414 {
+  const item = asRecord(value);
+  const name = String(item.name ?? item.Name ?? "motion");
+  const rawTracks = item.tracks ?? item.Tracks;
+  if (!Array.isArray(rawTracks)) {
+    throw new Error(`Unity motion clip ${name} contains no tracks.`);
+  }
+
+  const tracks = rawTracks.map(readUnityMotionTrack0414);
+  if (!tracks.length) {
+    throw new Error(`Unity motion clip ${name} contains no valid tracks.`);
+  }
+  return { name, tracks };
+}
+
+function readUnityMotionTrack0414(value: unknown): UnityMotionTrack0414 {
+  const item = asRecord(value);
+  const nodeKey = String(item.nodeKey ?? item.NodeKey ?? "");
+  const property = String(item.property ?? item.Property ?? "");
+  const componentCount = Number(item.componentCount ?? item.ComponentCount);
+  const times = readNumberArray(item.times ?? item.Times);
+  const values = readNumberArray(item.values ?? item.Values);
+  if (!nodeKey || !property || !Number.isInteger(componentCount)) {
+    throw new Error("Unity motion track is missing nodeKey, property, or componentCount.");
+  }
+  if (!times.length || values.length !== times.length * componentCount) {
+    throw new Error(`Unity motion track ${nodeKey}.${property} has inconsistent sample arrays.`);
+  }
+  return { nodeKey, property, componentCount, times, values };
+}
+
+function readNumberArray(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const numbers = value.map(Number);
+  if (!numbers.every(Number.isFinite)) {
+    throw new Error("Unity motion numeric array contains non-finite values.");
+  }
+  return numbers;
+}
+
+function unityMotionTrackToThreeTrack(track: UnityMotionTrack0414): THREE.KeyframeTrack {
+  const propertyPath = track.property === "translation"
+    ? "position"
+    : track.property === "rotation"
+      ? "quaternion"
+      : track.property;
+  const name = `${track.nodeKey}.${propertyPath}`;
+  if (propertyPath === "position" || propertyPath === "scale") {
+    if (track.componentCount !== 3) {
+      throw new Error(`Unity motion track ${name} must have 3 components.`);
+    }
+    return new THREE.VectorKeyframeTrack(name, track.times, track.values);
+  }
+  if (propertyPath === "quaternion") {
+    if (track.componentCount !== 4) {
+      throw new Error(`Unity motion track ${name} must have 4 components.`);
+    }
+    return new THREE.QuaternionKeyframeTrack(name, track.times, track.values);
+  }
+  throw new Error(`Unsupported Unity motion property: ${track.property}`);
+}
+
+async function loadUnityMotionClips(url: string): Promise<THREE.AnimationClip[]> {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Failed to load Unity motion JSON ${url}: ${response.status} ${response.statusText}`);
+  }
+  const runtime = readUnityMotionRuntime0414(await response.json());
+  return runtime.clips.map((clip) => {
+    const tracks = clip.tracks.map(unityMotionTrackToThreeTrack);
+    const duration = tracks
+      .flatMap((track) => Array.from(track.times))
+      .reduce((max, time) => Math.max(max, time), 0);
+    return new THREE.AnimationClip(clip.name, duration, tracks);
+  });
+}
+
+function readBodyMotionBindings(extension: unknown): BodyMotionBindingSet | null {
+  const payload = asRecord(extension);
+  const motionPackage = asRecord(payload.motionPackage ?? payload.MotionPackage);
+  const bindingSet = asRecord(motionPackage.bodyMotionBindings ?? motionPackage.BodyMotionBindings);
+  const bindings = bindingSet.bindings ?? bindingSet.Bindings;
+  if (!Array.isArray(bindings)) {
+    return null;
+  }
+
+  return {
+    version: String(bindingSet.version ?? bindingSet.Version ?? ""),
+    bindingMode: String(bindingSet.bindingMode ?? bindingSet.BindingMode ?? ""),
+    warnings: readStringArray(bindingSet.warnings ?? bindingSet.Warnings),
+    bindings: bindings
+      .map(readBodyMotionBinding)
+      .filter((binding): binding is BodyMotionBinding => Boolean(binding)),
+  };
+}
+
+function readBodyMotionBinding(value: unknown): BodyMotionBinding | null {
+  const item = asRecord(value);
+  const pathCrc = Number(item.pathCrc ?? item.PathCrc);
+  const nodeKey = String(item.nodeKey ?? item.NodeKey ?? "");
+  const leafName = String(item.leafName ?? item.LeafName ?? "");
+  const targets = item.targets ?? item.Targets;
+  if (!Number.isFinite(pathCrc) || !nodeKey || !Array.isArray(targets)) {
+    return null;
+  }
+  const parsedTargets = targets
+    .map(readBodyMotionTarget)
+    .filter((target): target is BodyMotionTarget => Boolean(target));
+  return {
+    pathCrc,
+    nodeKey,
+    leafName,
+    importedPath: readNullableString(item.importedPath ?? item.ImportedPath),
+    sourceRest: readBodyMotionRest(item.sourceRest ?? item.SourceRest),
+    targetCount: Number(item.targetCount ?? item.TargetCount ?? parsedTargets.length),
+    targets: parsedTargets,
+  };
+}
+
+function readBodyMotionTarget(value: unknown): BodyMotionTarget | null {
+  const item = asRecord(value);
+  const poseRoot = String(item.poseRoot ?? item.PoseRoot ?? "");
+  const transformPath = String(item.transformPath ?? item.TransformPath ?? "");
+  const pathId = Number(item.pathId ?? item.PathId);
+  if (!poseRoot || !transformPath || !Number.isFinite(pathId)) {
+    return null;
+  }
+  return {
+    poseRoot,
+    transformPath,
+    pathId,
+    rest: readBodyMotionRest(item.rest ?? item.Rest),
+  };
+}
+
+function readBodyMotionRest(value: unknown): BodyMotionRestTransform | null {
+  const item = asRecord(value);
+  const position = readMotionVector3(item.position ?? item.Position);
+  const rotation = readMotionQuaternion(item.rotation ?? item.Rotation);
+  const scale = readMotionVector3(item.scale ?? item.Scale);
+  if (!position || !rotation || !scale) {
+    return null;
+  }
+  return { position, rotation, scale };
+}
+
+function readMotionVector3(value: unknown): THREE.Vector3 | null {
+  const item = asRecord(value);
+  const x = Number(item.x ?? item.X);
+  const y = Number(item.y ?? item.Y);
+  const z = Number(item.z ?? item.Z);
+  return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)
+    ? new THREE.Vector3(x, y, z)
+    : null;
+}
+
+function readMotionQuaternion(value: unknown): THREE.Quaternion | null {
+  const item = asRecord(value);
+  const x = Number(item.x ?? item.X);
+  const y = Number(item.y ?? item.Y);
+  const z = Number(item.z ?? item.Z);
+  const w = Number(item.w ?? item.W);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z) || !Number.isFinite(w)) {
+    return null;
+  }
+  return new THREE.Quaternion(x, y, z, w).normalize();
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function readNullableString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function cloneTrackWithName(track: THREE.KeyframeTrack, name: string): THREE.KeyframeTrack {
+  const cloned = track.clone();
+  cloned.name = name;
+  return cloned;
+}
+
+function retargetTrackWithBindSpace(
+  track: THREE.KeyframeTrack,
+  name: string,
+  propertyPath: string,
+  binding: BodyMotionBinding,
+  target: BodyMotionTarget
+): THREE.KeyframeTrack | null {
+  if (target.poseRoot !== "face") {
+    return cloneTrackWithName(track, name);
+  }
+  if (!binding.sourceRest || !target.rest) {
+    return null;
+  }
+
+  if (propertyPath === "position") {
+    const values: number[] = [];
+    for (let index = 0; index < track.values.length; index += 3) {
+      const sourceValue = new THREE.Vector3(
+        track.values[index],
+        track.values[index + 1],
+        track.values[index + 2]
+      );
+      const targetValue = target.rest.position.clone()
+        .add(sourceValue.sub(binding.sourceRest.position));
+      values.push(targetValue.x, targetValue.y, targetValue.z);
+    }
+    return new THREE.VectorKeyframeTrack(name, track.times, values);
+  }
+
+  if (propertyPath === "quaternion") {
+    const values: number[] = [];
+    const sourceRestInverse = binding.sourceRest.rotation.clone().invert();
+    for (let index = 0; index < track.values.length; index += 4) {
+      const sourceValue = new THREE.Quaternion(
+        track.values[index],
+        track.values[index + 1],
+        track.values[index + 2],
+        track.values[index + 3]
+      ).normalize();
+      const targetValue = target.rest.rotation.clone()
+        .multiply(sourceRestInverse)
+        .multiply(sourceValue)
+        .normalize();
+      values.push(targetValue.x, targetValue.y, targetValue.z, targetValue.w);
+    }
+    return new THREE.QuaternionKeyframeTrack(name, track.times, values);
+  }
+
+  if (propertyPath === "scale") {
+    const values: number[] = [];
+    const sourceRest = binding.sourceRest.scale;
+    const targetRest = target.rest.scale;
+    if (sourceRest.x === 0 || sourceRest.y === 0 || sourceRest.z === 0) {
+      return null;
+    }
+    for (let index = 0; index < track.values.length; index += 3) {
+      values.push(
+        targetRest.x * (track.values[index] / sourceRest.x),
+        targetRest.y * (track.values[index + 1] / sourceRest.y),
+        targetRest.z * (track.values[index + 2] / sourceRest.z)
+      );
+    }
+    return new THREE.VectorKeyframeTrack(name, track.times, values);
+  }
+
+  return cloneTrackWithName(track, name);
+}
+
+function isFaceAssemblyBridgeMotionTarget(target: BodyMotionTarget) {
+  if (target.poseRoot !== "face") {
+    return false;
+  }
+  return /^face\/Position(?:\/Hip(?:\/Waist(?:\/Spine(?:\/Chest(?:\/Neck)?)?)?)?)?$/.test(
+    target.transformPath
+  );
+}
+
+function hasUnityBodyHeadAssembly(extension: unknown) {
+  const setup = readRuntimeUnitySetup0414ForGraph(extension);
+  return Boolean(
+    setup?.bodyHeadAssembly?.parentAttachPath &&
+    setup.bodyHeadAssembly.childRootPath &&
+    setup.bodyHeadAssembly.childOriginPath &&
+    setup.bodyHeadAssembly.runtimeMountPath
+  );
+}
+
+function stripThreeDuplicateSuffix(name: string) {
+  return name.replace(/_\d+$/, "");
+}
+
+function buildPrefabNodePathLookup(root: THREE.Object3D) {
+  const nodeByPath = new Map<string, THREE.Object3D>();
+
+  root.traverse((node) => {
+    if (node === root || !node.name) {
+      return;
+    }
+
+    const rawSegments: string[] = [];
+    const canonicalSegments: string[] = [];
+    let current: THREE.Object3D | null = node;
+    while (current && current !== root) {
+      if (current.name) {
+        rawSegments.push(current.name);
+        canonicalSegments.push(stripThreeDuplicateSuffix(current.name));
+      }
+      current = current.parent;
+    }
+    rawSegments.reverse();
+    canonicalSegments.reverse();
+    for (let index = 0; index < rawSegments.length; index += 1) {
+      const rawPath = rawSegments.slice(index).join("/");
+      if (rawPath) {
+        nodeByPath.set(rawPath, node);
+      }
+      const canonicalPath = canonicalSegments.slice(index).join("/");
+      if (canonicalPath) {
+        nodeByPath.set(canonicalPath, node);
+      }
+    }
+  });
+
+  return nodeByPath;
+}
+
+function readRuntimeUnitySetupVersion(extension: unknown) {
+  const payload = asRecord(extension);
+  const springBone = asRecord(payload.pjskSpringBone ?? payload.PjskSpringBone);
+  const setup = asRecord(
+    payload.runtimeUnitySetup ?? payload.RuntimeUnitySetup ??
+      springBone.runtimeUnitySetup ?? springBone.RuntimeUnitySetup
+  );
+  return String(setup.version ?? setup.Version ?? "");
+}
+
+function resolvePrefabNodeCandidate(
+  nodeByPath: ReadonlyMap<string, THREE.Object3D>,
+  candidates: readonly string[]
+) {
+  for (const path of candidates) {
+    const node = nodeByPath.get(path);
+    if (node) {
+      return { node, path };
+    }
+  }
+  return null;
+}
+
+function buildObjectPath(
+  node: THREE.Object3D,
+  root: THREE.Object3D,
+  canonical = false
+) {
+  const segments: string[] = [];
+  let current: THREE.Object3D | null = node;
+  while (current && current !== root) {
+    if (current.name) {
+      segments.push(canonical ? stripThreeDuplicateSuffix(current.name) : current.name);
+    }
+    current = current.parent;
+  }
+  return segments.reverse().join("/");
+}
+
+function vectorDebugSnapshot(vector: THREE.Vector3) {
+  return {
+    x: Number(vector.x.toFixed(5)),
+    y: Number(vector.y.toFixed(5)),
+    z: Number(vector.z.toFixed(5)),
+  };
+}
+
+function debugNodeWorldDistance(
+  first: PrefabHeadFollowNodeDebug | null,
+  second: PrefabHeadFollowNodeDebug | null
+) {
+  if (!first || !second) {
+    return null;
+  }
+  const dx = first.worldPosition.x - second.worldPosition.x;
+  const dy = first.worldPosition.y - second.worldPosition.y;
+  const dz = first.worldPosition.z - second.worldPosition.z;
+  return Number(Math.hypot(dx, dy, dz).toFixed(5));
+}
+
+function makePrefabNodeDebug(
+  node: THREE.Object3D,
+  root: THREE.Object3D
+): PrefabHeadFollowNodeDebug {
+  node.updateMatrixWorld(true);
+  const worldPosition = new THREE.Vector3();
+  node.getWorldPosition(worldPosition);
+  return {
+    path: buildObjectPath(node, root),
+    canonicalPath: buildObjectPath(node, root, true),
+    parentPath: node.parent && node.parent !== root
+      ? buildObjectPath(node.parent, root)
+      : null,
+    localPosition: vectorDebugSnapshot(node.position),
+    worldPosition: vectorDebugSnapshot(worldPosition),
+  };
+}
+
+function collectPrefabHeadFollowTargets(root: THREE.Object3D) {
+  const targets: Array<{ node: THREE.Object3D; path: string }> = [];
+  const seen = new Set<THREE.Object3D>();
+  root.traverse((node) => {
+    if (node === root || !node.name) {
+      return;
+    }
+
+    const rawPath = buildObjectPath(node, root);
+    const canonicalPath = buildObjectPath(node, root, true);
+    const isFaceControlRoot = canonicalPath === "face/Position";
+    if (!isFaceControlRoot || seen.has(node)) {
+      return;
+    }
+
+    seen.add(node);
+    targets.push({ node, path: rawPath });
+  });
+  return targets;
+}
+
+function collectPrefabPositionRootDebug(root: THREE.Object3D) {
+  const nodes: PrefabHeadFollowNodeDebug[] = [];
+  const seen = new Set<THREE.Object3D>();
+  root.updateMatrixWorld(true);
+  root.traverse((node) => {
+    if (node === root || !node.name || seen.has(node)) {
+      return;
+    }
+    const canonicalPath = buildObjectPath(node, root, true);
+    const isHeadFollowTarget = canonicalPath === "face/Position";
+    const isBodyPosition = canonicalPath === "body/Position";
+    const isMeshContainerPosition =
+      canonicalPath.endsWith("/Position") &&
+      canonicalPath.split("/").some((segment) => segment.startsWith("mdl_chr_"));
+    if (!isHeadFollowTarget && !isBodyPosition && !isMeshContainerPosition) {
+      return;
+    }
+    seen.add(node);
+    nodes.push(makePrefabNodeDebug(node, root));
+  });
+  return nodes;
+}
+
+function retargetUnityPrefabAnimationClip(
+  clip: THREE.AnimationClip,
+  root: THREE.Object3D,
+  extension: unknown
+): { clip: THREE.AnimationClip | null; debug: AnimationRetargetDebug; error: string | null } {
+  const bindingSet = readBodyMotionBindings(extension);
+  const baseDebug: AnimationRetargetDebug = {
+    mode: "unity-prefab",
+    bindingCount: bindingSet?.bindings.length ?? 0,
+    sourceTrackCount: clip.tracks.length,
+    emittedTrackCount: 0,
+    resolvedTargetCount: 0,
+    resolvedBodyTargetCount: 0,
+    resolvedFaceTargetCount: 0,
+    unresolvedTrackCount: 0,
+    duplicateTargetTrackCount: 0,
+    sampleUnresolvedTracks: [],
+    sampleResolvedHeadTargets: [],
+  };
+
+  if (!bindingSet || bindingSet.version !== "0414" || bindingSet.bindings.length === 0) {
+    return {
+      clip: null,
+      debug: baseDebug,
+      error: "Unity Prefab animation requires motionPackage.bodyMotionBindings version 0414.",
+    };
+  }
+
+  const bindingByNodeKey = new Map(
+    bindingSet.bindings.map((binding) => [binding.nodeKey, binding])
+  );
+  const nodeByPath = buildPrefabNodePathLookup(root);
+  const suppressFaceAssemblyBridgeTargets = hasUnityBodyHeadAssembly(extension);
+  const tracks: THREE.KeyframeTrack[] = [];
+  const emittedTargets = new Set<string>();
+  const resolvedBodyTargetPaths = new Set<string>();
+  const resolvedFaceTargetPaths = new Set<string>();
+  const sampleResolvedHeadTargets = new Set<string>();
+
+  for (const track of clip.tracks) {
+    const separator = track.name.lastIndexOf(".");
+    const nodeKey = separator > 0 ? track.name.slice(0, separator) : "";
+    const propertyPath = separator > 0 ? track.name.slice(separator + 1) : "";
+    const binding = bindingByNodeKey.get(nodeKey);
+    if (!binding || !propertyPath) {
+      baseDebug.unresolvedTrackCount += 1;
+      if (baseDebug.sampleUnresolvedTracks.length < 16) {
+        baseDebug.sampleUnresolvedTracks.push(track.name);
+      }
+      continue;
+    }
+
+    let resolvedForTrack = 0;
+    for (const target of binding.targets) {
+      if (
+        suppressFaceAssemblyBridgeTargets &&
+        isFaceAssemblyBridgeMotionTarget(target)
+      ) {
+        continue;
+      }
+      const node = nodeByPath.get(target.transformPath);
+      if (!node) {
+        continue;
+      }
+      const nextTrackName = `${node.uuid}.${propertyPath}`;
+      if (emittedTargets.has(nextTrackName)) {
+        baseDebug.duplicateTargetTrackCount += 1;
+        continue;
+      }
+      const retargetedTrack = retargetTrackWithBindSpace(
+        track,
+        nextTrackName,
+        propertyPath,
+        binding,
+        target
+      );
+      if (!retargetedTrack) {
+        continue;
+      }
+      emittedTargets.add(nextTrackName);
+      tracks.push(retargetedTrack);
+      if (target.poseRoot === "body") {
+        resolvedBodyTargetPaths.add(target.transformPath);
+      } else if (target.poseRoot === "face") {
+        resolvedFaceTargetPaths.add(target.transformPath);
+      }
+      if (
+        sampleResolvedHeadTargets.size < 16 &&
+        /(?:^|\/)(Position|Hip|Waist|Spine|Chest|Neck|Head)$/.test(target.transformPath)
+      ) {
+        sampleResolvedHeadTargets.add(target.transformPath);
+      }
+      resolvedForTrack += 1;
+    }
+
+    if (resolvedForTrack === 0) {
+      baseDebug.unresolvedTrackCount += 1;
+      if (baseDebug.sampleUnresolvedTracks.length < 16) {
+        baseDebug.sampleUnresolvedTracks.push(track.name);
+      }
+    } else {
+      baseDebug.resolvedTargetCount += resolvedForTrack;
+    }
+  }
+
+  baseDebug.emittedTrackCount = tracks.length;
+  baseDebug.resolvedBodyTargetCount = resolvedBodyTargetPaths.size;
+  baseDebug.resolvedFaceTargetCount = resolvedFaceTargetPaths.size;
+  baseDebug.sampleResolvedHeadTargets = [...sampleResolvedHeadTargets];
+  if (tracks.length === 0 || baseDebug.unresolvedTrackCount > 0) {
+    return {
+      clip: null,
+      debug: baseDebug,
+      error: `Unity Prefab animation retarget failed: ${baseDebug.unresolvedTrackCount} unresolved tracks.`,
+    };
+  }
+
+  return {
+    clip: new THREE.AnimationClip(`${clip.name || "motion"}_unity_prefab`, clip.duration, tracks),
+    debug: baseDebug,
+    error: null,
+  };
+}
+
 export class PjskViewerApp {
   private readonly container: HTMLElement;
   private readonly scene: THREE.Scene;
@@ -1479,7 +2889,9 @@ export class PjskViewerApp {
   private currentStitchMode: CharacterAssemblyState["stitchMode"] = "stitched";
   private currentBodyAnimationRoot: THREE.Object3D | null = null;
   private currentAnimationUrl: string | null = null;
+  private currentAnimationKind: BodyAnimationKind | null = null;
   private currentAnimationLoopUrl: string | null = null;
+  private currentAnimationLoopKind: BodyAnimationKind | null = null;
   private currentAnimationClipName: string | null = null;
   private currentAnimationDuration = 0;
   private currentAnimationAction: THREE.AnimationAction | null = null;
@@ -1487,6 +2899,7 @@ export class PjskViewerApp {
   private currentAnimationMixer: THREE.AnimationMixer | null = null;
   private currentAnimationFinishedHandler: THREE.EventListener<any, any, any> | null = null;
   private currentAnimationError: string | null = null;
+  private currentAnimationRetargetDebug: AnimationRetargetDebug | null = null;
   private controllerOutlineColor: THREE.Color | null = null;
   private controllerOutlineBlending = 0;
   private queuedLoopClipName: string | null = null;
@@ -1498,20 +2911,29 @@ export class PjskViewerApp {
   private readonly currentHeadMorphRuntimes: HeadMorphRuntime[] = [];
   private currentRuntimeExtension: unknown = null;
   private currentVrmSpringBoneManager: VRMSpringBoneManager | null = null;
-  private currentUtjSpringBoneRuntime: UtjSpringBoneRuntime | null = null;
+  private currentSpringRuntime: SpringRuntimeController | null = null;
   private currentExtraBoneRuntime: SekaiExtraBoneRuntime | null = null;
+  private currentPrefabSourceGraph: UnityPrefabSourceGraph | null = null;
+  private currentPrefabHeadFollowConstraint: PrefabHeadFollowConstraint | null = null;
+  private currentPrefabHeadFollowDebug: PrefabHeadFollowDebug = {
+    active: false,
+    sourcePath: null,
+    targetPath: null,
+    reason: null,
+  };
   private readonly animationClipCache = new Map<string, THREE.AnimationClip[]>();
   private readonly smoothedLoopClipCache = new WeakMap<THREE.AnimationClip, THREE.AnimationClip>();
   private animationPlaybackSpeed = 1;
   private animationPaused = false;
   private faceMotionEnabled = true;
   private bodyHeadTracksEnabled = true;
-  private utjSpringBoneEnabled = false;
+  private springRuntimeMode: SpringRuntimeMode = "off";
   private animationRevision = 0;
   private characterHeight = 1;
   private readonly tempMatrixA = new THREE.Matrix4();
   private readonly tempMatrixB = new THREE.Matrix4();
   private readonly tempVector = new THREE.Vector3();
+  private readonly tempVectorB = new THREE.Vector3();
   private readonly tempQuaternion = new THREE.Quaternion();
   private readonly tempScale = new THREE.Vector3();
   private readonly faceRightWorld = new THREE.Vector3();
@@ -1543,7 +2965,8 @@ export class PjskViewerApp {
     this.camera = new THREE.PerspectiveCamera(35, width / height, 0.1, 100);
     this.camera.position.copy(getDefaultCameraPosition(initialLight.characterHeight));
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true });
+    this.renderer.autoClearStencil = true;
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(width, height);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -1652,6 +3075,14 @@ export class PjskViewerApp {
     this.currentBodyAsset = bodyAsset;
     this.currentHeadAsset = headAsset;
     this.currentImportIsCombined = false;
+    this.currentPrefabSourceGraph = null;
+    this.currentPrefabHeadFollowConstraint = null;
+    this.currentPrefabHeadFollowDebug = {
+      active: false,
+      sourcePath: null,
+      targetPath: null,
+      reason: "separate parts import",
+    };
     const [loadedBody, loadedHead] = await Promise.all([
       this.loadBodyAsset(bodyAsset),
       this.loadHeadAsset(headAsset),
@@ -1696,6 +3127,7 @@ export class PjskViewerApp {
       composition,
     };
     this.currentImportSnapshot = snapshot;
+    this.applyRenderIsolationMode();
     return snapshot;
   }
 
@@ -1725,43 +3157,80 @@ export class PjskViewerApp {
       characterAsset.runtimeExtension
     );
     this.currentVrmSpringBoneManager = loaded.springBoneManager ?? null;
-    this.currentUtjSpringBoneRuntime = null;
+    this.currentSpringRuntime = null;
     this.currentExtraBoneRuntime = null;
     this.currentBodyAttachNode = null;
     this.currentHeadAttachOriginNode = null;
     this.runtimeDebug.headMorphs = [];
     this.currentHeadMorphRuntimes.length = 0;
     this.currentBodyAnimationRoot = null;
+    this.currentPrefabSourceGraph = null;
+    this.currentPrefabHeadFollowConstraint = null;
+    this.currentPrefabHeadFollowDebug = {
+      active: false,
+      sourcePath: null,
+      targetPath: null,
+      reason: "not initialized",
+    };
 
     if (loaded.root) {
       this.bodySlot.add(loaded.root);
-      this.currentBodyAnimationRoot = loaded.root;
-      const bodySkeletonRoot = this.findNodeByName(
-        loaded.root,
-        characterAsset.bodyAsset.skeleton.rootNodeName
-      );
-      const headSkeletonRoot = this.findNodeByName(
-        loaded.root,
-        characterAsset.headAsset.assembly.rootNodeName
-      );
-      this.currentBodyAttachNode = this.findNodeByName(
-        bodySkeletonRoot ?? loaded.root,
-        characterAsset.bodyAsset.skeleton.neckAttach.nodeName
-      );
-      this.currentHeadAttachOriginNode = this.findNodeByName(
-        headSkeletonRoot ?? loaded.root,
-        characterAsset.headAsset.assembly.attachOrigin.nodeName
-      );
+      const prefabSourceGraph = loaded.prefabSourceGraph ?? (this.springRuntimeMode === "unity-prefab"
+        ? buildUnityPrefabSourceGraph(
+          this.currentRuntimeExtension,
+          characterAsset.bodyAsset,
+          characterAsset.headAsset,
+          loaded.root
+        )
+        : null);
+      if (prefabSourceGraph) {
+        this.currentPrefabSourceGraph = prefabSourceGraph;
+        if (prefabSourceGraph.root !== loaded.root) {
+          this.bodySlot.add(prefabSourceGraph.root);
+        }
+        this.currentBodyAnimationRoot = prefabSourceGraph.root;
+        this.currentBodyAttachNode = prefabSourceGraph.bodyAttach;
+        this.currentHeadAttachOriginNode = prefabSourceGraph.headOrigin;
+        this.currentPrefabHeadFollowDebug = prefabSourceGraph.debug;
+      } else {
+        this.currentBodyAnimationRoot = loaded.root;
+        const bodySkeletonRoot = this.findNodeByName(
+          loaded.root,
+          characterAsset.bodyAsset.skeleton.rootNodeName
+        );
+        const headSkeletonRoot = this.findNodeByName(
+          loaded.root,
+          characterAsset.headAsset.assembly.rootNodeName
+        );
+        this.currentBodyAttachNode = this.findNodeByName(
+          bodySkeletonRoot ?? loaded.root,
+          characterAsset.bodyAsset.skeleton.neckAttach.nodeName
+        );
+        this.currentHeadAttachOriginNode = this.findNodeByName(
+          headSkeletonRoot ?? loaded.root,
+          characterAsset.headAsset.assembly.attachOrigin.nodeName
+        );
+      }
       this.bindHeadMorphTargets(loaded.root, characterAsset.headAsset);
+      const bodySkeletonRoot = this.currentPrefabSourceGraph
+        ? this.currentPrefabSourceGraph.nodeByPath.get(
+          this.currentPrefabSourceGraph.bodyAttachPath?.split("/").slice(0, 1).join("/") ?? "body"
+        ) ?? null
+        : this.findNodeByName(
+          loaded.root,
+          characterAsset.bodyAsset.skeleton.rootNodeName
+        );
       this.prepareCombinedComposition(bodySkeletonRoot, loaded.root);
+      const runtimeRoot = this.currentBodyAnimationRoot ?? loaded.root;
       this.currentExtraBoneRuntime = SekaiExtraBoneRuntime.fromPjskRuntimeExtension(
         this.currentRuntimeExtension,
-        loaded.root
+        runtimeRoot
       );
-      this.currentUtjSpringBoneRuntime = UtjSpringBoneRuntime.fromPjskRuntimeExtension(
-        this.currentRuntimeExtension,
-        loaded.root
-      );
+      this.currentSpringRuntime = this.createSpringRuntime(runtimeRoot);
+      this.currentPrefabHeadFollowConstraint = this.currentPrefabSourceGraph
+        ? null
+        : this.createPrefabHeadFollowConstraint(loaded.root);
+      this.syncUnityPrefabSourceGraph();
     } else {
       this.currentCompositionStatus = {
         mode: "separate_parts",
@@ -1790,6 +3259,7 @@ export class PjskViewerApp {
       composition: this.currentCompositionStatus,
     };
     this.currentImportSnapshot = snapshot;
+    this.applyRenderIsolationMode();
     return snapshot;
   }
 
@@ -1851,12 +3321,10 @@ export class PjskViewerApp {
           ? mesh.userData.pjskSourceMaterialKind
           : "";
         const isFaceLayerOutline =
-          sourceKind === "eyelash" ||
-          sourceKind === "eyebrow" ||
           sourceKind === "eye" ||
           sourceKind === "eyelight";
         if (eyelightOnly) {
-          mesh.visible = sourceKind === "eyelight";
+          mesh.visible = sourceKind === "eye" || sourceKind === "eyelight";
           return;
         }
         mesh.visible =
@@ -1873,6 +3341,7 @@ export class PjskViewerApp {
         if (material instanceof THREE.ShaderMaterial) {
           if (material.uniforms.uFaceSdfEnabled) {
             material.uniforms.uFaceSdfEnabled.value = faceSdfEnabled ? 1.0 : 0.0;
+            isFaceLayer = true;
           }
           if (material.uniforms.uMode && !material.uniforms.uFaceSdfEnabled) {
             isFaceLayer = true;
@@ -1883,7 +3352,10 @@ export class PjskViewerApp {
       if (outlineOnly) {
         mesh.visible = false;
       } else if (eyelightOnly) {
-        mesh.visible = isEyelightLayer;
+        mesh.visible = isFaceLayer && materials.some((material) => {
+          const kind = material.userData.pjskMaterialKind;
+          return kind === "eye" || kind === "eyelight";
+        });
       } else if (isFaceLayer) {
         mesh.visible = faceLayersVisible && (!noEyelight || !isEyelightLayer);
       } else {
@@ -2104,22 +3576,44 @@ export class PjskViewerApp {
     return summarizeSpringBoneMetadata(
       this.currentRuntimeExtension,
       Boolean(this.currentVrmSpringBoneManager),
-      this.currentUtjSpringBoneRuntime?.getSnapshot(this.utjSpringBoneEnabled) ?? null
+      this.currentSpringRuntime?.getSnapshot(this.isSpringRuntimeEnabled()) ?? null
     );
   }
 
   setUtjSpringBoneTraceFilters(filters: readonly string[], maxEvents?: number) {
-    this.currentUtjSpringBoneRuntime?.setTraceBoneFilters(filters, maxEvents);
+    this.currentSpringRuntime?.setTraceBoneFilters(filters, maxEvents);
   }
 
   getUtjSpringBoneTraceSnapshot(): UtjSpringBoneTraceSnapshot | null {
-    return this.currentUtjSpringBoneRuntime?.getTraceSnapshot() ?? null;
+    return this.currentSpringRuntime?.getTraceSnapshot() ?? null;
   }
 
   getAnimationSnapshot(): AnimationPlaybackSnapshot {
     const utjControlledNodeNames =
-      this.currentUtjSpringBoneRuntime?.getControlledTrackNodeNames() ??
+      this.currentSpringRuntime?.getControlledTrackNodeNames() ??
       new Set<string>();
+    const prefabHeadFollow = this.getPrefabHeadFollowDebugSnapshot();
+    const bodyRetargetDebug = this.currentAnimationRetargetDebug
+      ? {
+          ...this.currentAnimationRetargetDebug,
+          prefabHeadFollow,
+        }
+      : this.currentPrefabSourceGraph
+        ? {
+            mode: "unity-prefab" as const,
+            bindingCount: 0,
+            sourceTrackCount: 0,
+            emittedTrackCount: 0,
+            resolvedTargetCount: 0,
+            resolvedBodyTargetCount: 0,
+            resolvedFaceTargetCount: 0,
+            unresolvedTrackCount: 0,
+            duplicateTargetTrackCount: 0,
+            sampleUnresolvedTracks: [],
+            sampleResolvedHeadTargets: [],
+            prefabHeadFollow,
+          }
+        : null;
     return {
       selectedUrl: this.currentAnimationUrl,
       selectedLoopUrl: this.currentAnimationLoopUrl,
@@ -2139,6 +3633,7 @@ export class PjskViewerApp {
         this.currentLoopAction?.getClip() ?? null,
         utjControlledNodeNames
       ),
+      bodyRetargetDebug,
       error: this.currentAnimationError,
     };
   }
@@ -2185,13 +3680,44 @@ export class PjskViewerApp {
   }
 
   setUtjSpringBoneEnabled(enabled: boolean) {
-    this.utjSpringBoneEnabled = enabled;
-    if (enabled) {
-      this.currentUtjSpringBoneRuntime?.resetStateToCurrentPose();
-      this.currentUtjSpringBoneRuntime?.settleCurrentPose();
-    } else {
-      this.currentUtjSpringBoneRuntime?.resetPose();
+    this.setSpringRuntimeMode(enabled ? "webgl-utj" : "off");
+  }
+
+  setSpringRuntimeMode(mode: SpringRuntimeMode) {
+    const wasEnabled = this.isSpringRuntimeEnabled();
+    const previousMode = this.springRuntimeMode;
+    this.springRuntimeMode = mode;
+    if (previousMode !== mode && this.currentBodyAnimationRoot) {
+      this.currentSpringRuntime?.resetPose();
+      this.currentSpringRuntime = this.createSpringRuntime(
+        this.currentPrefabSourceGraph?.root ?? this.currentBodyAnimationRoot
+      );
     }
+    const isEnabled = this.isSpringRuntimeEnabled();
+    if (isEnabled) {
+      this.currentSpringRuntime?.resetStateToCurrentPose();
+      this.currentSpringRuntime?.settleCurrentPose();
+    } else if (wasEnabled) {
+      this.currentSpringRuntime?.resetPose();
+    }
+  }
+
+  private isSpringRuntimeEnabled(): boolean {
+    return this.springRuntimeMode !== "off";
+  }
+
+  private createSpringRuntime(root: THREE.Object3D): SpringRuntimeController | null {
+    if (this.springRuntimeMode === "unity-prefab") {
+      return UnityPrefabSpringRuntime.fromPjskRuntimeExtension(
+        this.currentRuntimeExtension,
+        root
+      );
+    }
+
+    return UtjSpringBoneRuntime.fromPjskRuntimeExtension(
+      this.currentRuntimeExtension,
+      root
+    );
   }
 
   seekAnimation(time: number) {
@@ -2209,13 +3735,12 @@ export class PjskViewerApp {
     this.currentFaceMotionTime = nextTime;
     this.applyCurrentFaceMotionFrame();
     this.syncLinkedHeadBones();
-    this.currentUtjSpringBoneRuntime?.resetStateToCurrentPose();
-    this.currentUtjSpringBoneRuntime?.settleCurrentPose();
+    this.currentSpringRuntime?.resetStateToCurrentPose();
+    this.currentSpringRuntime?.settleCurrentPose();
     this.applyAnimationPlaybackSettings();
   }
 
-  seekAnimationLoopPhase(phase: number) {
-    this.activateQueuedLoopForSeek();
+  seekAnimationPhase(phase: number) {
     const duration = Math.max(this.currentAnimationDuration, 0);
     const clampedPhase = THREE.MathUtils.clamp(
       Number.isFinite(phase) ? phase : 0,
@@ -2224,6 +3749,11 @@ export class PjskViewerApp {
     );
     this.seekAnimation(duration * clampedPhase);
     return this.getAnimationSnapshot();
+  }
+
+  seekAnimationLoopPhase(phase: number) {
+    this.activateQueuedLoopForSeek();
+    return this.seekAnimationPhase(phase);
   }
 
   setCapturePresentation(enabled: boolean) {
@@ -2276,10 +3806,10 @@ export class PjskViewerApp {
     }
     this.syncLinkedHeadBones();
     this.currentExtraBoneRuntime?.update();
-    if (this.utjSpringBoneEnabled) {
-      this.currentUtjSpringBoneRuntime?.update(stepDelta);
+    if (this.isSpringRuntimeEnabled()) {
+      this.currentSpringRuntime?.update(stepDelta);
     } else {
-      this.currentUtjSpringBoneRuntime?.resetPose();
+      this.currentSpringRuntime?.resetPose();
     }
     this.applyBodyNeckContactUniforms();
     this.updateShaderCameraPositions();
@@ -2320,7 +3850,15 @@ export class PjskViewerApp {
 
   async setAnimationSelection(selection: BodyAnimationSelection | null) {
     this.currentAnimationUrl = selection?.motionUrl ?? null;
+    this.currentAnimationKind = inferBodyAnimationKind(
+      this.currentAnimationUrl,
+      selection?.motionKind
+    );
     this.currentAnimationLoopUrl = selection?.loopUrl ?? null;
+    this.currentAnimationLoopKind = inferBodyAnimationKind(
+      this.currentAnimationLoopUrl,
+      selection?.loopKind
+    );
     await this.refreshAnimationPlayback();
     return this.getAnimationSnapshot();
   }
@@ -2965,6 +4503,21 @@ export class PjskViewerApp {
       return this.currentCompositionStatus;
     }
 
+    if (this.currentPrefabSourceGraph) {
+      this.currentCompositionStatus = {
+        mode: "unity_prefab",
+        linkedBoneCount: 0,
+        missingBodyBones: this.currentPrefabSourceGraph.bodyAttach ? [] : ["Unity prefab body attach unresolved"],
+        missingHeadBones:
+          this.currentPrefabSourceGraph.headRoot && this.currentPrefabSourceGraph.headOrigin
+            ? []
+            : ["Unity prefab head root/origin unresolved"],
+        usingFallbackAttach:
+          !this.currentPrefabSourceGraph.bodyAttach || !this.currentPrefabSourceGraph.headOrigin,
+      };
+      return this.currentCompositionStatus;
+    }
+
     if (!bodySkeletonRoot) {
       missingBodyBones.push(
         this.currentBodyAsset.skeleton.rootNodeName ?? "<body-root>"
@@ -3191,9 +4744,171 @@ export class PjskViewerApp {
   private async loadCombinedCharacterAsset(
     characterAsset: RuntimeCombinedCharacterAsset
   ): Promise<LoadedPartResult> {
+    if (characterAsset.unityRuntimeJsonUrl) {
+      const prefabSourceGraph = buildUnityPrefabSourceGraph(
+        characterAsset.runtimeExtension,
+        characterAsset.bodyAsset,
+        characterAsset.headAsset,
+        null
+      );
+      if (!prefabSourceGraph) {
+        const message = "Unity Prefab runtime requires runtimeUnitySetup version 0414 in unity-runtime.json.";
+        this.runtimeDebug.body = [
+          {
+            meshName: "<unity-runtime-load-failed>",
+            sourceMaterialName: characterAsset.displayName,
+            resolvedKey: "missing_runtime_unity_setup",
+            resolvedKind: "body",
+            usedOriginalMap: false,
+            boundMainTex: null,
+            boundShadowTex: null,
+            boundValueTex: null,
+            boundFaceShadowTex: null,
+            finalMaterialType: message,
+          },
+        ];
+        this.runtimeDebug.head = [
+          {
+            meshName: "<unity-runtime-load-failed>",
+            sourceMaterialName: characterAsset.displayName,
+            resolvedKey: "missing_runtime_unity_setup",
+            resolvedKind: "head",
+            usedOriginalMap: false,
+            boundMainTex: null,
+            boundShadowTex: null,
+            boundValueTex: null,
+            boundFaceShadowTex: null,
+            finalMaterialType: message,
+          },
+        ];
+        return {
+          root: null,
+          sourceMode: "proxy",
+          requestedUrl: characterAsset.unityRuntimeJsonUrl ?? "",
+          meshCount: 0,
+          boneCount: 0,
+          skinnedMeshCount: 0,
+          error: message,
+        };
+      }
+
+      this.currentPrefabSourceGraph = prefabSourceGraph;
+      this.syncUnityPrefabSourceGraph();
+      const nativeResult = installUnityRuntimeNativeMeshes(
+        prefabSourceGraph,
+        characterAsset.runtimeExtension
+      );
+      if (nativeResult.error) {
+        const message = nativeResult.error;
+        this.runtimeDebug.body = [
+          {
+            meshName: "<unity-runtime-load-failed>",
+            sourceMaterialName: characterAsset.displayName,
+            resolvedKey: "missing_native_meshes",
+            resolvedKind: "body",
+            usedOriginalMap: false,
+            boundMainTex: null,
+            boundShadowTex: null,
+            boundValueTex: null,
+            boundFaceShadowTex: null,
+            finalMaterialType: message,
+          },
+        ];
+        this.runtimeDebug.head = [
+          {
+            meshName: "<unity-runtime-load-failed>",
+            sourceMaterialName: characterAsset.displayName,
+            resolvedKey: "missing_native_meshes",
+            resolvedKind: "head",
+            usedOriginalMap: false,
+            boundMainTex: null,
+            boundShadowTex: null,
+            boundValueTex: null,
+            boundFaceShadowTex: null,
+            finalMaterialType: message,
+          },
+        ];
+        return {
+          root: null,
+          sourceMode: "proxy",
+          requestedUrl: characterAsset.unityRuntimeJsonUrl ?? "",
+          meshCount: 0,
+          boneCount: nativeResult.boneCount,
+          skinnedMeshCount: 0,
+          error: `${message}${nativeResult.warnings.length ? ` ${nativeResult.warnings.slice(0, 3).join(" ")}` : ""}`,
+        };
+      }
+
+      this.syncUnityPrefabSourceGraph();
+      if (this.materialBindingMode === "manifest") {
+        await this.overrideBodyMaterials(prefabSourceGraph.root, characterAsset.bodyAsset);
+        await this.overrideHeadMaterials(prefabSourceGraph.root, characterAsset.headAsset, {
+          eyeController: readCharacterEyeMaterialController(characterAsset.runtimeExtension),
+        });
+      } else {
+        this.runtimeDebug.body = [];
+        this.runtimeDebug.head = [];
+      }
+      this.installSekaiOutlineShells(prefabSourceGraph.root);
+      return {
+        root: prefabSourceGraph.root,
+        sourceMode: "unity-runtime",
+        requestedUrl: characterAsset.unityRuntimeJsonUrl ?? "",
+        meshCount: nativeResult.meshCount,
+        boneCount: nativeResult.boneCount,
+        skinnedMeshCount: nativeResult.skinnedMeshCount,
+        userData: { pjskUnityRuntimeNativeMeshWarnings: nativeResult.warnings },
+        vrm: null,
+        springBoneManager: null,
+        prefabSourceGraph,
+      };
+    }
+
+    const meshUrl = characterAsset.meshUrl;
+    if (!meshUrl) {
+      const message = "Pure Unity runtime requires container.unityRuntimeJson.";
+      this.runtimeDebug.body = [
+        {
+          meshName: "<combined-load-failed>",
+          sourceMaterialName: characterAsset.displayName,
+          resolvedKey: "missing_unity_runtime_json",
+          resolvedKind: "body",
+          usedOriginalMap: false,
+          boundMainTex: null,
+          boundShadowTex: null,
+          boundValueTex: null,
+          boundFaceShadowTex: null,
+          finalMaterialType: message,
+        },
+      ];
+      this.runtimeDebug.head = [
+        {
+          meshName: "<combined-load-failed>",
+          sourceMaterialName: characterAsset.displayName,
+          resolvedKey: "missing_unity_runtime_json",
+          resolvedKind: "head",
+          usedOriginalMap: false,
+          boundMainTex: null,
+          boundShadowTex: null,
+          boundValueTex: null,
+          boundFaceShadowTex: null,
+          finalMaterialType: message,
+        },
+      ];
+      return {
+        root: null,
+        sourceMode: "proxy",
+        requestedUrl: "",
+        meshCount: 0,
+        boneCount: 0,
+        skinnedMeshCount: 0,
+        error: message,
+      };
+    }
+
     try {
       const loaded = await loadGltfPart(
-        characterAsset.meshUrl,
+        meshUrl,
         characterAsset.id
       );
       if (this.materialBindingMode === "manifest") {
@@ -3212,7 +4927,7 @@ export class PjskViewerApp {
       return {
         root: loaded.root,
         sourceMode: "glb",
-        requestedUrl: characterAsset.meshUrl,
+        requestedUrl: meshUrl,
         meshCount: loaded.meshCount,
         boneCount: loaded.boneCount,
         skinnedMeshCount: loaded.skinnedMeshCount,
@@ -3253,7 +4968,7 @@ export class PjskViewerApp {
       return {
         root: null,
         sourceMode: "proxy",
-        requestedUrl: characterAsset.meshUrl,
+        requestedUrl: meshUrl,
         meshCount: 0,
         boneCount: 0,
         skinnedMeshCount: 0,
@@ -3454,6 +5169,7 @@ export class PjskViewerApp {
       const meshKey = normalizeMeshSlotName(mesh.name);
       const meshSlots = slotEntries.filter((entry) => entry.meshKey === meshKey);
       const allowMeshFallback = !options.exactMaterialNameOnly;
+      const resolvedEntriesByIndex: Array<typeof slotEntries[number] | null> = [];
       const rebound = originalMaterials.map((original, index) => {
         const resolvedByMaterialName = slotEntries.find(
           (entry) => entry.materialName === original.name.toLowerCase()
@@ -3582,6 +5298,7 @@ export class PjskViewerApp {
       valueTex: string | null;
       faceShadowTex: string | null;
       material: THREE.Material;
+      overlayMaterial: THREE.Material | null;
     }> = [];
     for (const slot of headAsset.faceMaterials) {
       const mainTex = await this.loadTexture(slot.mainTex);
@@ -3614,6 +5331,39 @@ export class PjskViewerApp {
             threshold: lighting?.threshold,
           }
         );
+        material.side = THREE.FrontSide;
+        configureStencilReplace(material, EYE_VISIBLE_STENCIL_BIT, EYE_VISIBLE_STENCIL_BIT, true);
+        const overlayMaterial = createSekaiLayerMaterial(
+          mainTex,
+          "eye",
+          options.eyeController?.baseTiling,
+          {
+            tintColor: options.eyeController?.tintColor,
+            emissionColor: options.eyeController?.emissionColor,
+            lightInfluence: options.eyeController?.lightInfluence ?? lighting?.lightInfluence,
+            distortionFps: lighting?.distortionFps,
+            distortionIntensity: lighting?.distortionIntensity,
+            distortionIntensityX: lighting?.distortionIntensityX,
+            distortionIntensityY: lighting?.distortionIntensityY,
+            distortionOffsetX: lighting?.distortionOffsetX,
+            distortionOffsetY: lighting?.distortionOffsetY,
+            distortionScrollSpeed: lighting?.distortionScrollSpeed,
+            distortionScrollX: lighting?.distortionScrollX,
+            distortionScrollY: lighting?.distortionScrollY,
+            distortionTexTilingX: lighting?.distortionTexTilingX,
+            distortionTexTilingY: lighting?.distortionTexTilingY,
+            threshold: lighting?.threshold,
+            alphaScale: EYE_THROUGH_HAIR_ALPHA,
+          }
+        );
+        overlayMaterial.side = THREE.FrontSide;
+        configureStencilTest(
+          overlayMaterial,
+          EYE_VISIBLE_STENCIL_BIT | HAIR_OCCLUDER_STENCIL_BIT,
+          EYE_VISIBLE_STENCIL_BIT | HAIR_OCCLUDER_STENCIL_BIT
+        );
+        overlayMaterial.userData.pjskMaterialKind = "eye_through_hair";
+        material.userData.pjskOverlayMaterial = overlayMaterial;
       } else if (kind === "eyelight") {
         material = createSekaiLayerMaterial(
           mainTex,
@@ -3638,10 +5388,72 @@ export class PjskViewerApp {
             threshold: lighting?.threshold,
           }
         );
+        material.side = THREE.FrontSide;
+        configureStencilReplace(material, EYE_VISIBLE_STENCIL_BIT, EYE_VISIBLE_STENCIL_BIT, true);
+        const overlayMaterial = createSekaiLayerMaterial(
+          mainTex,
+          "eyelight",
+          options.eyeController?.highlightTiling,
+          {
+            tintColor: options.eyeController?.tintColor,
+            emissionColor: options.eyeController?.emissionColor,
+            lightInfluence: options.eyeController?.lightInfluence ?? lighting?.lightInfluence,
+            highlightInfluence: options.eyeController?.lightInfluenceForEyeHighlight ?? lighting?.lightInfluenceForEyeHighlight,
+            distortionFps: lighting?.distortionFps,
+            distortionIntensity: lighting?.distortionIntensity,
+            distortionIntensityX: lighting?.distortionIntensityX,
+            distortionIntensityY: lighting?.distortionIntensityY,
+            distortionOffsetX: lighting?.distortionOffsetX,
+            distortionOffsetY: lighting?.distortionOffsetY,
+            distortionScrollSpeed: lighting?.distortionScrollSpeed,
+            distortionScrollX: lighting?.distortionScrollX,
+            distortionScrollY: lighting?.distortionScrollY,
+            distortionTexTilingX: lighting?.distortionTexTilingX,
+            distortionTexTilingY: lighting?.distortionTexTilingY,
+            threshold: lighting?.threshold,
+            alphaScale: EYELIGHT_THROUGH_HAIR_ALPHA,
+          }
+        );
+        overlayMaterial.side = THREE.FrontSide;
+        configureStencilTest(
+          overlayMaterial,
+          EYE_VISIBLE_STENCIL_BIT | HAIR_OCCLUDER_STENCIL_BIT,
+          EYE_VISIBLE_STENCIL_BIT | HAIR_OCCLUDER_STENCIL_BIT
+        );
+        overlayMaterial.userData.pjskMaterialKind = "eyelight_through_hair";
+        material.userData.pjskOverlayMaterial = overlayMaterial;
       } else if (kind === "eyelash" || kind === "eyebrow") {
         material = createSekaiLayerMaterial(mainTex, "alpha", null, {
           vertexBViewOffset: 0.015,
         });
+        material.side = THREE.FrontSide;
+        const visibleBit = kind === "eyelash"
+          ? EYELASH_VISIBLE_STENCIL_BIT
+          : EYEBROW_VISIBLE_STENCIL_BIT;
+        configureStencilReplace(
+          material,
+          visibleBit,
+          EYE_VISIBLE_STENCIL_BIT | visibleBit,
+          true
+        );
+        const overlayMaterial = createSekaiLayerMaterial(mainTex, "alpha", null, {
+          vertexBViewOffset: 0.015,
+          alphaScale: kind === "eyelash"
+            ? EYELASH_THROUGH_HAIR_ALPHA
+            : EYEBROW_THROUGH_HAIR_ALPHA,
+        });
+        overlayMaterial.side = THREE.FrontSide;
+        configureStencilTest(
+          overlayMaterial,
+          visibleBit | HAIR_OCCLUDER_STENCIL_BIT,
+          visibleBit | HAIR_OCCLUDER_STENCIL_BIT,
+          EYE_VISIBLE_STENCIL_BIT,
+          THREE.ZeroStencilOp
+        );
+        overlayMaterial.userData.pjskMaterialKind = kind === "eyelash"
+          ? "eyelash_through_hair"
+          : "eyebrow_through_hair";
+        material.userData.pjskOverlayMaterial = overlayMaterial;
       } else if (kind === "hair") {
         material = cloneBodyShaderMaterial(this.hairMaterial, {
           mainTex,
@@ -3651,6 +5463,7 @@ export class PjskViewerApp {
           lighting,
           skinTintEnabled: false,
         });
+        configureStencilReplace(material, HAIR_OCCLUDER_STENCIL_BIT, HAIR_OCCLUDER_STENCIL_BIT);
       } else if (kind === "accessory" || kind === "body") {
         material = cloneBodyShaderMaterial(this.bodyMaterial, {
           mainTex,
@@ -3660,6 +5473,9 @@ export class PjskViewerApp {
           lighting,
           skinTintEnabled: usesSekaiSkinTint(kind),
         });
+        if (kind === "accessory") {
+          configureStencilReplace(material, HAIR_OCCLUDER_STENCIL_BIT, HAIR_OCCLUDER_STENCIL_BIT);
+        }
       } else {
         material = cloneFaceShaderMaterial(this.faceMaterial, {
           mainTex,
@@ -3678,6 +5494,7 @@ export class PjskViewerApp {
         }
       }
       material.userData.pjskLighting = lighting;
+      material.userData.pjskMaterialKind = kind;
       slotEntries.push({
         key: slot.materialName
           ? `mat:${slot.materialName.toLowerCase()}`
@@ -3690,6 +5507,9 @@ export class PjskViewerApp {
         valueTex: null,
         faceShadowTex: slot.faceShadowTex ?? null,
         material,
+        overlayMaterial: material.userData.pjskOverlayMaterial instanceof THREE.Material
+          ? material.userData.pjskOverlayMaterial
+          : null,
       });
     }
 
@@ -3704,6 +5524,7 @@ export class PjskViewerApp {
       const meshKey = normalizeMeshSlotName(mesh.name);
       const meshSlots = slotEntries.filter((entry) => entry.meshKey === meshKey);
       const allowMeshFallback = !options.exactMaterialNameOnly;
+      const resolvedEntriesByIndex: Array<typeof slotEntries[number] | null> = [];
       const rebound = originalMaterials.map((original, index) => {
         const resolvedByMaterialName = slotEntries.find(
           (entry) => entry.materialName === original.name.toLowerCase()
@@ -3714,10 +5535,17 @@ export class PjskViewerApp {
         if (resolvedEntry) {
           const mainMap = this.extractColorMap(original);
           this.syncReplacementTextureFromOriginal(resolvedEntry.material, mainMap);
+          if (resolvedEntry.overlayMaterial) {
+            this.syncReplacementTextureFromOriginal(resolvedEntry.overlayMaterial, mainMap);
+          }
           let usedOriginalMap = false;
           if (resolvedEntry.material instanceof THREE.ShaderMaterial && !resolvedEntry.material.uniforms.uMainTex.value && mainMap) {
             resolvedEntry.material.uniforms.uMainTex.value = mainMap;
             resolvedEntry.material.uniforms.uUseMainTex.value = 1.0;
+            if (resolvedEntry.overlayMaterial instanceof THREE.ShaderMaterial) {
+              resolvedEntry.overlayMaterial.uniforms.uMainTex.value = mainMap;
+              resolvedEntry.overlayMaterial.uniforms.uUseMainTex.value = 1.0;
+            }
             if ("uBaseColor" in resolvedEntry.material.uniforms) {
               resolvedEntry.material.uniforms.uBaseColor.value.set("#ffffff");
             }
@@ -3737,6 +5565,7 @@ export class PjskViewerApp {
           if (shaderUniforms?.uFaceShadowTex) {
             ensureFaceSdfUv1Attribute(mesh);
           }
+          resolvedEntriesByIndex[index] = resolvedEntry;
           this.runtimeDebug.head.push({
             meshName: mesh.name,
             sourceMaterialName: original.name,
@@ -3783,6 +5612,16 @@ export class PjskViewerApp {
             shaderAtlasTileY: shaderUniforms?.uAtlasTile?.value?.y ?? null,
             shaderAtlasSample: shaderUniforms?.uAtlasSample?.value ?? null,
             shaderUseAtlas: shaderUniforms?.uUseAtlas?.value ?? null,
+            shaderAlphaScale: shaderUniforms?.uAlphaScale?.value ?? null,
+            shaderStencilWrite: resolvedEntry.material.stencilWrite ?? null,
+            shaderStencilRef: resolvedEntry.material.stencilRef ?? null,
+            shaderStencilFunc: resolvedEntry.material.stencilFunc ?? null,
+            shaderStencilFuncMask: resolvedEntry.material.stencilFuncMask ?? null,
+            shaderStencilWriteMask: resolvedEntry.material.stencilWriteMask ?? null,
+            shaderStencilZPass: resolvedEntry.material.stencilZPass ?? null,
+            shaderDepthFunc: resolvedEntry.material.depthFunc ?? null,
+            shaderDepthWrite: resolvedEntry.material.depthWrite ?? null,
+            shaderTransparent: resolvedEntry.material.transparent ?? null,
             renderOrder: mesh.renderOrder,
           });
           return resolvedEntry.material;
@@ -3805,8 +5644,84 @@ export class PjskViewerApp {
         }
         return original;
       });
-      disposeReplacedMaterials(originalMaterials, rebound);
-      mesh.material = Array.isArray(mesh.material) ? rebound : rebound[0];
+      const originalGroups = mesh.geometry.groups.length > 0
+        ? mesh.geometry.groups.map((group) => ({
+          start: group.start,
+          count: group.count,
+          materialIndex: group.materialIndex ?? 0,
+        }))
+        : [{
+          start: 0,
+          count: mesh.geometry.index?.count ?? mesh.geometry.getAttribute("position")?.count ?? 0,
+          materialIndex: 0,
+        }];
+      const overlayMaterials: THREE.Material[] = [];
+      const overlayGroups: Array<{ start: number; count: number; materialIndex: number }> = [];
+      for (const group of originalGroups) {
+        const overlayMaterial = resolvedEntriesByIndex[group.materialIndex]?.overlayMaterial ?? null;
+        if (!overlayMaterial) {
+          continue;
+        }
+        const materialIndex = rebound.length + overlayMaterials.length;
+        overlayMaterials.push(overlayMaterial);
+        overlayGroups.push({
+          start: group.start,
+          count: group.count,
+          materialIndex,
+        });
+        const overlayUniforms = overlayMaterial instanceof THREE.ShaderMaterial
+          ? overlayMaterial.uniforms
+          : null;
+        this.runtimeDebug.head.push({
+          meshName: mesh.name,
+          sourceMaterialName: originalMaterials[group.materialIndex]?.name ?? "",
+          resolvedKey: null,
+          resolvedKind: typeof overlayMaterial.userData.pjskMaterialKind === "string"
+            ? overlayMaterial.userData.pjskMaterialKind
+            : null,
+          usedOriginalMap: false,
+          boundMainTex: null,
+          boundShadowTex: null,
+          boundValueTex: null,
+          boundFaceShadowTex: null,
+          finalMaterialType: overlayMaterial.type,
+          shaderHasMainTex: overlayUniforms?.uUseMainTex?.value ?? null,
+          shaderAtlasTileX: overlayUniforms?.uAtlasTile?.value?.x ?? null,
+          shaderAtlasTileY: overlayUniforms?.uAtlasTile?.value?.y ?? null,
+          shaderAtlasSample: overlayUniforms?.uAtlasSample?.value ?? null,
+          shaderUseAtlas: overlayUniforms?.uUseAtlas?.value ?? null,
+          shaderAlphaScale: overlayUniforms?.uAlphaScale?.value ?? null,
+          shaderStencilWrite: overlayMaterial.stencilWrite ?? null,
+          shaderStencilRef: overlayMaterial.stencilRef ?? null,
+          shaderStencilFunc: overlayMaterial.stencilFunc ?? null,
+          shaderStencilFuncMask: overlayMaterial.stencilFuncMask ?? null,
+          shaderStencilWriteMask: overlayMaterial.stencilWriteMask ?? null,
+          shaderStencilZPass: overlayMaterial.stencilZPass ?? null,
+          shaderDepthFunc: overlayMaterial.depthFunc ?? null,
+          shaderDepthWrite: overlayMaterial.depthWrite ?? null,
+          shaderTransparent: overlayMaterial.transparent ?? null,
+          renderOrder: getHeadLayerRenderOrder(
+            typeof overlayMaterial.userData.pjskMaterialKind === "string"
+              ? overlayMaterial.userData.pjskMaterialKind
+              : ""
+          ),
+        });
+      }
+      const finalMaterials = overlayMaterials.length > 0
+        ? [...rebound, ...overlayMaterials]
+        : rebound;
+      if (overlayGroups.length > 0) {
+        mesh.geometry.clearGroups();
+        for (const group of originalGroups) {
+          mesh.geometry.addGroup(group.start, group.count, group.materialIndex);
+        }
+        for (const group of overlayGroups) {
+          mesh.geometry.addGroup(group.start, group.count, group.materialIndex);
+        }
+      }
+      disposeReplacedMaterials(originalMaterials, finalMaterials);
+      sortHeadMeshGroupsByMaterialKind(mesh, finalMaterials);
+      mesh.material = Array.isArray(mesh.material) || finalMaterials.length > 1 ? finalMaterials : finalMaterials[0];
       mesh.castShadow = false;
       mesh.receiveShadow = false;
     });
@@ -4307,10 +6222,10 @@ export class PjskViewerApp {
     this.updateFaceMotion(delta);
     this.syncLinkedHeadBones();
     this.currentExtraBoneRuntime?.update();
-    if (this.utjSpringBoneEnabled) {
-      this.currentUtjSpringBoneRuntime?.update(delta);
+    if (this.isSpringRuntimeEnabled()) {
+      this.currentSpringRuntime?.update(delta);
     } else {
-      this.currentUtjSpringBoneRuntime?.resetPose();
+      this.currentSpringRuntime?.resetPose();
     }
     this.applyBodyNeckContactUniforms();
     this.controls.update();
@@ -4380,7 +6295,59 @@ export class PjskViewerApp {
     this.currentAnimationFinishedHandler = null;
     this.currentAnimationClipName = null;
     this.currentAnimationDuration = 0;
+    this.currentAnimationRetargetDebug = null;
     this.queuedLoopClipName = null;
+  }
+
+  private preparePlayableBodyAnimationClip(
+    sourceClip: THREE.AnimationClip,
+    utjControlledNodeNames: ReadonlySet<string>,
+    updateRetargetDebug = true
+  ): THREE.AnimationClip | null {
+    const clip = prepareRuntimeAnimationClip(
+      sourceClip,
+      this.bodyHeadTracksEnabled,
+      utjControlledNodeNames
+    );
+    if (!this.currentPrefabSourceGraph) {
+      if (updateRetargetDebug) {
+        this.currentAnimationRetargetDebug = {
+          mode: "none",
+          bindingCount: 0,
+          sourceTrackCount: clip.tracks.length,
+          emittedTrackCount: clip.tracks.length,
+          resolvedTargetCount: clip.tracks.length,
+          resolvedBodyTargetCount: 0,
+          resolvedFaceTargetCount: 0,
+          unresolvedTrackCount: 0,
+          duplicateTargetTrackCount: 0,
+          sampleUnresolvedTracks: [],
+          sampleResolvedHeadTargets: [],
+          prefabHeadFollow: this.currentPrefabHeadFollowDebug,
+        };
+      }
+      return clip;
+    }
+
+    if (!this.currentBodyAnimationRoot) {
+      this.currentAnimationError = "Unity Prefab animation requires a loaded prefab root.";
+      return null;
+    }
+
+    const retargeted = retargetUnityPrefabAnimationClip(
+      clip,
+      this.currentBodyAnimationRoot,
+      this.currentRuntimeExtension
+    );
+    if (updateRetargetDebug) {
+      retargeted.debug.prefabHeadFollow = this.currentPrefabHeadFollowDebug;
+      this.currentAnimationRetargetDebug = retargeted.debug;
+    }
+    if (retargeted.error) {
+      this.currentAnimationError = retargeted.error;
+      return null;
+    }
+    return retargeted.clip;
   }
 
   private async refreshAnimationPlayback() {
@@ -4391,20 +6358,25 @@ export class PjskViewerApp {
     if (!this.currentAnimationUrl || !this.currentBodyAnimationRoot) {
       this.syncLinkedHeadBones();
       this.currentExtraBoneRuntime?.update();
-      this.currentUtjSpringBoneRuntime?.resetStateToCurrentPose();
-      this.currentUtjSpringBoneRuntime?.settleCurrentPose();
+      this.currentSpringRuntime?.resetStateToCurrentPose();
+      this.currentSpringRuntime?.settleCurrentPose();
       return;
     }
 
-    let clips = this.animationClipCache.get(this.currentAnimationUrl);
+    const clipCacheKey = animationClipCacheKey(
+      this.currentAnimationUrl,
+      this.currentAnimationKind
+    );
+    let clips = this.animationClipCache.get(clipCacheKey);
     if (!clips) {
       try {
-        const loaded = await loadGltfAnimations(
-          this.currentAnimationUrl,
-          this.currentAnimationUrl
-        );
-        clips = loaded.clips;
-        this.animationClipCache.set(this.currentAnimationUrl, clips);
+        clips = this.currentAnimationKind === "unity-json"
+          ? await loadUnityMotionClips(this.currentAnimationUrl)
+          : (await loadGltfAnimations(
+            this.currentAnimationUrl,
+            this.currentAnimationUrl
+          )).clips;
+        this.animationClipCache.set(clipCacheKey, clips);
       } catch (error) {
         if (revision !== this.animationRevision) {
           return;
@@ -4424,18 +6396,20 @@ export class PjskViewerApp {
     }
 
     const utjControlledNodeNames =
-      this.currentUtjSpringBoneRuntime?.getControlledTrackNodeNames() ??
+      this.currentSpringRuntime?.getControlledTrackNodeNames() ??
       new Set<string>();
     this.currentAnimationMixer = new THREE.AnimationMixer(
       this.currentBodyAnimationRoot
     );
     const sourceClip = clips.find((candidate) => !isLoopClipName(candidate.name, this.currentAnimationUrl))
       ?? clips[0];
-    const clip = prepareRuntimeAnimationClip(
+    const clip = this.preparePlayableBodyAnimationClip(
       sourceClip,
-      this.bodyHeadTracksEnabled,
       utjControlledNodeNames
     );
+    if (!clip) {
+      return;
+    }
     const clipName = clip.name || this.currentAnimationUrl;
     this.currentAnimationClipName = clipName;
     this.currentAnimationDuration = clip.duration;
@@ -4453,29 +6427,34 @@ export class PjskViewerApp {
         ?? clips.find((candidate) => candidate !== sourceClip)
         ?? null;
       loopClip = sourceLoopClip
-        ? prepareRuntimeAnimationClip(
+        ? this.preparePlayableBodyAnimationClip(
           sourceLoopClip,
-          this.bodyHeadTracksEnabled,
-          utjControlledNodeNames
+          utjControlledNodeNames,
+          false
         )
         : null;
     } else if (loopUrl) {
-      let loopClips = this.animationClipCache.get(loopUrl);
+      const loopClipCacheKey = animationClipCacheKey(
+        loopUrl,
+        this.currentAnimationLoopKind
+      );
+      let loopClips = this.animationClipCache.get(loopClipCacheKey);
       if (!loopClips) {
         try {
-          const loaded = await loadGltfAnimations(loopUrl, loopUrl);
-          loopClips = loaded.clips;
-          this.animationClipCache.set(loopUrl, loopClips);
+          loopClips = this.currentAnimationLoopKind === "unity-json"
+            ? await loadUnityMotionClips(loopUrl)
+            : (await loadGltfAnimations(loopUrl, loopUrl)).clips;
+          this.animationClipCache.set(loopClipCacheKey, loopClips);
         } catch {
           loopClips = undefined;
         }
       }
       const sourceLoopClip = loopClips?.[0] ?? null;
       loopClip = sourceLoopClip
-        ? prepareRuntimeAnimationClip(
+        ? this.preparePlayableBodyAnimationClip(
           sourceLoopClip,
-          this.bodyHeadTracksEnabled,
-          utjControlledNodeNames
+          utjControlledNodeNames,
+          false
         )
         : null;
     }
@@ -4541,8 +6520,8 @@ export class PjskViewerApp {
     this.currentAnimationMixer.update(0);
     this.syncLinkedHeadBones();
     this.currentExtraBoneRuntime?.update();
-    this.currentUtjSpringBoneRuntime?.resetStateToCurrentPose();
-    this.currentUtjSpringBoneRuntime?.settleCurrentPose();
+    this.currentSpringRuntime?.resetStateToCurrentPose();
+    this.currentSpringRuntime?.settleCurrentPose();
   }
 
   private activateQueuedLoopForSeek() {
@@ -4576,8 +6555,217 @@ export class PjskViewerApp {
     this.applyAnimationPlaybackSettings();
   }
 
+  private getPrefabHeadFollowDebugSnapshot(): PrefabHeadFollowDebug {
+    const root = this.currentBodyAnimationRoot;
+    const base: PrefabHeadFollowDebug = {
+      ...this.currentPrefabHeadFollowDebug,
+      setupVersion: readRuntimeUnitySetupVersion(this.currentRuntimeExtension),
+    };
+    if (!root) {
+      return base;
+    }
+
+    root.updateMatrixWorld(true);
+    const nodeByPath = buildPrefabNodePathLookup(root);
+    const resolveKeyNode = (
+      candidates: readonly string[]
+    ): PrefabHeadFollowNodeDebug | null => {
+      const resolved = resolvePrefabNodeCandidate(nodeByPath, candidates);
+      return resolved ? makePrefabNodeDebug(resolved.node, root) : null;
+    };
+    const constraint = this.currentPrefabHeadFollowConstraint;
+    const targetPaths = constraint?.targets.map((target) => target.path) ?? [];
+    const bodyNeck = resolveKeyNode([
+      "body/Position/PositionOffset/Hip/Waist/Spine/Chest/Neck",
+      "body/Position/Hip/Waist/Spine/Chest/Neck",
+    ]);
+    const bodyHead = resolveKeyNode([
+      "body/Position/PositionOffset/Hip/Waist/Spine/Chest/Neck/Head",
+      "body/Position/Hip/Waist/Spine/Chest/Neck/Head",
+    ]);
+    const facePosition = resolveKeyNode(["face/Position"]);
+    const faceNeck = resolveKeyNode([
+      "face/Position/Hip/Waist/Spine/Chest/Neck",
+    ]);
+    const faceHead = resolveKeyNode([
+      "face/Position/Hip/Waist/Spine/Chest/Neck/Head",
+    ]);
+    const meshContainerPosition = resolveKeyNode([
+      "mdl_chr_IDL_A_00/Position",
+      "mdl_chr_IDL_A_00/Position_4",
+    ]);
+    return {
+      ...base,
+      targetCount: targetPaths.length,
+      targetPaths,
+      positionRoots: collectPrefabPositionRootDebug(root),
+      assemblyDistances: {
+        bodyNeckToFaceNeck: debugNodeWorldDistance(bodyNeck, faceNeck),
+        bodyHeadToFaceHead: debugNodeWorldDistance(bodyHead, faceHead),
+      },
+      keyNodes: {
+        ...(base.keyNodes ?? {}),
+        bodyNeck,
+        bodyHead,
+        facePosition,
+        faceNeck,
+        faceHead,
+        meshContainerPosition,
+      },
+    };
+  }
+
+  private createPrefabHeadFollowConstraint(
+    root: THREE.Object3D
+  ): PrefabHeadFollowConstraint | null {
+    if (readRuntimeUnitySetupVersion(this.currentRuntimeExtension) !== "0414") {
+      this.currentPrefabHeadFollowDebug = {
+        active: false,
+        sourcePath: null,
+        targetPath: null,
+        reason: "runtimeUnitySetup version is not 0414",
+      };
+      return null;
+    }
+
+    const nodeByPath = buildPrefabNodePathLookup(root);
+    const source = resolvePrefabNodeCandidate(nodeByPath, [
+      "body/Position/PositionOffset/Hip/Waist/Spine/Chest/Neck",
+      "body/Position/Hip/Waist/Spine/Chest/Neck",
+    ]);
+    if (!source) {
+      this.currentPrefabHeadFollowDebug = {
+        active: false,
+        sourcePath: null,
+        targetPath: null,
+        reason: "body neck prefab node was not found",
+      };
+      return null;
+    }
+
+    const targetNodes = collectPrefabHeadFollowTargets(root);
+    if (targetNodes.length === 0) {
+      this.currentPrefabHeadFollowDebug = {
+        active: false,
+        sourcePath: source.path,
+        targetPath: null,
+        reason: "head prefab follow targets were not found",
+      };
+      return null;
+    }
+
+    root.updateMatrixWorld(true);
+    source.node.updateMatrixWorld(true);
+    const sourceRestInverse = new THREE.Matrix4()
+      .copy(source.node.matrixWorld)
+      .invert();
+    const targets = targetNodes.map((target) => {
+      target.node.updateMatrixWorld(true);
+      return {
+        node: target.node,
+        path: target.path,
+        restOffset: sourceRestInverse.clone().multiply(target.node.matrixWorld),
+      };
+    });
+    this.currentPrefabHeadFollowDebug = {
+      active: true,
+      sourcePath: source.path,
+      targetPath: targets.map((target) => target.path).join(", "),
+      reason: null,
+    };
+    return {
+      source: source.node,
+      sourcePath: source.path,
+      targets,
+    };
+  }
+
+  private syncPrefabHeadFollow() {
+    if (this.currentPrefabSourceGraph) {
+      return;
+    }
+    const constraint = this.currentPrefabHeadFollowConstraint;
+    if (!constraint) {
+      return;
+    }
+
+    this.characterRoot.updateMatrixWorld(true);
+    constraint.source.updateMatrixWorld(true);
+    for (const target of constraint.targets) {
+      this.tempMatrixB.multiplyMatrices(
+        constraint.source.matrixWorld,
+        target.restOffset
+      );
+
+      const parent = target.node.parent;
+      if (parent) {
+        parent.updateMatrixWorld(true);
+        this.tempMatrixA.copy(parent.matrixWorld).invert();
+        this.tempMatrixB.premultiply(this.tempMatrixA);
+      }
+
+      this.tempMatrixB.decompose(
+        this.tempVector,
+        this.tempQuaternion,
+        this.tempScale
+      );
+      target.node.position.copy(this.tempVector);
+      target.node.quaternion.copy(this.tempQuaternion);
+      target.node.scale.copy(this.tempScale);
+      target.node.updateMatrix();
+      target.node.updateMatrixWorld(true);
+    }
+    this.characterRoot.updateMatrixWorld(true);
+  }
+
+  private syncUnityPrefabSourceGraph() {
+    const graph = this.currentPrefabSourceGraph;
+    if (!graph) {
+      return;
+    }
+
+    graph.root.updateMatrixWorld(true);
+    if (
+      graph.bodyAttach &&
+      graph.headRoot &&
+      graph.headOrigin
+    ) {
+      graph.bodyAttach.updateMatrixWorld(true);
+      if (graph.assemblyMount) {
+        graph.assemblyMount.position.set(0, 0, 0);
+        graph.assemblyMount.quaternion.identity();
+        graph.assemblyMount.scale.set(1, 1, 1);
+        graph.assemblyMount.updateMatrix();
+        graph.assemblyMount.updateMatrixWorld(true);
+      }
+      if (graph.headOriginRestLocalToHeadRoot) {
+        this.tempMatrixB.copy(graph.headOriginRestLocalToHeadRoot).invert();
+        this.tempMatrixB.decompose(
+          this.tempVector,
+          this.tempQuaternion,
+          this.tempScale
+        );
+        graph.headRoot.position.copy(this.tempVector);
+        graph.headRoot.quaternion.copy(this.tempQuaternion);
+        graph.headRoot.scale.copy(this.tempScale);
+        graph.headRoot.updateMatrix();
+      }
+      graph.root.updateMatrixWorld(true);
+    }
+
+    for (const binding of graph.meshCarrierBindings) {
+      binding.target.position.copy(binding.source.position);
+      binding.target.quaternion.copy(binding.source.quaternion);
+      binding.target.scale.copy(binding.source.scale);
+      binding.target.updateMatrix();
+    }
+    graph.root.updateMatrixWorld(true);
+  }
 
   private syncLinkedHeadBones() {
+    this.syncUnityPrefabSourceGraph();
+    this.syncPrefabHeadFollow();
+
     if (
       (
         this.currentCompositionStatus.mode !== "bone_linked" &&

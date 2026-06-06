@@ -22,13 +22,11 @@ var resolver = new BundleInputResolver();
 var character3dCostumeResolver = new Character3dCostumeResolver();
 var parser = new AssetStudioBundleParser();
 var modelFactory = new AssetStudioImportedModelFactory();
-var emitter = new GltfEmitter();
 var springBoneExporter = new SpringBoneExporter();
 var vrmSpringBoneCandidateBuilder = new VrmSpringBoneCandidateBuilder();
-var vrmcSpringBoneExtensionBuilder = new VrmcSpringBoneExtensionBuilder();
-var vrmcVrmExtensionBuilder = new VrmcVrmExtensionBuilder();
 var pjskSekaiRuntimeExtensionBuilder = new PjskSekaiRuntimeExtensionBuilder();
-var gltfExtensionInjector = new GltfExtensionInjector();
+var unityRuntimeNativeMeshExporter = new UnityRuntimeNativeMeshExporter();
+var unityRuntimeTextureExporter = new UnityRuntimeTextureExporter();
 var motionPackageExporter = new MotionPackageExporter();
 var outputPruner = new OutputPruner();
 string? motionPath = options.MotionPath;
@@ -108,6 +106,7 @@ var vrmSpringBoneCandidate = vrmSpringBoneCandidateBuilder.Build(combinedSpringB
 
 var importedBody = modelFactory.CreateImportedModel(bodyInput);
 var importedHead = modelFactory.CreateImportedModel(headInput, plan.HeadManifestTemplate.Assembly.RootNodeName);
+var importedHeadUnityRuntime = modelFactory.CreateImportedModel(headInput, "face");
 IImported? headTextureFallback = null;
 if (resolvedCharacter3dCostume?.HeadTextureFallbackPath is not null)
 {
@@ -147,32 +146,15 @@ var importedAccessory = accessoryInput is not null
     ? modelFactory.CreateImportedModel(accessoryInput, SelectAccessoryRootName(accessoryInventory))
     : null;
 
-var bodyEmission = emitter.EmitBody(
-    Path.Combine(options.OutputDirectory, "body"),
-    "body.glb",
-    plan.BodyManifestTemplate,
-    importedBody
-);
-var headEmission = emitter.EmitHead(
-    Path.Combine(options.OutputDirectory, "head"),
-    "head.glb",
-    plan.HeadManifestTemplate,
-    importedHead
-);
-var characterEmission = emitter.EmitCharacter(
+outputPruner.PruneLegacyContainers(options.OutputDirectory);
+var characterTexturePathByName = unityRuntimeTextureExporter.ExportCharacterTextures(
     Path.Combine(options.OutputDirectory, "character"),
-    "character.glb",
-    plan.BodyManifestTemplate,
-    plan.HeadManifestTemplate,
     importedBody,
     importedHead,
-    vrmSpringBoneCandidate,
-    importedAccessory,
-    resolvedCharacter3dCostume?.AccessoryAttachNode
+    importedAccessory
 );
-
-var updatedBodyManifest = UpdateBodyManifest(plan.BodyManifestTemplate, bodyEmission);
-var updatedHeadManifest = UpdateHeadManifest(plan.HeadManifestTemplate, headEmission, importedHead);
+var updatedBodyManifest = UpdateBodyManifestForUnityRuntime(plan.BodyManifestTemplate);
+var updatedHeadManifest = UpdateHeadManifestForUnityRuntime(plan.HeadManifestTemplate, importedHead);
 plan = plan with
 {
     BodyManifestTemplate = updatedBodyManifest,
@@ -183,7 +165,7 @@ var motionExport = motionPackageExporter.Export(
     Path.Combine(options.OutputDirectory, "motion"),
     importedBody
 );
-if (motionExport.BodyMotionGlbPath is not null)
+if (motionExport.UnityMotionJsonPath is not null)
 {
     plan = plan with
     {
@@ -195,7 +177,7 @@ if (motionExport.BodyMotionGlbPath is not null)
                 {
                     Path.GetRelativePath(
                         options.OutputDirectory,
-                        motionExport.BodyMotionGlbPath
+                        motionExport.UnityMotionJsonPath
                     ).Replace('\\', '/')
                 },
             },
@@ -203,65 +185,69 @@ if (motionExport.BodyMotionGlbPath is not null)
     };
 }
 
-vrmcSpringBoneExtensionBuilder.PrepareRuntimeGlb(
-    vrmSpringBoneCandidate,
-    Path.Combine(options.OutputDirectory, "character", characterEmission.RelativeGlbPath),
-    plan.CharacterSpringBoneGlbPath
-);
-var vrmcSpringBone = vrmcSpringBoneExtensionBuilder.Build(
-    vrmSpringBoneCandidate,
-    plan.CharacterSpringBoneGlbPath
-);
-gltfExtensionInjector.InjectRootExtension(
-    plan.CharacterSpringBoneGlbPath,
-    plan.CharacterSpringBoneGlbPath,
-    "VRMC_springBone",
-    vrmcSpringBone.Extension
-);
-var vrmcVrm = vrmcVrmExtensionBuilder.Build(
-    plan.SekaiVrmProfile,
-    plan.Summary,
-    plan.CharacterSpringBoneGlbPath
-);
-gltfExtensionInjector.InjectRootExtension(
-    plan.CharacterSpringBoneGlbPath,
-    plan.CharacterVrmCoreGlbPath,
-    "VRMC_vrm",
-    vrmcVrm.Extension
-);
 var pjskSekaiRuntime = pjskSekaiRuntimeExtensionBuilder.Build(
     plan,
-    characterEmission.TexturePathByName,
-    Path.Combine("character", Path.GetFileName(plan.CharacterVrmPath)).Replace('\\', '/'),
+    characterTexturePathByName,
     combinedSpringBone,
     vrmSpringBoneCandidate,
     motionExport,
     resolvedCharacter3dCostume
 );
-gltfExtensionInjector.InjectRootExtension(
-    plan.CharacterVrmCoreGlbPath,
-    plan.CharacterVrmCandidateGlbPath,
-    plan.SekaiVrmProfile.SekaiRuntimeExtras.ExtensionName,
-    pjskSekaiRuntime.Extension
+var nativeMeshes = unityRuntimeNativeMeshExporter.Export(
+    importedBody,
+    importedHeadUnityRuntime,
+    pjskSekaiRuntime.Extension.PjskSpringBone.RuntimeUnitySetup
 );
-File.Copy(plan.CharacterVrmCandidateGlbPath, plan.CharacterVrmPath, overwrite: true);
+var pjskUnityRuntime = new PjskUnityRuntimePackage(
+    Version: "0414",
+    UnityVersion: "2022.3.21f1",
+    CoordinateSpace: new PjskUnityRuntimeCoordinateSpace(
+        Source: "unity-left-handed",
+        Viewer: "three-js-right-handed",
+        PositionConversion: "viewer_mirror_x",
+        RotationConversion: "viewer_negate_quaternion_yz",
+        ScaleConversion: "identity",
+        Notes: new[]
+        {
+            "Prefab Transform, renderer, collider, and motion data are stored in Unity source space.",
+            "The viewer must apply the declared Unity-to-Three conversion only at the Three.js display/simulation boundary.",
+            "Frida/runtime comparisons should use source Unity space or explicitly convert viewer-space diagnostics back to Unity space."
+        }
+    ),
+    AssemblyDiagnostics: BuildUnityRuntimeAssemblyDiagnostics(
+        plan,
+        pjskSekaiRuntime.Extension.PjskSpringBone.RuntimeUnitySetup,
+        pjskSekaiRuntime.Extension.MotionPackage?.BodyMotionBindings
+    ),
+    Character: pjskSekaiRuntime.Extension.Character,
+    Container: pjskSekaiRuntime.Extension.Container,
+    BodyManifest: pjskSekaiRuntime.Extension.BodyManifest,
+    HeadManifest: pjskSekaiRuntime.Extension.HeadManifest,
+    MaterialSlots: pjskSekaiRuntime.Extension.MaterialSlots,
+    TextureRoles: pjskSekaiRuntime.Extension.TextureRoles,
+    CharacterTextures: pjskSekaiRuntime.Extension.CharacterTextures,
+    MorphChannelBindings: pjskSekaiRuntime.Extension.MorphChannelBindings,
+    NativeMeshes: nativeMeshes,
+    MotionPackage: pjskSekaiRuntime.Extension.MotionPackage,
+    CharacterControllers: pjskSekaiRuntime.Extension.CharacterControllers,
+    PjskSpringBone: pjskSekaiRuntime.Extension.PjskSpringBone,
+    RuntimeUnitySetup: pjskSekaiRuntime.Extension.PjskSpringBone.RuntimeUnitySetup,
+    Notes: pjskSekaiRuntime.Extension.Notes
+);
 
 Directory.CreateDirectory(options.OutputDirectory);
 await WriteJsonAsync(plan.PjskSekaiRuntimeExtensionPath, pjskSekaiRuntime.Extension);
+await WriteJsonAsync(plan.CharacterUnityRuntimeJsonPath, pjskUnityRuntime);
 await WriteJsonAsync(plan.BodySpringBonePath, bodySpringBone);
 await WriteJsonAsync(plan.HeadSpringBonePath, headSpringBone);
 await WriteJsonAsync(plan.CombinedSpringBonePath, combinedSpringBone);
 await WriteJsonAsync(plan.VrmSpringBoneCandidatePath, vrmSpringBoneCandidate);
-await WriteJsonAsync(plan.VrmcSpringBoneExtensionPath, vrmcSpringBone.Extension);
-await WriteJsonAsync(plan.VrmcSpringBoneResolveReportPath, vrmcSpringBone.Report);
 if (options.KeepIntermediate)
 {
     await planner.WritePlanAsync(plan);
     await planner.WriteInventoriesAsync(plan);
     await planner.WriteManifestTemplatesAsync(plan);
     await planner.WriteSekaiVrmProfileAsync(plan);
-    await WriteJsonAsync(plan.VrmcVrmExtensionPath, vrmcVrm.Extension);
-    await WriteJsonAsync(plan.VrmcVrmResolveReportPath, vrmcVrm.Report);
     await WriteJsonAsync(plan.PjskSekaiRuntimeResolveReportPath, pjskSekaiRuntime.Report);
 }
 else
@@ -305,8 +291,8 @@ if (resolvedCharacter3dCostume is not null)
 Console.WriteLine();
 Console.WriteLine("Generated files");
 Console.WriteLine($"  PJSK runtime extension: {plan.PjskSekaiRuntimeExtensionPath}");
+Console.WriteLine($"  Unity runtime json: {Path.GetRelativePath(options.OutputDirectory, plan.CharacterUnityRuntimeJsonPath).Replace('\\', '/')}");
 Console.WriteLine($"  PJSK springbone payload: body={pjskSekaiRuntime.Extension.PjskSpringBone.Raw.Body.Bones.Count}, head={pjskSekaiRuntime.Extension.PjskSpringBone.Raw.Head.Bones.Count}");
-Console.WriteLine($"  Character VRM: {Path.GetRelativePath(options.OutputDirectory, plan.CharacterVrmPath).Replace('\\', '/')}");
 if (options.KeepIntermediate)
 {
     Console.WriteLine($"  Plan: {plan.PlanPath}");
@@ -319,25 +305,15 @@ if (options.KeepIntermediate)
     Console.WriteLine($"  Head springbone: {plan.HeadSpringBonePath}");
     Console.WriteLine($"  Combined springbone: {plan.CombinedSpringBonePath}");
     Console.WriteLine($"  VRM springbone candidate: {plan.VrmSpringBoneCandidatePath}");
-    Console.WriteLine($"  VRMC springbone extension: {plan.VrmcSpringBoneExtensionPath}");
-    Console.WriteLine($"  VRMC springbone resolve report: {plan.VrmcSpringBoneResolveReportPath}");
-    Console.WriteLine($"  VRMC vrm extension: {plan.VrmcVrmExtensionPath}");
-    Console.WriteLine($"  VRMC vrm resolve report: {plan.VrmcVrmResolveReportPath}");
     Console.WriteLine($"  PJSK runtime resolve report: {plan.PjskSekaiRuntimeResolveReportPath}");
-    Console.WriteLine($"  Body glb: body/{bodyEmission.RelativeGlbPath}");
-    Console.WriteLine($"  Head glb: head/{headEmission.RelativeGlbPath}");
-    Console.WriteLine($"  Character glb: character/{characterEmission.RelativeGlbPath}");
-    Console.WriteLine($"  Character springbone glb: {Path.GetRelativePath(options.OutputDirectory, plan.CharacterSpringBoneGlbPath).Replace('\\', '/')}");
-    Console.WriteLine($"  Character VRM core glb: {Path.GetRelativePath(options.OutputDirectory, plan.CharacterVrmCoreGlbPath).Replace('\\', '/')}");
-    Console.WriteLine($"  Character VRM candidate glb: {Path.GetRelativePath(options.OutputDirectory, plan.CharacterVrmCandidateGlbPath).Replace('\\', '/')}");
 }
 else
 {
     Console.WriteLine("  Intermediate/debug outputs: pruned; springbone metadata JSON retained for handoff");
 }
-if (motionExport.BodyMotionGlbPath is not null)
+if (motionExport.UnityMotionJsonPath is not null)
 {
-    Console.WriteLine($"  Body motion glb: {Path.GetRelativePath(options.OutputDirectory, motionExport.BodyMotionGlbPath).Replace('\\', '/')}");
+    Console.WriteLine($"  Unity motion json: {Path.GetRelativePath(options.OutputDirectory, motionExport.UnityMotionJsonPath).Replace('\\', '/')}");
 }
 if (motionExport.FaceMotion is not null)
 {
@@ -374,26 +350,15 @@ static string? ResolveDefaultCostumeSettingMotionPath(string assetRoot, int char
     return candidates.FirstOrDefault(File.Exists);
 }
 
-static BodyAssetManifest UpdateBodyManifest(
-    BodyAssetManifest manifest,
-    GlbEmissionResult emission
-)
+static BodyAssetManifest UpdateBodyManifestForUnityRuntime(BodyAssetManifest manifest)
 {
     return manifest with
     {
         Source = manifest.Source with
         {
-            MeshUrl = Path.Combine("body", emission.RelativeGlbPath).Replace('\\', '/'),
-            SkeletonUrl = Path.Combine("body", emission.RelativeGlbPath).Replace('\\', '/'),
+            MeshUrl = "character/unity-runtime.json",
+            SkeletonUrl = "character/unity-runtime.json",
         },
-        BodyMaterials = manifest.BodyMaterials
-            .Select(slot => slot with
-            {
-                MainTex = RewriteTexturePath("body", slot.MainTex, emission.TexturePathByName),
-                ShadowTex = RewriteTexturePath("body", slot.ShadowTex, emission.TexturePathByName),
-                ValueTex = RewriteTexturePath("body", slot.ValueTex, emission.TexturePathByName),
-            })
-            .ToList(),
     };
 }
 
@@ -564,9 +529,8 @@ static IReadOnlyList<string> ResolveDefaultHeadLayerTextureFallbackPaths(string 
         .ToList();
 }
 
-static HeadAssetManifest UpdateHeadManifest(
+static HeadAssetManifest UpdateHeadManifestForUnityRuntime(
     HeadAssetManifest manifest,
-    GlbEmissionResult emission,
     IImported importedHead
 )
 {
@@ -574,16 +538,8 @@ static HeadAssetManifest UpdateHeadManifest(
     {
         Source = manifest.Source with
         {
-            MeshUrl = Path.Combine("head", emission.RelativeGlbPath).Replace('\\', '/'),
+            MeshUrl = "character/unity-runtime.json",
         },
-        FaceMaterials = manifest.FaceMaterials
-            .Select(slot => slot with
-            {
-                MainTex = RewriteTexturePath("head", slot.MainTex, emission.TexturePathByName),
-                ShadowTex = RewriteTexturePath("head", slot.ShadowTex, emission.TexturePathByName),
-                FaceShadowTex = RewriteTexturePath("head", slot.FaceShadowTex, emission.TexturePathByName),
-            })
-            .ToList(),
         MorphChannels = importedHead.MorphList
             .Where(morph => morph.Path.EndsWith("/Face", StringComparison.OrdinalIgnoreCase) || string.Equals(morph.Path, "face/Face", StringComparison.OrdinalIgnoreCase))
             .SelectMany(morph => morph.Channels.Select(channel => channel.Name))
@@ -591,6 +547,244 @@ static HeadAssetManifest UpdateHeadManifest(
             .ToList(),
         MorphChannelBindings = ReadHeadMorphBindings(importedHead),
     };
+}
+
+static PjskUnityRuntimeAssemblyDiagnostics BuildUnityRuntimeAssemblyDiagnostics(
+    ConversionPlan plan,
+    PjskSpringBoneRuntimeUnitySetup setup,
+    PjskBodyMotionBindingSet? bodyMotionBindings
+)
+{
+    var transformByPathId = setup.PrefabGraphs
+        .SelectMany(graph => graph.Transforms)
+        .GroupBy(transform => transform.PathId)
+        .ToDictionary(group => group.Key, group => group.First());
+    var transformByPath = setup.PrefabGraphs
+        .SelectMany(graph => graph.Transforms)
+        .Where(transform => !string.IsNullOrWhiteSpace(transform.TransformPath))
+        .GroupBy(transform => transform.TransformPath!, StringComparer.Ordinal)
+        .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+    var warnings = new List<string>();
+
+    var defaultBodyRoot = setup.ActiveRootProfile.DefaultBodyRoot;
+    var bodyRootPath = ResolveRootPath(setup, defaultBodyRoot)
+        ?? setup.RootSelectionProfile.DefaultBodyRoot;
+    var headRootPath = ResolveRootPath(setup, "face") ?? "face";
+    var bodyAttachPath = setup.BodyHeadAssembly.ParentAttachPath ??
+        ResolveNamedPathInRoot(
+            setup,
+            defaultBodyRoot,
+            plan.BodyManifestTemplate.Skeleton.NeckAttach.NodeName
+        ) ?? ResolveFirstExistingPath(transformByPath, new[]
+    {
+        $"{defaultBodyRoot}/Position/PositionOffset/Hip/Waist/Spine/Chest/Neck",
+        $"{defaultBodyRoot}/Position/Hip/Waist/Spine/Chest/Neck",
+    });
+    var headOriginPath = setup.BodyHeadAssembly.ChildOriginPath ??
+        ResolveFirstExistingPath(transformByPath, new[]
+    {
+        "face/Position/Hip/Waist/Spine/Chest/Neck",
+    }) ?? ResolveNamedPathInRoot(
+        setup,
+        "face",
+        plan.HeadManifestTemplate.Assembly.AttachOrigin.NodeName
+    );
+
+    AddMissingWarning(warnings, "body root", bodyRootPath, transformByPath);
+    AddMissingWarning(warnings, "head root", headRootPath, transformByPath);
+    AddMissingWarning(warnings, "body attach", bodyAttachPath, transformByPath);
+    AddMissingWarning(warnings, "head origin", headOriginPath, transformByPath);
+
+    (string Label, string PartKind, string? Path)[] keyPathSpecs =
+    {
+        ("bodyRoot", "Body", bodyRootPath),
+        ("headRoot", "Head", headRootPath),
+        ("bodyAttach", "Body", bodyAttachPath),
+        ("headOrigin", "Head", headOriginPath),
+        ("id5ExpectedBodyNeckA", "Body", "body/Position/PositionOffset/Hip/Waist/Spine/Chest/Neck"),
+        ("id5ExpectedBodyNeckB", "Body", "body/Position/Hip/Waist/Spine/Chest/Neck"),
+        ("expectedBodyHeadA", "Body", "body/Position/PositionOffset/Hip/Waist/Spine/Chest/Neck/Head"),
+        ("expectedBodyHeadB", "Body", "body/Position/Hip/Waist/Spine/Chest/Neck/Head"),
+        ("id5ExpectedFacePosition", "Head", "face/Position"),
+        ("expectedFaceNeck", "Head", "face/Position/Hip/Waist/Spine/Chest/Neck"),
+        ("expectedFaceHead", "Head", "face/Position/Hip/Waist/Spine/Chest/Neck/Head"),
+    };
+    var keyPaths = keyPathSpecs
+        .Select(item => BuildKeyPathResolution(item.Label, item.PartKind, item.Path, transformByPath))
+        .ToList();
+
+    var rendererDiagnostics = setup.PrefabGraphs
+        .SelectMany(graph => graph.Renderers.Select(renderer => BuildRendererDiagnostic(graph.PartKind, renderer, transformByPathId)))
+        .OrderBy(renderer => renderer.PartKind, StringComparer.Ordinal)
+        .ThenBy(renderer => renderer.TransformPath, StringComparer.Ordinal)
+        .ThenBy(renderer => renderer.PathId)
+        .ToList();
+
+    return new PjskUnityRuntimeAssemblyDiagnostics(
+        Version: "0414",
+        BodyRootPath: bodyRootPath,
+        HeadRootPath: headRootPath,
+        BodyAttachPath: bodyAttachPath,
+        HeadOriginPath: headOriginPath,
+        CoordinateSpaceSource: setup.CoordinateSpace.Source,
+        CoordinateSpaceViewer: setup.CoordinateSpace.Viewer,
+        KeyPathResolutions: keyPaths,
+        RendererDiagnostics: rendererDiagnostics,
+        MotionTargetCoverage: BuildMotionTargetCoverage(bodyMotionBindings),
+        Warnings: warnings
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(warning => warning, StringComparer.Ordinal)
+            .ToList()
+    );
+}
+
+static string? ResolveRootPath(PjskSpringBoneRuntimeUnitySetup setup, string? rootName)
+{
+    if (string.IsNullOrWhiteSpace(rootName))
+    {
+        return null;
+    }
+
+    return setup.PrefabGraphs
+        .SelectMany(graph => graph.Transforms)
+        .Where(transform => string.Equals(transform.TransformPath, rootName, StringComparison.Ordinal))
+        .Select(transform => transform.TransformPath)
+        .FirstOrDefault();
+}
+
+static string? ResolveNamedPathInRoot(
+    PjskSpringBoneRuntimeUnitySetup setup,
+    string rootName,
+    string? nodeName
+)
+{
+    if (string.IsNullOrWhiteSpace(nodeName))
+    {
+        return null;
+    }
+
+    return setup.PrefabGraphs
+        .SelectMany(graph => graph.Transforms)
+        .Where(transform =>
+            string.Equals(transform.PoseRoot, rootName, StringComparison.Ordinal) &&
+            string.Equals(transform.Name, nodeName, StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(transform.TransformPath))
+        .OrderByDescending(transform => transform.TransformPath!.Count(ch => ch == '/'))
+        .Select(transform => transform.TransformPath)
+        .FirstOrDefault();
+}
+
+static string? ResolveFirstExistingPath(
+    IReadOnlyDictionary<string, SpringPrefabTransform> transformByPath,
+    IReadOnlyList<string> candidates
+)
+{
+    return candidates.FirstOrDefault(transformByPath.ContainsKey);
+}
+
+static void AddMissingWarning(
+    List<string> warnings,
+    string label,
+    string? path,
+    IReadOnlyDictionary<string, SpringPrefabTransform> transformByPath
+)
+{
+    if (string.IsNullOrWhiteSpace(path) || !transformByPath.ContainsKey(path))
+    {
+        warnings.Add($"Unity assembly diagnostic did not resolve {label}: {path ?? "<null>"}.");
+    }
+}
+
+static PjskUnityRuntimeKeyPathResolution BuildKeyPathResolution(
+    string label,
+    string partKind,
+    string? path,
+    IReadOnlyDictionary<string, SpringPrefabTransform> transformByPath
+)
+{
+    SpringPrefabTransform? transform = null;
+    var resolved = path is not null && transformByPath.TryGetValue(path, out transform);
+    return new PjskUnityRuntimeKeyPathResolution(
+        Label: label,
+        PartKind: partKind,
+        ExpectedPath: path,
+        Resolved: resolved,
+        PathId: resolved ? transform!.PathId : null,
+        NodeName: resolved ? transform!.Name : null,
+        ResolvedPath: resolved ? transform!.TransformPath : null
+    );
+}
+
+static PjskUnityRuntimeRendererDiagnostic BuildRendererDiagnostic(
+    string partKind,
+    SpringPrefabRenderer renderer,
+    IReadOnlyDictionary<long, SpringPrefabTransform> transformByPathId
+)
+{
+    var rootBonePath = renderer.RootBonePathId is long rootBonePathId &&
+        transformByPathId.TryGetValue(rootBonePathId, out var rootBone)
+        ? rootBone.TransformPath
+        : null;
+    var resolvedBones = renderer.SkinnedMeshBones
+        .Select(pathId => transformByPathId.TryGetValue(pathId, out var transform)
+            ? transform.TransformPath
+            : null)
+        .Where(path => !string.IsNullOrWhiteSpace(path))
+        .Cast<string>()
+        .ToList();
+    var missingBones = renderer.SkinnedMeshBones
+        .Where(pathId => !transformByPathId.ContainsKey(pathId))
+        .ToList();
+
+    return new PjskUnityRuntimeRendererDiagnostic(
+        PartKind: partKind,
+        PathId: renderer.PathId,
+        Name: renderer.Name,
+        TransformPath: renderer.TransformPath,
+        MeshName: renderer.MeshName,
+        Enabled: renderer.Enabled,
+        RootBonePathId: renderer.RootBonePathId,
+        RootBonePath: rootBonePath,
+        SkinnedBoneCount: renderer.SkinnedMeshBones.Count,
+        ResolvedSkinnedBoneCount: resolvedBones.Count,
+        SampleSkinnedBonePaths: resolvedBones.Take(24).ToList(),
+        MissingSkinnedBonePathIds: missingBones
+    );
+}
+
+static PjskUnityRuntimeMotionTargetCoverage BuildMotionTargetCoverage(
+    PjskBodyMotionBindingSet? bodyMotionBindings
+)
+{
+    if (bodyMotionBindings is null)
+    {
+        return new PjskUnityRuntimeMotionTargetCoverage(
+            BindingCount: 0,
+            ResolvedBindingCount: 0,
+            UnresolvedBindingCount: 0,
+            TotalTargetCount: 0,
+            BodyTargetCount: 0,
+            HeadTargetCount: 0,
+            SampleUnresolvedBindings: Array.Empty<string>()
+        );
+    }
+
+    var resolved = bodyMotionBindings.Bindings.Count(binding => binding.TargetCount > 0);
+    var unresolved = bodyMotionBindings.Bindings
+        .Where(binding => binding.TargetCount <= 0)
+        .Select(binding => $"{binding.NodeKey}:{binding.ImportedPath ?? binding.LeafName}")
+        .Take(24)
+        .ToList();
+    var targets = bodyMotionBindings.Bindings.SelectMany(binding => binding.Targets).ToList();
+    return new PjskUnityRuntimeMotionTargetCoverage(
+        BindingCount: bodyMotionBindings.Bindings.Count,
+        ResolvedBindingCount: resolved,
+        UnresolvedBindingCount: bodyMotionBindings.Bindings.Count - resolved,
+        TotalTargetCount: targets.Count,
+        BodyTargetCount: targets.Count(target => string.Equals(target.PoseRoot, "body", StringComparison.Ordinal)),
+        HeadTargetCount: targets.Count(target => string.Equals(target.PoseRoot, "face", StringComparison.Ordinal)),
+        SampleUnresolvedBindings: unresolved
+    );
 }
 
 static uint ComputeCurveHash(string sourceName)
@@ -626,40 +820,6 @@ static IReadOnlyList<HeadMorphChannel> ReadHeadMorphBindings(IImported importedH
             CurveHash: ComputeCurveHash(pair.Value)
         ))
         .ToList();
-}
-
-static string? RewriteTexturePath(
-    string partPrefix,
-    string? textureName,
-    IReadOnlyDictionary<string, string> textureMap
-)
-{
-    if (string.IsNullOrWhiteSpace(textureName))
-    {
-        return textureName;
-    }
-
-    if (!textureMap.TryGetValue(textureName, out var relative))
-    {
-        var candidates = new[]
-        {
-            textureName,
-            $"{textureName}.png",
-            $"{textureName}.webp",
-            $"{textureName}.jpg",
-        };
-
-        relative = candidates
-            .Select(candidate => textureMap.TryGetValue(candidate, out var mapped) ? mapped : null)
-            .FirstOrDefault(mapped => mapped is not null);
-
-        if (relative is null)
-        {
-            return textureName;
-        }
-    }
-
-    return Path.Combine(partPrefix, relative).Replace('\\', '/');
 }
 
 static IReadOnlyDictionary<string, float> LoadCharacterHeightMetersById(string masterDirectory)

@@ -8,7 +8,6 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
     public PjskSekaiRuntimeBuildResult Build(
         ConversionPlan plan,
         IReadOnlyDictionary<string, string> characterTexturePathByName,
-        string sourceGlbPath,
         CombinedSpringBoneExport combinedSpringBone,
         VrmSpringBoneCandidate vrmSpringBoneCandidate,
         MotionExportResult? motionExport = null,
@@ -61,6 +60,12 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
             warnings.Add("Some optional texture roles are absent; see missingTextureRoles.");
         }
 
+        var runtimeUnitySetup = BuildRuntimeUnitySetup(combinedSpringBone, vrmSpringBoneCandidate);
+        var bodyMotionBindings = EnrichBodyMotionBindings(
+            motionExport?.BodyMotionBindings,
+            runtimeUnitySetup
+        );
+
         var extension = new PjskSekaiRuntimeExtension(
             SpecVersion: "1.0",
             ProfileVersion: plan.SekaiVrmProfile.Version,
@@ -73,7 +78,12 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
                 Costume: BuildCostumeMetadata(resolvedCharacter3dCostume)
             ),
             Container: new PjskSekaiRuntimeContainer(
-                SourceGlb: sourceGlbPath,
+                SourceGlb: null,
+                PrefabRuntimeGlb: null,
+                UnityRuntimeJson: Path.GetRelativePath(
+                    plan.Summary.OutputDirectory,
+                    plan.CharacterUnityRuntimeJsonPath
+                ).Replace('\\', '/'),
                 PreferredContainer: plan.SekaiVrmProfile.TargetContainer.Preferred,
                 FallbackContainer: plan.SekaiVrmProfile.TargetContainer.Fallback,
                 Phase: plan.SekaiVrmProfile.TargetContainer.CurrentPhase,
@@ -107,12 +117,14 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
                 ? null
                 : new PjskSekaiRuntimeMotionPackage(
                     SourcePath: motionExport.SourcePath,
-                    BodyMotionGlb: motionExport.BodyMotionGlbPath is null
+                    BodyMotionGlb: null,
+                    UnityMotionJson: motionExport.UnityMotionJsonPath is null
                         ? null
                         : Path.GetRelativePath(
                             plan.Summary.OutputDirectory,
-                            motionExport.BodyMotionGlbPath
+                            motionExport.UnityMotionJsonPath
                         ).Replace('\\', '/'),
+                    BodyMotionBindings: bodyMotionBindings,
                     FaceMotion: motionExport.FaceMotion,
                     LightMotion: motionExport.LightMotion
                 ),
@@ -123,7 +135,7 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
             PjskSpringBone: new PjskSekaiRuntimeSpringBonePayload(
                 Raw: combinedSpringBone,
                 VrmCandidate: vrmSpringBoneCandidate,
-                RuntimeUnitySetup: BuildRuntimeUnitySetup(combinedSpringBone, vrmSpringBoneCandidate)
+                RuntimeUnitySetup: runtimeUnitySetup
             ),
             SpringBoneSourceMetadata: new PjskSekaiRuntimeSpringBoneSourceMetadata(
                 RawSpringBoneJson: Path.GetFileName(plan.CombinedSpringBonePath),
@@ -137,12 +149,12 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
                 BodyPipeline: plan.SekaiVrmProfile.SekaiRuntimeMaterialProfile.BodyPipeline,
                 FacePipeline: plan.SekaiVrmProfile.SekaiRuntimeMaterialProfile.FacePipeline,
                 LayerPipeline: plan.SekaiVrmProfile.SekaiRuntimeMaterialProfile.LayerPipeline,
-                PreserveGltfMaterialsAsFallback: true
+                PreserveGltfMaterialsAsFallback: false
             ),
             Notes: new[]
             {
-                "VRM is used as a container; exact PJSK rendering requires this extension.",
-                "Standard VRM/MToon fallback is intentionally separate from PJSK shader semantics.",
+                "Unity runtime JSON is the authoritative container for Transform, mesh, material, motion, and SpringBone data.",
+                "GLB and VRM containers are not emitted by the pure Unity runtime export path.",
                 "Face expressions are still driven by PJSK morph hash/channel bindings until VRM expression mapping is implemented.",
             }
         );
@@ -150,24 +162,177 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
         var report = new PjskSekaiRuntimeResolveReport(
             Version: 1,
             ExtensionName: plan.SekaiVrmProfile.SekaiRuntimeExtras.ExtensionName,
-            SourceGlb: sourceGlbPath,
+            SourceGlb: null,
             BodyMaterialSlotCount: bodySlots.Count,
             HeadMaterialSlotCount: headSlots.Count,
             TextureRoleCount: textureRoles.Count,
             CharacterTextureCount: characterTexturePathByName.Count,
             MorphChannelBindingCount: plan.HeadManifestTemplate.MorphChannelBindings.Count,
             EmbeddedFaceMotionClipCount: motionExport?.FaceMotion?.Clips.Count ?? 0,
-            BodyMotionGlb: motionExport?.BodyMotionGlbPath is null
-                ? null
-                : Path.GetRelativePath(
-                    plan.Summary.OutputDirectory,
-                    motionExport.BodyMotionGlbPath
-                ).Replace('\\', '/'),
+            BodyMotionGlb: null,
             MissingTextureRoles: missingTextureRoles,
             Warnings: warnings
         );
 
         return new PjskSekaiRuntimeBuildResult(extension, report);
+    }
+
+    private static PjskBodyMotionBindingSet? EnrichBodyMotionBindings(
+        PjskBodyMotionBindingSet? source,
+        PjskSpringBoneRuntimeUnitySetup runtimeUnitySetup
+    )
+    {
+        if (source is null)
+        {
+            return null;
+        }
+
+        var targetByPathCrc = BuildPrefabMotionTargetLookup(runtimeUnitySetup);
+        var warnings = new List<string>(source.Warnings);
+        var bindings = source.Bindings
+            .Select(binding =>
+            {
+                var targets = targetByPathCrc.TryGetValue(binding.PathCrc, out var matches)
+                    ? matches
+                    : new List<PjskBodyMotionTarget>();
+                if (targets.Count == 0)
+                {
+                    warnings.Add($"Body motion binding {binding.NodeKey} ({binding.LeafName}) has no active prefab target.");
+                }
+                return binding with
+                {
+                    TargetCount = targets.Count,
+                    Targets = targets,
+                };
+            })
+            .ToList();
+
+        return source with
+        {
+            Bindings = bindings,
+            Warnings = warnings
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(warning => warning, StringComparer.Ordinal)
+                .ToList(),
+        };
+    }
+
+    private static IReadOnlyDictionary<uint, List<PjskBodyMotionTarget>> BuildPrefabMotionTargetLookup(
+        PjskSpringBoneRuntimeUnitySetup runtimeUnitySetup
+    )
+    {
+        var rootPriority = runtimeUnitySetup.ActiveRootProfile.ActiveRoots
+            .Select((root, index) => new { root, index })
+            .ToDictionary(entry => entry.root, entry => entry.index, StringComparer.Ordinal);
+        var activeRoots = rootPriority.Keys.ToHashSet(StringComparer.Ordinal);
+        var result = new Dictionary<uint, List<PjskBodyMotionTarget>>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var graph in runtimeUnitySetup.PrefabGraphs)
+        {
+            foreach (var transform in graph.Transforms)
+            {
+                if (string.IsNullOrWhiteSpace(transform.TransformPath) ||
+                    string.IsNullOrWhiteSpace(transform.PoseRoot) ||
+                    !activeRoots.Contains(transform.PoseRoot))
+                {
+                    continue;
+                }
+
+                foreach (var candidatePath in BuildMotionBindingPathCandidates(transform.TransformPath, transform.PoseRoot))
+                {
+                    var path = candidatePath;
+                    while (!string.IsNullOrEmpty(path))
+                    {
+                        var pathCrc = CalculateCrc32(path);
+                        var key = $"{pathCrc}:{transform.PathId}";
+                        if (seen.Add(key))
+                        {
+                            if (!result.TryGetValue(pathCrc, out var targets))
+                            {
+                                targets = new List<PjskBodyMotionTarget>();
+                                result[pathCrc] = targets;
+                            }
+                            targets.Add(new PjskBodyMotionTarget(
+                                PoseRoot: transform.PoseRoot,
+                                TransformPath: transform.TransformPath,
+                                PathId: transform.PathId,
+                                Rest: BuildBodyMotionRest(transform)
+                            ));
+                        }
+
+                        var slash = path.IndexOf('/', StringComparison.Ordinal);
+                        if (slash < 0)
+                        {
+                            break;
+                        }
+                        path = path[(slash + 1)..];
+                    }
+                }
+            }
+        }
+
+        foreach (var pair in result)
+        {
+            pair.Value.Sort((a, b) =>
+            {
+                var priorityA = rootPriority.TryGetValue(a.PoseRoot, out var pa) ? pa : int.MaxValue;
+                var priorityB = rootPriority.TryGetValue(b.PoseRoot, out var pb) ? pb : int.MaxValue;
+                var priorityCompare = priorityA.CompareTo(priorityB);
+                return priorityCompare != 0
+                    ? priorityCompare
+                    : string.CompareOrdinal(a.TransformPath, b.TransformPath);
+            });
+        }
+
+        return result;
+    }
+
+    private static IEnumerable<string> BuildMotionBindingPathCandidates(string transformPath, string poseRoot)
+    {
+        yield return transformPath;
+
+        var positionHipPrefix = $"{poseRoot}/Position/Hip";
+        if (transformPath.StartsWith(positionHipPrefix, StringComparison.Ordinal))
+        {
+            yield return $"{poseRoot}/Position/PositionOffset/Hip{transformPath[positionHipPrefix.Length..]}";
+        }
+    }
+
+    private static PjskBodyMotionRestTransform BuildBodyMotionRest(SpringPrefabTransform transform)
+    {
+        return new PjskBodyMotionRestTransform(
+            Position: new PjskMotionVector3(
+                -transform.LocalPosition.X,
+                transform.LocalPosition.Y,
+                transform.LocalPosition.Z
+            ),
+            Rotation: new PjskMotionQuaternion(
+                transform.LocalRotation.X,
+                -transform.LocalRotation.Y,
+                -transform.LocalRotation.Z,
+                transform.LocalRotation.W
+            ),
+            Scale: new PjskMotionVector3(
+                transform.LocalScale.X,
+                transform.LocalScale.Y,
+                transform.LocalScale.Z
+            )
+        );
+    }
+
+    private static uint CalculateCrc32(string value)
+    {
+        var crc = 0xffffffffu;
+        foreach (var b in System.Text.Encoding.UTF8.GetBytes(value))
+        {
+            crc ^= b;
+            for (var i = 0; i < 8; i++)
+            {
+                crc = (crc & 1) != 0 ? (crc >> 1) ^ 0xedb88320u : crc >> 1;
+            }
+        }
+        return ~crc;
     }
 
     private static PjskSpringBoneRuntimeUnitySetup BuildRuntimeUnitySetup(
@@ -190,7 +355,10 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
                 NodeName: collider.NodeName,
                 NodePath: collider.NodePath,
                 PoseRoot: collider.PoseRoot,
-                Enabled: collider.Enabled
+                Enabled: collider.Enabled,
+                LinkedRenderer: collider.LinkedRenderer,
+                LinkedRendererEnabled: collider.LinkedRendererEnabled,
+                Shape: collider.Shape
             ))
             .ToList();
         var bindings = candidate.VrmExtensionDraft.ColliderGroups
@@ -225,17 +393,34 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
         );
         var setupPlan = BuildSetupPlan(managers, bindings);
         var bindingDecisions = BuildBindingDecisions(bones, bindings);
-        var activeRoots = rootSelectionProfile.RootCandidates
-            .Where(candidate => candidate.StaticActive != false)
+        var candidateRoots = rootSelectionProfile.RootCandidates
             .Select(candidate => candidate.Root)
             .Distinct(StringComparer.Ordinal)
-            .OrderBy(root => root, StringComparer.Ordinal)
+            .ToHashSet(StringComparer.Ordinal);
+        var activeRoots = new[] { defaultBodyRoot, "face" }
+            .Where(root => candidateRoots.Contains(root))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(root => RootPriority(root, defaultBodyRoot))
+            .ThenBy(root => root, StringComparer.Ordinal)
             .ToList();
 
         return new PjskSpringBoneRuntimeUnitySetup(
-            Version: 3,
+            Version: "0414",
             UnityVersion: "2022.3.21f1",
+            CoordinateSpace: new PjskUnityRuntimeCoordinateSpace(
+                Source: "unity-left-handed",
+                Viewer: "three-js-right-handed",
+                PositionConversion: "viewer_mirror_x",
+                RotationConversion: "viewer_negate_quaternion_yz",
+                ScaleConversion: "identity",
+                Notes: new[]
+                {
+                    "Prefab graph transforms and runtime SpringBone metadata are stored in Unity source space.",
+                    "Three.js viewers must convert source transforms before rendering or simulation in viewer space.",
+                }
+            ),
             PrefabGraphs: prefabGraphs,
+            BodyHeadAssembly: BuildBodyHeadAssembly(defaultBodyRoot, prefabGraphs),
             RootSelectionProfile: rootSelectionProfile,
             SetupPlan: setupPlan,
             BindingDecisions: bindingDecisions,
@@ -254,6 +439,61 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
             Colliders: colliders,
             ColliderBindings: bindings,
             Warnings: candidate.Warnings
+        );
+    }
+
+    private static PjskUnityRuntimeBodyHeadAssembly BuildBodyHeadAssembly(
+        string defaultBodyRoot,
+        IReadOnlyList<SpringPrefabGraph> prefabGraphs
+    )
+    {
+        var transformPaths = prefabGraphs
+            .SelectMany(graph => graph.Transforms)
+            .Select(transform => transform.TransformPath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Cast<string>()
+            .ToHashSet(StringComparer.Ordinal);
+        var parentAttachPath = ResolveFirstExistingPath(transformPaths, new[]
+        {
+            $"{defaultBodyRoot}/Position/PositionOffset/Hip/Waist/Spine/Chest/Neck",
+            $"{defaultBodyRoot}/Position/Hip/Waist/Spine/Chest/Neck",
+        });
+        var childRootPath = ResolveFirstExistingPath(transformPaths, new[] { "face" });
+        var childOriginPath = ResolveFirstExistingPath(transformPaths, new[]
+        {
+            "face/Position/Hip/Waist/Spine/Chest/Neck",
+        });
+        var runtimeMountPath = parentAttachPath is null || childRootPath is null
+            ? null
+            : $"{parentAttachPath}/__PJSK_RuntimeMount_{childRootPath.Replace('/', '_')}";
+
+        return new PjskUnityRuntimeBodyHeadAssembly(
+            Version: "0414",
+            SourceKind: "unity-source-prefab-assembly",
+            ParentRootPath: ResolveFirstExistingPath(transformPaths, new[] { defaultBodyRoot }),
+            ParentAttachPath: parentAttachPath,
+            ChildRootPath: childRootPath,
+            ChildOriginPath: childOriginPath,
+            RuntimeMountPath: runtimeMountPath,
+            ParentingMode: "parent_child_runtime_mount",
+            CoordinateSpace: "unity-left-handed",
+            Notes: new[]
+            {
+                "Body and head prefab roots are stored as separate Unity prefab graphs.",
+                "The viewer must create the declared runtime mount under parentAttachPath and parent childRootPath below it.",
+                "The child origin is aligned to the parent attach after animation sampling while preserving the child prefab animation chain.",
+            }
+        );
+    }
+
+    private static string? ResolveFirstExistingPath(
+        IReadOnlySet<string> transformPaths,
+        IEnumerable<string> candidates
+    )
+    {
+        return candidates.FirstOrDefault(candidate =>
+            !string.IsNullOrWhiteSpace(candidate) &&
+            transformPaths.Contains(candidate)
         );
     }
 
@@ -527,12 +767,38 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
             ActiveInHierarchy: manager.GameObject?.ActiveInHierarchy,
             Enabled: ReadBool(manager.Raw, "m_Enabled") ?? true,
             AutomaticUpdates: ReadBool(manager.Raw, "automaticUpdates") ?? true,
+            EnableLengthLimits: ReadBool(manager.Raw, "enableLengthLimits") ?? true,
+            EnableAngleLimits: ReadBool(manager.Raw, "enableAngleLimits") ?? true,
+            EnableCollision: ReadBool(manager.Raw, "enableCollision") ?? true,
+            CollideWithGround: ReadBool(manager.Raw, "collideWithGround") ?? true,
+            GroundHeight: ReadFloat(manager.Raw, "groundHeight") ?? 0f,
+            IsSumOfForcesOnBone: ReadBool(manager.Raw, "isSumOfForcesOnBone") ?? true,
+            IsPaused: ReadBool(manager.Raw, "isPaused") ?? false,
+            DynamicRatio: Clamp01(ReadFloat(manager.Raw, "dynamicRatio") ?? 0.5f),
+            SimulationFrameRate: Math.Max(0, ReadInt(manager.Raw, "simulationFrameRate") ?? 60),
+            SlowMotionScale: ReadFloat(manager.Raw, "slowMotionScale") ?? 1f,
+            Bounce: ReadFloat(manager.Raw, "bounce") ?? 0f,
+            Friction: ReadFloat(manager.Raw, "friction") ?? 1f,
+            AnimatedBoneNames: ReadStringList(manager.Raw, "animatedBoneNames"),
+            RawGravity: ReadVector3(manager.Raw, "gravity"),
+            ForceProviders: BuildRuntimeForceProviders(part, manager),
             BonePathIds: bonePathIds
         );
     }
 
     private static PjskSpringBoneRuntimeBone BuildRuntimeBone(string partKind, SpringBoneEntry bone)
     {
+        var springForce = bone.SpringForce ?? new SpringVector3(0f, 0f, 0f);
+        var gravityPower = Magnitude(springForce);
+        var gravityDir = gravityPower > 0.00001f
+            ? new[]
+            {
+                springForce.X / gravityPower,
+                springForce.Y / gravityPower,
+                springForce.Z / gravityPower,
+            }
+            : new[] { 0f, -1f, 0f };
+
         return new PjskSpringBoneRuntimeBone(
             PartKind: partKind,
             PathId: bone.PathId,
@@ -543,6 +809,30 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
             ActiveInHierarchy: bone.GameObject?.ActiveInHierarchy,
             Enabled: ReadBool(bone.Raw, "m_Enabled") ?? true,
             PivotNodePath: bone.PivotNode?.TransformPath,
+            PivotNodeName: bone.PivotNode?.Name,
+            PivotSourcePathId: bone.PivotNode?.PathId,
+            HitRadius: MathF.Max(0f, bone.Radius ?? 0.05f),
+            Stiffness: Clamp((bone.StiffnessForce ?? 300f) / 300f, 0f, 4f),
+            DragForce: Clamp(bone.DragForce ?? 0.4f, 0f, 1f),
+            GravityPower: gravityPower,
+            GravityDir: gravityDir,
+            RawStiffnessForce: bone.StiffnessForce,
+            RawDragForce: bone.DragForce,
+            RawSpringForce: bone.SpringForce,
+            RawWindInfluence: bone.WindInfluence,
+            RawAngularStiffness: ReadFloat(bone.Raw, "angularStiffness"),
+            RawSpringConstant: ReadFloat(bone.Raw, "SpringConstant"),
+            LengthLimitTargets: bone.LengthLimitTargets
+                .Select(target => new VrmSpringBoneLengthLimitTargetCandidate(
+                    NodeName: target.Name,
+                    NodePath: target.TransformPath,
+                    SourcePathId: target.PathId
+                ))
+                .ToList(),
+            RawAngleLimits: new VrmSpringBoneAngleLimitsCandidate(
+                Y: ReadAxisLimit(bone.Raw, "yAngleLimits"),
+                Z: ReadAxisLimit(bone.Raw, "zAngleLimits")
+            ),
             DirectColliderPathIds: ReadObjectPathIds(bone.Raw, "colliders")
                 .Concat(ReadObjectPathIds(bone.Raw, "sphereColliders"))
                 .Concat(ReadObjectPathIds(bone.Raw, "capsuleColliders"))
@@ -551,6 +841,36 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
                 .ToList(),
             ColliderFlag: ReadInt(bone.Raw, "colliderFlag") ?? 0
         );
+    }
+
+    private static IReadOnlyList<VrmSpringBoneForceProviderCandidate> BuildRuntimeForceProviders(
+        SpringBoneExport part,
+        SpringMonoBehaviourEntry manager
+    )
+    {
+        return part.ForceProviders
+            .Where(provider =>
+            {
+                var managerPathId = ReadObjectPathIds(provider.Raw, "springManager")
+                    .Concat(ReadObjectPathIds(provider.Raw, "springManagers"))
+                    .FirstOrDefault();
+                return managerPathId == manager.PathId ||
+                    (managerPathId == 0 && string.Equals(
+                        ExtractPoseRoot(provider.GameObject?.TransformPath),
+                        ExtractPoseRoot(manager.GameObject?.TransformPath),
+                        StringComparison.Ordinal));
+            })
+            .Select(provider => new VrmSpringBoneForceProviderCandidate(
+                SourcePathId: provider.PathId,
+                ScriptName: provider.ScriptName,
+                NodeName: provider.GameObject?.Name,
+                NodePath: provider.GameObject?.TransformPath,
+                ActiveSelf: provider.GameObject?.ActiveSelf,
+                ActiveInHierarchy: provider.GameObject?.ActiveInHierarchy,
+                SpringManagerPathId: manager.PathId,
+                Raw: provider.Raw
+            ))
+            .ToList();
     }
 
     private static bool IsSameOrDescendant(string? path, string? rootPath)
@@ -632,6 +952,93 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
         }
         var longValue = ReadLongValue(value);
         return longValue is null ? null : (int)longValue.Value;
+    }
+
+    private static float? ReadFloat(JsonObject raw, string key)
+    {
+        if (!raw.TryGetPropertyValue(key, out var value) || value is null)
+        {
+            return null;
+        }
+        try
+        {
+            return value.GetValue<float>();
+        }
+        catch
+        {
+            try
+            {
+                return (float)value.GetValue<double>();
+            }
+            catch
+            {
+                return null;
+            }
+        }
+    }
+
+    private static SpringVector3? ReadVector3(JsonObject raw, string key)
+    {
+        if (!raw.TryGetPropertyValue(key, out var value) || value is not JsonObject vector)
+        {
+            return null;
+        }
+        return new SpringVector3(
+            ReadFloat(vector, "x") ?? ReadFloat(vector, "X") ?? 0f,
+            ReadFloat(vector, "y") ?? ReadFloat(vector, "Y") ?? 0f,
+            ReadFloat(vector, "z") ?? ReadFloat(vector, "Z") ?? 0f
+        );
+    }
+
+    private static IReadOnlyList<string> ReadStringList(JsonObject raw, string key)
+    {
+        if (!raw.TryGetPropertyValue(key, out var value) || value is not JsonArray array)
+        {
+            return Array.Empty<string>();
+        }
+        return array
+            .Select(item =>
+            {
+                try
+                {
+                    return item?.GetValue<string>();
+                }
+                catch
+                {
+                    return null;
+                }
+            })
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Cast<string>()
+            .ToList();
+    }
+
+    private static VrmSpringBoneAxisLimitCandidate? ReadAxisLimit(JsonObject raw, string key)
+    {
+        if (!raw.TryGetPropertyValue(key, out var value) || value is not JsonObject axis)
+        {
+            return null;
+        }
+        return new VrmSpringBoneAxisLimitCandidate(
+            Active: ReadBool(axis, "active") ?? ReadBool(axis, "enabled") ?? false,
+            Min: ReadFloat(axis, "min"),
+            Max: ReadFloat(axis, "max")
+        );
+    }
+
+    private static float Magnitude(SpringVector3 vector)
+    {
+        return MathF.Sqrt(vector.X * vector.X + vector.Y * vector.Y + vector.Z * vector.Z);
+    }
+
+    private static float Clamp01(float value)
+    {
+        return Clamp(value, 0f, 1f);
+    }
+
+    private static float Clamp(float value, float min, float max)
+    {
+        return MathF.Min(max, MathF.Max(min, value));
     }
 
     private static long? ReadLong(JsonObject raw, string key)
@@ -780,13 +1187,25 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
 
         var textureName = Path.GetFileName(manifestPath);
         var prefixedName = $"{part}_{textureName}";
+        var textureStem = Path.GetFileNameWithoutExtension(textureName);
+        var prefixedStem = $"{part}_{textureStem}";
         if (characterTexturePathByName.TryGetValue(prefixedName, out var prefixedPath))
         {
             return ToOutputRootTexturePath(prefixedPath);
         }
+        if (!string.IsNullOrWhiteSpace(prefixedStem) &&
+            characterTexturePathByName.TryGetValue(prefixedStem, out var prefixedStemPath))
+        {
+            return ToOutputRootTexturePath(prefixedStemPath);
+        }
         if (characterTexturePathByName.TryGetValue(textureName, out var directPath))
         {
             return ToOutputRootTexturePath(directPath);
+        }
+        if (!string.IsNullOrWhiteSpace(textureStem) &&
+            characterTexturePathByName.TryGetValue(textureStem, out var directStemPath))
+        {
+            return ToOutputRootTexturePath(directStemPath);
         }
 
         return manifestPath;

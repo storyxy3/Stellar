@@ -229,6 +229,114 @@ public sealed class GltfEmitter
         );
     }
 
+    public GlbEmissionResult EmitPrefabRuntimeCharacter(
+        string outputDirectory,
+        string glbFileName,
+        BodyAssetManifest bodyManifest,
+        HeadAssetManifest headManifest,
+        IImported bodyImported,
+        IImported headImported,
+        CombinedSpringBoneExport springBone
+    )
+    {
+        Directory.CreateDirectory(outputDirectory);
+        var bodyTextureDirectory = Path.Combine(outputDirectory, "textures", "body");
+        var headTextureDirectory = Path.Combine(outputDirectory, "textures", "head");
+        Directory.CreateDirectory(bodyTextureDirectory);
+        Directory.CreateDirectory(headTextureDirectory);
+
+        var bodyTextures = ExportTextures(bodyTextureDirectory, bodyImported.TextureList, "body", Path.Combine("textures", "body"));
+        var headTextures = ExportTextures(headTextureDirectory, headImported.TextureList, "head", Path.Combine("textures", "head"));
+        var mergedTextures = new Dictionary<string, string>(bodyTextures, StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in headTextures)
+        {
+            mergedTextures[pair.Key] = pair.Value;
+        }
+
+        var bodyMaterialMap = bodyImported.MaterialList.ToDictionary(
+            material => material.Name,
+            material => CreateBodyMaterial(material, bodyManifest, bodyImported.TextureList),
+            StringComparer.OrdinalIgnoreCase
+        );
+        var headMaterialMap = headImported.MaterialList.ToDictionary(
+            material => material.Name,
+            material => CreateMaterial(material, ResolvePreferredTextureName(
+                    material,
+                    headManifest.FaceMaterials.SelectMany(slot => new[] { slot.MainTex, slot.ShadowTex, slot.FaceShadowTex })),
+                headImported.TextureList),
+            StringComparer.OrdinalIgnoreCase
+        );
+
+        var scene = new SceneBuilder();
+        var bodyNodes = BuildPrefabSceneNodes(scene, springBone.Body.PrefabGraph);
+        var bodyRuntimeRoot = ResolvePrefabRuntimeRoot(
+            springBone.Body.PrefabGraph,
+            preferredRootName: "body",
+            fallbackRootName: bodyManifest.Skeleton.RootNodeName ?? "body"
+        );
+        var headRuntimeRoot = ResolvePrefabRuntimeRoot(
+            springBone.Head.PrefabGraph,
+            preferredRootName: "face",
+            fallbackRootName: headManifest.Assembly.RootNodeName ?? "face"
+        );
+        var bodyRuntimeRoots = new List<string>
+        {
+            bodyRuntimeRoot,
+        };
+        var headRuntimeRoots = new List<string>
+        {
+            headRuntimeRoot,
+        };
+        var headRootTranslationOffsets = BuildPrefabHeadRootTranslationOffsets(
+            bodyNodes,
+            springBone.Head.PrefabGraph,
+            bodyRuntimeRoot,
+            headRuntimeRoots,
+            bodyManifest.Skeleton.NeckAttach.NodeName ?? "Neck",
+            headManifest.Assembly.AttachOrigin.NodeName ?? "Position"
+        );
+        var headNodes = BuildPrefabSceneNodes(
+            scene,
+            springBone.Head.PrefabGraph,
+            rootTranslationOffsets: headRootTranslationOffsets
+        );
+        AppendPrefabRenderers(
+            scene,
+            springBone.Body.PrefabGraph,
+            bodyImported,
+            bodyMaterialMap,
+            BuildMorphMap(bodyImported.MorphList),
+            bodyNodes,
+            bodyRuntimeRoots
+        );
+        AppendPrefabRenderers(
+            scene,
+            springBone.Head.PrefabGraph,
+            headImported,
+            headMaterialMap,
+            BuildMorphMap(headImported.MorphList),
+            headNodes,
+            headRuntimeRoots
+        );
+
+        var model = scene.ToGltf2(new SceneBuilderSchema2Settings
+        {
+            UseStridedBuffers = false,
+            CompactVertexWeights = false,
+        });
+        ApplyMorphTargetNames(model, BuildMorphNameMap(bodyImported.MorphList));
+        ApplyMorphTargetNames(model, BuildMorphNameMap(headImported.MorphList));
+        RebindSkinsWithPrefabBindPoses(model, bodyImported, springBone.Body.PrefabGraph, bodyRuntimeRoots);
+        RebindSkinsWithPrefabBindPoses(model, headImported, springBone.Head.PrefabGraph, headRuntimeRoots);
+
+        var glbPath = Path.Combine(outputDirectory, glbFileName);
+        model.SaveGLB(glbPath, new WriteSettings());
+        return new GlbEmissionResult(
+            RelativeGlbPath: Path.GetFileName(glbPath),
+            TexturePathByName: mergedTextures
+        );
+    }
+
     private GlbEmissionResult EmitCommon(
         string outputDirectory,
         string glbFileName,
@@ -597,6 +705,492 @@ public sealed class GltfEmitter
                 scene.AddRigidMesh(gltfMesh, meshNode);
             }
         }
+    }
+
+    private static PrefabNodeMaps BuildPrefabSceneNodes(
+        SceneBuilder scene,
+        SpringPrefabGraph graph,
+        IReadOnlyDictionary<string, NumVec3>? rootTranslationOffsets = null,
+        IReadOnlyDictionary<string, NodeBuilder>? rootParents = null
+    )
+    {
+        var transformByPathId = graph.Transforms.ToDictionary(transform => transform.PathId);
+        var nodesByPathId = new Dictionary<long, NodeBuilder>();
+        var nodesByPath = new Dictionary<string, NodeBuilder>(StringComparer.OrdinalIgnoreCase);
+
+        NodeBuilder BuildNode(SpringPrefabTransform transform)
+        {
+            if (nodesByPathId.TryGetValue(transform.PathId, out var existing))
+            {
+                return existing;
+            }
+
+            NodeBuilder node;
+            if (transform.ParentPathId is long parentPathId &&
+                transformByPathId.TryGetValue(parentPathId, out var parentTransform))
+            {
+                node = BuildNode(parentTransform).CreateNode(transform.Name ?? $"transform:{transform.PathId}");
+            }
+            else
+            {
+                var rootKey = transform.TransformPath ?? transform.Name;
+                node = !string.IsNullOrWhiteSpace(rootKey) &&
+                    rootParents is not null &&
+                    rootParents.TryGetValue(rootKey!, out var rootParent)
+                        ? rootParent.CreateNode(transform.Name ?? $"transform:{transform.PathId}")
+                        : new NodeBuilder(transform.Name ?? $"transform:{transform.PathId}");
+            }
+
+            var localPosition = ToGltfPrefabTranslation(transform.LocalPosition);
+            if (transform.ParentPathId is long directParentPathId &&
+                transformByPathId.TryGetValue(directParentPathId, out var directParent) &&
+                directParent.ParentPathId is null)
+            {
+                var rootKey = directParent.TransformPath ?? directParent.Name;
+                if (!string.IsNullOrWhiteSpace(rootKey) &&
+                    rootTranslationOffsets is not null &&
+                    rootTranslationOffsets.TryGetValue(rootKey!, out var rootOffset))
+                {
+                    localPosition += rootOffset;
+                }
+            }
+            node.WithLocalTranslation(localPosition);
+            node.WithLocalScale(ToNumerics(transform.LocalScale));
+            node.WithLocalRotation(ToGltfPrefabRotation(transform.LocalRotation));
+            if (transform.ParentPathId is null &&
+                (string.IsNullOrWhiteSpace(transform.TransformPath) ||
+                 rootParents is null ||
+                 !rootParents.ContainsKey(transform.TransformPath!)))
+            {
+                scene.AddNode(node);
+            }
+            nodesByPathId[transform.PathId] = node;
+            if (!string.IsNullOrWhiteSpace(transform.TransformPath))
+            {
+                nodesByPath[transform.TransformPath] = node;
+            }
+            return node;
+        }
+
+        foreach (var transform in graph.Transforms.OrderBy(transform => transform.TransformPath, StringComparer.Ordinal))
+        {
+            BuildNode(transform);
+        }
+
+        return new PrefabNodeMaps(nodesByPathId, nodesByPath);
+    }
+
+    private static IReadOnlyDictionary<string, NodeBuilder> BuildPrefabHeadRootParents(
+        PrefabNodeMaps bodyNodes,
+        string bodyRootName,
+        IReadOnlyList<string> headRootNames,
+        string bodyAttachName
+    )
+    {
+        if (!TryResolvePrefabAttachNode(bodyNodes, bodyRootName, bodyAttachName, out var bodyAttachNode))
+        {
+            Console.Error.WriteLine($"[GltfEmitter W] Prefab head parenting skipped: bodyRoot={bodyRootName}, bodyAttach={bodyAttachName}.");
+            return new Dictionary<string, NodeBuilder>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return headRootNames
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(root => root, _ => bodyAttachNode, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string ResolvePrefabRuntimeRoot(
+        SpringPrefabGraph graph,
+        string preferredRootName,
+        string fallbackRootName
+    )
+    {
+        return graph.Transforms.Any(transform =>
+            transform.ParentPathId is null &&
+            (string.Equals(transform.TransformPath, preferredRootName, StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(transform.Name, preferredRootName, StringComparison.OrdinalIgnoreCase)))
+                ? preferredRootName
+                : fallbackRootName;
+    }
+
+    private static IReadOnlyDictionary<string, NumVec3> BuildPrefabHeadRootTranslationOffsets(
+        PrefabNodeMaps bodyNodes,
+        SpringPrefabGraph headGraph,
+        string bodyRootName,
+        IReadOnlyList<string> headRootNames,
+        string bodyAttachName,
+        string headAttachName
+    )
+    {
+        var headNodes = BuildPrefabSceneNodes(new SceneBuilder(), headGraph);
+        if (!TryResolvePrefabAttachNode(bodyNodes, bodyRootName, bodyAttachName, out var bodyAttachNode))
+        {
+            Console.Error.WriteLine($"[GltfEmitter W] Prefab head attach skipped: bodyRoot={bodyRootName}, bodyAttach={bodyAttachName}.");
+            return new Dictionary<string, NumVec3>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var offsets = new Dictionary<string, NumVec3>(StringComparer.OrdinalIgnoreCase);
+        foreach (var headRootName in headRootNames)
+        {
+            if (!TryResolvePrefabAttachNode(headNodes, headRootName, headAttachName, out var headAttachNode))
+            {
+                Console.Error.WriteLine($"[GltfEmitter W] Prefab head attach skipped for headRoot={headRootName}: headAttach={headAttachName}.");
+                continue;
+            }
+
+            offsets[headRootName] = bodyAttachNode.WorldMatrix.Translation - headAttachNode.WorldMatrix.Translation;
+        }
+
+        return offsets;
+    }
+
+    private static bool TryResolvePrefabAttachNode(
+        PrefabNodeMaps nodes,
+        string rootName,
+        string attachName,
+        out NodeBuilder node
+    )
+    {
+        foreach (var path in BuildPrefabAttachPathCandidates(rootName, attachName))
+        {
+            if (nodes.ByPath.TryGetValue(path, out node!))
+            {
+                return true;
+            }
+        }
+
+        var suffix = "/" + attachName;
+        var match = nodes.ByPath
+            .Where(pair =>
+                string.Equals(FirstPathSegment(pair.Key), rootName, StringComparison.OrdinalIgnoreCase) &&
+                (string.Equals(pair.Value.Name, attachName, StringComparison.OrdinalIgnoreCase) ||
+                 pair.Key.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(pair => PrefabAttachPathScore(pair.Key, attachName))
+            .FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(match.Key))
+        {
+            node = match.Value;
+            return true;
+        }
+
+        node = null!;
+        return false;
+    }
+
+    private static IEnumerable<string> BuildPrefabAttachPathCandidates(
+        string rootName,
+        string attachName
+    )
+    {
+        yield return $"{rootName}/Position/PositionOffset/Hip/Waist/Spine/Chest/{attachName}";
+        yield return $"{rootName}/Position/Hip/Waist/Spine/Chest/{attachName}";
+        yield return $"{rootName}/Position/PositionOffset/Hip/Waist/Spine/Chest/Neck/{attachName}";
+        yield return $"{rootName}/Position/Hip/Waist/Spine/Chest/Neck/{attachName}";
+    }
+
+    private static int PrefabAttachPathScore(string path, string attachName)
+    {
+        var expectedChestPath = $"/Chest/{attachName}";
+        if (path.EndsWith(expectedChestPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return 0;
+        }
+
+        var expectedNeckPath = $"/Neck/{attachName}";
+        if (path.EndsWith(expectedNeckPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return 1;
+        }
+
+        return 10 + path.Count(character => character == '/');
+    }
+
+    private static void AppendPrefabRenderers(
+        SceneBuilder scene,
+        SpringPrefabGraph graph,
+        IImported imported,
+        IReadOnlyDictionary<string, MaterialBuilder> materialMap,
+        IReadOnlyDictionary<string, ImportedMorph> morphMap,
+        PrefabNodeMaps nodes,
+        IReadOnlyList<string> activePoseRoots
+    )
+    {
+        var meshByPath = imported.MeshList
+            .Where(mesh => !string.IsNullOrWhiteSpace(mesh.Path))
+            .GroupBy(mesh => mesh.Path, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var meshByName = imported.MeshList
+            .GroupBy(mesh => Path.GetFileName(mesh.Path), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
+        var activeRenderers = graph.Renderers
+            .Where(renderer => renderer.Enabled && IsActivePrefabRuntimeRenderer(renderer, activePoseRoots))
+            .ToList();
+
+        foreach (var importedMesh in imported.MeshList)
+        {
+            if (!TrySelectPrefabRendererForImportedMesh(
+                    importedMesh,
+                    activeRenderers,
+                    meshByPath,
+                    meshByName,
+                    activePoseRoots,
+                    out var renderer))
+            {
+                Console.Error.WriteLine($"[GltfEmitter W] Prefab mesh '{importedMesh.Path}' skipped: no active renderer with compatible skin bindings was found.");
+                continue;
+            }
+
+            if (renderer.TransformPathId is not long transformPathId ||
+                !nodes.ByPathId.TryGetValue(transformPathId, out var meshNode))
+            {
+                Console.Error.WriteLine($"[GltfEmitter W] Prefab renderer {renderer.PathId} skipped: transform PathID {renderer.TransformPathId?.ToString() ?? "<null>"} was not found.");
+                continue;
+            }
+
+            if (importedMesh.BoneList is { Count: > 0 })
+            {
+                if (renderer.SkinnedMeshBones.Count != importedMesh.BoneList.Count)
+                {
+                    Console.Error.WriteLine($"[GltfEmitter W] Prefab renderer {renderer.PathId} skipped: skin joint count mismatch renderer={renderer.SkinnedMeshBones.Count}, imported={importedMesh.BoneList.Count}.");
+                    continue;
+                }
+
+                var joints = renderer.SkinnedMeshBones
+                    .Select(pathId => nodes.ByPathId.TryGetValue(pathId, out var joint) ? joint : null)
+                    .ToArray();
+                if (joints.Any(joint => joint is null))
+                {
+                    Console.Error.WriteLine($"[GltfEmitter W] Prefab renderer {renderer.PathId} skipped: one or more skin joint PathIDs were not found.");
+                    continue;
+                }
+
+                var gltfMesh = BuildSkinnedMesh(importedMesh, materialMap, morphMap);
+                scene.AddSkinnedMesh(gltfMesh, meshNode.WorldMatrix, joints.Cast<NodeBuilder>().ToArray());
+            }
+            else
+            {
+                var gltfMesh = BuildRigidMesh(importedMesh, materialMap, morphMap);
+                scene.AddRigidMesh(gltfMesh, meshNode);
+            }
+        }
+    }
+
+    private static bool IsActivePrefabRuntimeRenderer(
+        SpringPrefabRenderer renderer,
+        IReadOnlyCollection<string> activePoseRoots
+    )
+    {
+        var poseRoot = renderer.PoseRoot ?? FirstPathSegment(renderer.TransformPath);
+        return !string.IsNullOrWhiteSpace(poseRoot) && activePoseRoots.Contains(poseRoot, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IReadOnlyList<string> ResolvePrefabRuntimeRendererRoots(
+        SpringPrefabGraph graph,
+        IImported imported,
+        string primaryRoot
+    )
+    {
+        var roots = new List<string> { primaryRoot };
+        var meshByPath = imported.MeshList
+            .Where(mesh => !string.IsNullOrWhiteSpace(mesh.Path))
+            .GroupBy(mesh => mesh.Path, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var meshByName = imported.MeshList
+            .GroupBy(mesh => Path.GetFileName(mesh.Path), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var renderer in graph.Renderers.Where(renderer => renderer.Enabled))
+        {
+            var poseRoot = renderer.PoseRoot ?? FirstPathSegment(renderer.TransformPath);
+            if (string.IsNullOrWhiteSpace(poseRoot) ||
+                roots.Contains(poseRoot, StringComparer.OrdinalIgnoreCase) ||
+                !IsRendererCompatibleWithImportedMesh(renderer, meshByPath, meshByName))
+            {
+                continue;
+            }
+
+            roots.Add(poseRoot);
+        }
+
+        return roots;
+    }
+
+    private static bool TrySelectPrefabRendererForImportedMesh(
+        ImportedMesh importedMesh,
+        IReadOnlyList<SpringPrefabRenderer> renderers,
+        IReadOnlyDictionary<string, ImportedMesh> meshByPath,
+        IReadOnlyDictionary<string, ImportedMesh> meshByName,
+        IReadOnlyList<string> activePoseRoots,
+        out SpringPrefabRenderer renderer
+    )
+    {
+        var candidates = renderers
+            .Select(candidate => new
+            {
+                Renderer = candidate,
+                Mesh = ResolvePrefabImportedMesh(candidate, meshByPath, meshByName),
+            })
+            .Where(candidate => ReferenceEquals(candidate.Mesh, importedMesh))
+            .Where(candidate => IsRendererCompatibleWithImportedMesh(candidate.Renderer, importedMesh))
+            .OrderBy(candidate => PoseRootPriority(candidate.Renderer.PoseRoot ?? FirstPathSegment(candidate.Renderer.TransformPath), activePoseRoots))
+            .ThenBy(candidate => PrefabRendererMeshMatchScore(candidate.Renderer, importedMesh))
+            .ThenBy(candidate => candidate.Renderer.PathId)
+            .ToList();
+
+        if (candidates.Count > 0)
+        {
+            renderer = candidates[0].Renderer;
+            return true;
+        }
+
+        renderer = null!;
+        return false;
+    }
+
+    private static bool IsRendererCompatibleWithImportedMesh(
+        SpringPrefabRenderer renderer,
+        IReadOnlyDictionary<string, ImportedMesh> meshByPath,
+        IReadOnlyDictionary<string, ImportedMesh> meshByName
+    )
+    {
+        var importedMesh = ResolvePrefabImportedMesh(renderer, meshByPath, meshByName);
+        return importedMesh is not null && IsRendererCompatibleWithImportedMesh(renderer, importedMesh);
+    }
+
+    private static bool IsRendererCompatibleWithImportedMesh(
+        SpringPrefabRenderer renderer,
+        ImportedMesh importedMesh
+    )
+    {
+        return importedMesh.BoneList is { Count: > 0 }
+            ? renderer.SkinnedMeshBones.Count == importedMesh.BoneList.Count
+            : renderer.SkinnedMeshBones.Count == 0;
+    }
+
+    private static int PoseRootPriority(
+        string? poseRoot,
+        IReadOnlyList<string> activePoseRoots
+    )
+    {
+        if (string.IsNullOrWhiteSpace(poseRoot))
+        {
+            return int.MaxValue;
+        }
+
+        for (var index = 0; index < activePoseRoots.Count; index += 1)
+        {
+            if (string.Equals(poseRoot, activePoseRoots[index], StringComparison.OrdinalIgnoreCase))
+            {
+                return index;
+            }
+        }
+
+        return int.MaxValue - 1;
+    }
+
+    private static int PrefabRendererMeshMatchScore(
+        SpringPrefabRenderer renderer,
+        ImportedMesh importedMesh
+    )
+    {
+        var candidates = BuildPrefabMeshLookupKeys(renderer).ToList();
+        if (candidates.Any(candidate => string.Equals(candidate, importedMesh.Path, StringComparison.OrdinalIgnoreCase)))
+        {
+            return 0;
+        }
+
+        var dropped = DropFirstPathSegment(importedMesh.Path);
+        if (!string.IsNullOrWhiteSpace(dropped) &&
+            candidates.Any(candidate => string.Equals(candidate, dropped, StringComparison.OrdinalIgnoreCase)))
+        {
+            return 1;
+        }
+
+        var last = LastPathSegment(importedMesh.Path);
+        if (!string.IsNullOrWhiteSpace(last) &&
+            candidates.Any(candidate => string.Equals(candidate, last, StringComparison.OrdinalIgnoreCase)))
+        {
+            return 2;
+        }
+
+        return 10;
+    }
+
+    private static ImportedMesh? ResolvePrefabImportedMesh(
+        SpringPrefabRenderer renderer,
+        IReadOnlyDictionary<string, ImportedMesh> meshByPath,
+        IReadOnlyDictionary<string, ImportedMesh> meshByName
+    )
+    {
+        foreach (var key in BuildPrefabMeshLookupKeys(renderer))
+        {
+            if (meshByPath.TryGetValue(key, out var byPath))
+            {
+                return byPath;
+            }
+
+            if (meshByName.TryGetValue(key, out var byName))
+            {
+                return byName;
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> BuildPrefabMeshLookupKeys(SpringPrefabRenderer renderer)
+    {
+        foreach (var key in new[]
+        {
+            renderer.TransformPath,
+            DropFirstPathSegment(renderer.TransformPath),
+            LastPathSegment(renderer.TransformPath),
+            renderer.MeshName,
+            renderer.Name,
+        })
+        {
+            if (!string.IsNullOrWhiteSpace(key))
+            {
+                yield return key;
+            }
+        }
+    }
+
+    private static string? DropFirstPathSegment(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        var index = path.IndexOf('/');
+        return index < 0 || index + 1 >= path.Length
+            ? path
+            : path[(index + 1)..];
+    }
+
+    private static string? FirstPathSegment(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        var index = path.IndexOf('/');
+        return index < 0 ? path : path[..index];
+    }
+
+    private static string? LastPathSegment(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        var index = path.LastIndexOf('/');
+        return index < 0 || index + 1 >= path.Length
+            ? path
+            : path[(index + 1)..];
     }
 
     private static void AppendAccessoryModel(
@@ -1501,6 +2095,26 @@ public sealed class GltfEmitter
         return new NumVec3(value.X, value.Y, value.Z);
     }
 
+    private static NumVec3 ToNumerics(SpringVector3 value)
+    {
+        return new NumVec3(value.X, value.Y, value.Z);
+    }
+
+    private static NumVec3 ToGltfPrefabTranslation(SpringVector3 value)
+    {
+        return new NumVec3(-value.X, value.Y, value.Z);
+    }
+
+    private static NumQuat ToNumerics(SpringQuaternion value)
+    {
+        return new NumQuat(value.X, value.Y, value.Z, value.W);
+    }
+
+    private static NumQuat ToGltfPrefabRotation(SpringQuaternion value)
+    {
+        return new NumQuat(value.X, -value.Y, -value.Z, value.W);
+    }
+
     private static NumMat4 ToNumerics(AssetStudio.Matrix4x4 value)
     {
         return new NumMat4(
@@ -1528,6 +2142,138 @@ public sealed class GltfEmitter
             logicalPathByImportedPath: null,
             skeletonRootPathOverride: null
         );
+    }
+
+    private static void RebindSkinsWithPrefabBindPoses(
+        ModelRoot model,
+        IImported imported,
+        SpringPrefabGraph graph,
+        IReadOnlyList<string> activePoseRoots
+    )
+    {
+        if (imported.MeshList.Count == 0 || model.LogicalSkins.Count == 0)
+        {
+            return;
+        }
+
+        var scene = model.DefaultScene ?? model.LogicalScenes.FirstOrDefault();
+        if (scene is null)
+        {
+            return;
+        }
+
+        var nodePathMap = new Dictionary<string, SharpGLTF.Schema2.Node>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rootNode in scene.VisualChildren)
+        {
+            CollectLogicalNodePaths(rootNode, null, nodePathMap);
+        }
+
+        var pathByPathId = graph.Transforms
+            .Where(transform => !string.IsNullOrWhiteSpace(transform.TransformPath))
+            .ToDictionary(transform => transform.PathId, transform => transform.TransformPath!);
+        var meshByPath = imported.MeshList
+            .Where(mesh => !string.IsNullOrWhiteSpace(mesh.Path))
+            .GroupBy(mesh => mesh.Path, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var meshByName = imported.MeshList
+            .GroupBy(mesh => Path.GetFileName(mesh.Path), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var activeRenderers = graph.Renderers
+            .Where(renderer => renderer.Enabled && IsActivePrefabRuntimeRenderer(renderer, activePoseRoots))
+            .ToList();
+        var importedMeshes = BuildImportedMeshLookupMap(
+            imported.MeshList.Where(mesh => mesh.BoneList is { Count: > 0 })
+        );
+
+        foreach (var logicalMesh in model.LogicalMeshes)
+        {
+            if (string.IsNullOrWhiteSpace(logicalMesh.Name) ||
+                !importedMeshes.TryGetValue(logicalMesh.Name, out var importedMesh) ||
+                !TrySelectPrefabRendererForImportedMesh(
+                    importedMesh,
+                    activeRenderers,
+                    meshByPath,
+                    meshByName,
+                    activePoseRoots,
+                    out var renderer) ||
+                renderer.SkinnedMeshBones.Count != importedMesh.BoneList.Count)
+            {
+                continue;
+            }
+
+            foreach (var meshNode in SharpGLTF.Schema2.Node.FindNodesUsingMesh(logicalMesh))
+            {
+                if (meshNode.Skin is null)
+                {
+                    continue;
+                }
+
+                var joints = new List<SharpGLTF.Schema2.Node>(importedMesh.BoneList.Count);
+                var missingBone = false;
+                for (var index = 0; index < importedMesh.BoneList.Count; index += 1)
+                {
+                    var jointPathId = renderer.SkinnedMeshBones[index];
+                    if (!pathByPathId.TryGetValue(jointPathId, out var logicalPath))
+                    {
+                        missingBone = true;
+                        break;
+                    }
+
+                    if (!TryResolveLogicalNodeByImportedPath(nodePathMap, logicalPath, out var jointNode))
+                    {
+                        missingBone = true;
+                        break;
+                    }
+
+                    joints.Add(jointNode);
+                }
+
+                if (missingBone || joints.Count == 0)
+                {
+                    continue;
+                }
+
+                meshNode.Skin.BindJoints(meshNode.WorldMatrix, joints.ToArray());
+                if (renderer.RootBonePathId is long rootBonePathId &&
+                    pathByPathId.TryGetValue(rootBonePathId, out var rootBonePath))
+                {
+                    if (TryResolveLogicalNodeByImportedPath(nodePathMap, rootBonePath, out var skeletonRoot))
+                    {
+                        meshNode.Skin.Skeleton = skeletonRoot;
+                    }
+                }
+                else if (!string.IsNullOrWhiteSpace(renderer.PoseRoot) &&
+                    TryResolveLogicalNodeByImportedPath(nodePathMap, renderer.PoseRoot, out var poseRoot))
+                {
+                    meshNode.Skin.Skeleton = poseRoot;
+                }
+            }
+        }
+    }
+
+    private static IReadOnlyDictionary<string, ImportedMesh> BuildImportedMeshLookupMap(
+        IEnumerable<ImportedMesh> meshes
+    )
+    {
+        var result = new Dictionary<string, ImportedMesh>(StringComparer.OrdinalIgnoreCase);
+        foreach (var mesh in meshes)
+        {
+            foreach (var key in new[]
+            {
+                mesh.Path,
+                DropFirstPathSegment(mesh.Path),
+                LastPathSegment(mesh.Path),
+                Path.GetFileName(mesh.Path),
+            })
+            {
+                if (!string.IsNullOrWhiteSpace(key))
+                {
+                    result.TryAdd(key!, mesh);
+                }
+            }
+        }
+
+        return result;
     }
 
     private static void RebindSkinsWithImportedBindPoses(
@@ -1621,6 +2367,11 @@ public sealed class GltfEmitter
         if (!string.IsNullOrWhiteSpace(currentPath))
         {
             nodePathMap[currentPath] = node;
+            var canonicalPath = BuildCanonicalGltfNodePath(currentPath);
+            if (!string.Equals(canonicalPath, currentPath, StringComparison.Ordinal))
+            {
+                nodePathMap[canonicalPath] = node;
+            }
         }
 
         foreach (var child in node.VisualChildren)
@@ -1652,4 +2403,36 @@ public sealed class GltfEmitter
         node = null!;
         return false;
     }
+
+    private static string BuildCanonicalGltfNodePath(string path)
+    {
+        return string.Join(
+            '/',
+            path.Split('/').Select(StripGltfDuplicateSuffix)
+        );
+    }
+
+    private static string StripGltfDuplicateSuffix(string name)
+    {
+        var separator = name.LastIndexOf('_');
+        if (separator <= 0 || separator == name.Length - 1)
+        {
+            return name;
+        }
+
+        for (var index = separator + 1; index < name.Length; index += 1)
+        {
+            if (!char.IsDigit(name[index]))
+            {
+                return name;
+            }
+        }
+
+        return name[..separator];
+    }
+
+    private sealed record PrefabNodeMaps(
+        IReadOnlyDictionary<long, NodeBuilder> ByPathId,
+        IReadOnlyDictionary<string, NodeBuilder> ByPath
+    );
 }

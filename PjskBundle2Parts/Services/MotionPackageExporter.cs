@@ -62,7 +62,7 @@ public sealed class MotionPackageExporter
     {
         if (string.IsNullOrWhiteSpace(motionPath))
         {
-            return new MotionExportResult(null, null, null, null);
+            return new MotionExportResult(null, null, null, null, null);
         }
 
         var normalized = Path.GetFullPath(Environment.ExpandEnvironmentVariables(motionPath));
@@ -91,19 +91,15 @@ public sealed class MotionPackageExporter
         string outputDirectory
     )
     {
-        var motionGlb = FindFile(motionFolder, "motion.glb");
-        var loopGlb = FindFile(motionFolder, "motion_loop.glb");
+        var unityMotionJson = FindFile(motionFolder, "unity-motion.json");
         var faceJson = FindFile(motionFolder, "face_motion.json");
         var lightJson = FindFile(motionFolder, "light_motion.json");
-        var bodyMotionOutput = default(string);
+        var unityMotionOutput = default(string);
 
-        if (motionGlb is not null || loopGlb is not null)
+        if (unityMotionJson is not null)
         {
-            bodyMotionOutput = Path.Combine(outputDirectory, "body_motion.glb");
-            MergeBodyMotionGlbs(
-                new[] { motionGlb, loopGlb }.Where(path => path is not null).Cast<string>(),
-                bodyMotionOutput
-            );
+            unityMotionOutput = Path.Combine(outputDirectory, "unity-motion.json");
+            File.Copy(unityMotionJson, unityMotionOutput, overwrite: true);
         }
 
         var faceMotion = faceJson is null
@@ -121,7 +117,8 @@ public sealed class MotionPackageExporter
 
         return new MotionExportResult(
             SourcePath: motionFolder,
-            BodyMotionGlbPath: bodyMotionOutput,
+            UnityMotionJsonPath: unityMotionOutput,
+            BodyMotionBindings: null,
             FaceMotion: faceMotion,
             LightMotion: lightMotion
         );
@@ -173,11 +170,16 @@ public sealed class MotionPackageExporter
         var bodyClips = decodedClips
             .Where(clip => clip.Name is "motion" or "motion_loop")
             .ToList();
-        var bodyMotionOutput = default(string);
+        var unityMotionOutput = default(string);
+        var bodyMotionBindings = default(PjskBodyMotionBindingSet);
         if (bodyClips.Count > 0)
         {
-            bodyMotionOutput = Path.Combine(outputDirectory, "body_motion.glb");
-            WriteBakedBodyMotionGlb(bodyClips, bodyModel.RootFrame, bodyMotionOutput);
+            unityMotionOutput = Path.Combine(outputDirectory, "unity-motion.json");
+            bodyMotionBindings = WriteUnityBodyMotionRuntime(
+                bodyClips,
+                bodyModel.RootFrame,
+                unityMotionOutput
+            );
         }
 
         var faceClips = decodedClips
@@ -199,7 +201,8 @@ public sealed class MotionPackageExporter
 
         return new MotionExportResult(
             SourcePath: bundlePath,
-            BodyMotionGlbPath: bodyMotionOutput,
+            UnityMotionJsonPath: unityMotionOutput,
+            BodyMotionBindings: bodyMotionBindings,
             FaceMotion: faceMotion,
             LightMotion: lightMotion
         );
@@ -404,15 +407,15 @@ public sealed class MotionPackageExporter
         }
     }
 
-    private static void WriteBakedBodyMotionGlb(
+    private static PjskBodyMotionBindingSet WriteUnityBodyMotionRuntime(
         IReadOnlyList<DecodedUnityClip> clips,
         ImportedFrame rootFrame,
-        string outputGlbPath
+        string outputUnityJsonPath
     )
     {
-        var crcToNodeName = BuildCrcToLeafNodeName(rootFrame);
+        var crcToBinding = BuildCrcToBodyMotionBinding(rootFrame);
         var bakedClips = clips
-            .Select(clip => BakeBodyClip(clip, crcToNodeName))
+            .Select(clip => BakeBodyClip(clip, crcToBinding))
             .Where(clip => clip.Tracks.Count > 0)
             .ToList();
 
@@ -421,19 +424,95 @@ public sealed class MotionPackageExporter
             throw new InvalidDataException("Motion bundle did not produce any bindable body animation tracks.");
         }
 
-        WriteAnimationGlb(bakedClips, outputGlbPath);
+        WriteUnityMotionRuntimeJson(bakedClips, outputUnityJsonPath);
+        var usedPathCrcs = bakedClips
+            .SelectMany(clip => clip.Tracks)
+            .Select(track => track.PathCrc)
+            .Distinct()
+            .ToHashSet();
+        var bindings = crcToBinding.Values
+            .Where(binding => usedPathCrcs.Contains(binding.PathCrc))
+            .OrderBy(binding => binding.ImportedPath ?? binding.LeafName, StringComparer.Ordinal)
+            .Select(binding => new PjskBodyMotionBinding(
+                PathCrc: binding.PathCrc,
+                NodeKey: binding.NodeKey,
+                LeafName: binding.LeafName,
+                ImportedPath: binding.ImportedPath,
+                SourceRest: binding.SourceRest,
+                TargetCount: 0,
+                Targets: Array.Empty<PjskBodyMotionTarget>()
+            ))
+            .ToList();
+        return new PjskBodyMotionBindingSet(
+            Version: "0414",
+            BindingMode: "unityPathCrcToPrefabActiveTargets",
+            ClipNames: bakedClips.Select(clip => clip.Name).ToList(),
+            Bindings: bindings,
+            Warnings: Array.Empty<string>()
+        );
     }
 
-    private static Dictionary<uint, string> BuildCrcToLeafNodeName(ImportedFrame rootFrame)
+    private static void WriteUnityMotionRuntimeJson(
+        IReadOnlyList<BakedAnimationClip> clips,
+        string outputPath
+    )
     {
-        var result = new Dictionary<uint, string>();
+        var runtime = new PjskUnityMotionRuntime(
+            Version: "0414",
+            UnityVersion: SekaiUnityVersion,
+            CoordinateSpace: new PjskUnityRuntimeCoordinateSpace(
+                Source: "unity-left-handed",
+                Viewer: "three-js-right-handed",
+                PositionConversion: "viewer_mirror_x",
+                RotationConversion: "viewer_negate_quaternion_yz",
+                ScaleConversion: "identity",
+                Notes: new[]
+                {
+                    "Animation curve values are stored in Unity source space.",
+                    "The viewer must convert transform animation values when applying them to Three.js nodes."
+                }
+            ),
+            SampleRate: BakeSampleRate,
+            Clips: clips
+                .Select(clip => new PjskUnityMotionClip(
+                    Name: clip.Name,
+                    Tracks: clip.Tracks
+                        .Select(track => new PjskUnityMotionTrack(
+                            NodeKey: track.NodeName,
+                            PathCrc: track.PathCrc,
+                            Property: track.TargetPath,
+                            ComponentCount: track.ComponentCount,
+                            Times: track.Times,
+                            Values: track.Values
+                        ))
+                        .ToList()
+                ))
+                .ToList()
+        );
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+        File.WriteAllText(
+            outputPath,
+            JsonSerializer.Serialize(runtime, new JsonSerializerOptions { WriteIndented = true })
+        );
+    }
+
+    private static Dictionary<uint, BodyMotionBindingDraft> BuildCrcToBodyMotionBinding(ImportedFrame rootFrame)
+    {
+        var result = new Dictionary<uint, BodyMotionBindingDraft>();
 
         void Visit(ImportedFrame frame)
         {
             var path = frame.Path;
             while (!string.IsNullOrEmpty(path))
             {
-                result[CalculateCrc32(path)] = frame.Name;
+                var pathCrc = CalculateCrc32(path);
+                result[pathCrc] = new BodyMotionBindingDraft(
+                    PathCrc: pathCrc,
+                    NodeKey: BuildBodyMotionNodeKey(pathCrc),
+                    LeafName: frame.Name,
+                    ImportedPath: path,
+                    SourceRest: BuildBodyMotionRest(frame)
+                );
                 var slash = path.IndexOf('/', StringComparison.Ordinal);
                 if (slash < 0)
                 {
@@ -449,13 +528,29 @@ public sealed class MotionPackageExporter
         }
 
         Visit(rootFrame);
-        result[0] = rootFrame.Name;
+        result[0] = new BodyMotionBindingDraft(
+            PathCrc: 0,
+            NodeKey: BuildBodyMotionNodeKey(0),
+            LeafName: rootFrame.Name,
+            ImportedPath: rootFrame.Path,
+            SourceRest: BuildBodyMotionRest(rootFrame)
+        );
         return result;
+    }
+
+    private static PjskBodyMotionRestTransform BuildBodyMotionRest(ImportedFrame frame)
+    {
+        var rotation = Fbx.EulerToQuaternion(frame.LocalRotation);
+        return new PjskBodyMotionRestTransform(
+            Position: new PjskMotionVector3(frame.LocalPosition.X, frame.LocalPosition.Y, frame.LocalPosition.Z),
+            Rotation: new PjskMotionQuaternion(rotation.X, rotation.Y, rotation.Z, rotation.W),
+            Scale: new PjskMotionVector3(frame.LocalScale.X, frame.LocalScale.Y, frame.LocalScale.Z)
+        );
     }
 
     private static BakedAnimationClip BakeBodyClip(
         DecodedUnityClip source,
-        IReadOnlyDictionary<uint, string> crcToNodeName
+        IReadOnlyDictionary<uint, BodyMotionBindingDraft> crcToBinding
     )
     {
         var fullTimes = BuildBakeTimes(source.Duration);
@@ -468,7 +563,7 @@ public sealed class MotionPackageExporter
             {
                 continue;
             }
-            if (!crcToNodeName.TryGetValue(curve.Binding.Path, out var nodeName))
+            if (!crcToBinding.TryGetValue(curve.Binding.Path, out var binding))
             {
                 Console.Error.WriteLine($"[Motion] {source.Name}: unbound transform CRC {curve.Binding.Path}");
                 continue;
@@ -486,7 +581,7 @@ public sealed class MotionPackageExporter
                 continue;
             }
 
-            var targetKey = $"{nodeName}.{targetPath}";
+            var targetKey = $"{binding.NodeKey}.{targetPath}";
             if (!usedTargets.Add(targetKey))
             {
                 Console.Error.WriteLine($"[Motion] {source.Name}: duplicate track target {targetKey}, keeping first track.");
@@ -497,7 +592,7 @@ public sealed class MotionPackageExporter
             var values = new List<float>(fullTimes.Count * componentCount);
             foreach (var time in fullTimes)
             {
-                values.AddRange(ConvertBodyCurveValue(curve.Binding.Attribute, SampleCurve(curve, time)));
+                values.AddRange(ConvertUnityPrefabCurveValue(curve.Binding.Attribute, SampleCurve(curve, time)));
             }
 
             var trackTimes = fullTimes;
@@ -508,7 +603,8 @@ public sealed class MotionPackageExporter
             }
 
             tracks.Add(new BakedAnimationTrack(
-                NodeName: nodeName,
+                NodeName: binding.NodeKey,
+                PathCrc: binding.PathCrc,
                 TargetPath: targetPath,
                 ComponentCount: componentCount,
                 Times: trackTimes,
@@ -517,6 +613,11 @@ public sealed class MotionPackageExporter
         }
 
         return new BakedAnimationClip(source.Name, tracks);
+    }
+
+    private static string BuildBodyMotionNodeKey(uint pathCrc)
+    {
+        return $"ucrc_{pathCrc}";
     }
 
     private static PjskFaceMotionClip BuildFaceMotionClip(DecodedUnityClip source)
@@ -832,6 +933,18 @@ public sealed class MotionPackageExporter
         };
     }
 
+    private static float[] ConvertUnityPrefabCurveValue(uint attribute, float[] values)
+    {
+        return attribute switch
+        {
+            1 => new[] { -values[0], values[1], values[2] },
+            2 => NormalizeQuaternion(new[] { values[0], -values[1], -values[2], values[3] }),
+            3 => new[] { values[0], values[1], values[2] },
+            4 => ConvertUnityEulerDegreesToExportQuaternion(values[0], values[1], values[2]),
+            _ => values,
+        };
+    }
+
     private static float[] NormalizeQuaternion(float[] q)
     {
         var length = MathF.Sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
@@ -846,6 +959,12 @@ public sealed class MotionPackageExporter
     {
         var quaternion = Fbx.EulerToQuaternion(new AssetStudio.Vector3(xDegrees, yDegrees, zDegrees));
         return NormalizeQuaternion(new[] { quaternion.X, -quaternion.Y, -quaternion.Z, quaternion.W });
+    }
+
+    private static float[] ConvertUnityEulerDegreesToPrefabQuaternion(float xDegrees, float yDegrees, float zDegrees)
+    {
+        var quaternion = Fbx.EulerToQuaternion(new AssetStudio.Vector3(xDegrees, yDegrees, zDegrees));
+        return NormalizeQuaternion(new[] { quaternion.X, quaternion.Y, quaternion.Z, quaternion.W });
     }
 
     private static bool CanCollapseTrack(IReadOnlyList<float> values, int componentCount)
@@ -1089,10 +1208,19 @@ public sealed class MotionPackageExporter
 
     private sealed record BakedAnimationTrack(
         string NodeName,
+        uint PathCrc,
         string TargetPath,
         int ComponentCount,
         IReadOnlyList<float> Times,
         IReadOnlyList<float> Values
+    );
+
+    private sealed record BodyMotionBindingDraft(
+        uint PathCrc,
+        string NodeKey,
+        string LeafName,
+        string? ImportedPath,
+        PjskBodyMotionRestTransform SourceRest
     );
 
     private static string? FindFile(string folder, string fileName)

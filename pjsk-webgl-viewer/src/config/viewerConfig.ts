@@ -9,6 +9,7 @@ export type ToonShadowSmoothMode =
   | "w012";
 export type ValueShadowInfluenceMode = "0" | "0.25" | "0.5" | "1";
 export type CharacterYawMode = "0" | "45" | "-45" | "90" | "-90" | "180";
+export type SpringRuntimeMode = "off" | "webgl-utj" | "unity-prefab";
 
 export type ViewerRenderState = {
   materialBindingMode: MaterialBindingMode;
@@ -17,7 +18,7 @@ export type ViewerRenderState = {
   characterYawMode: CharacterYawMode;
   faceMotionEnabled: boolean;
   bodyHeadTracksEnabled: boolean;
-  utjSpringBoneEnabled: boolean;
+  springRuntimeMode: SpringRuntimeMode;
 };
 
 export type ViewerAnimationState = {
@@ -60,7 +61,7 @@ export const defaultRenderState: ViewerRenderState = {
   characterYawMode: "0",
   faceMotionEnabled: true,
   bodyHeadTracksEnabled: true,
-  utjSpringBoneEnabled: false,
+  springRuntimeMode: "off",
 };
 
 export const defaultAnimationState: ViewerAnimationState = {
