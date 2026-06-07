@@ -44,9 +44,10 @@ Useful capture options:
 - `--warmup-mode animation` advances animation and runtime.
 - `--warmup-mode runtime` freezes animation and only settles runtime systems.
 - `--yaw <0|45|-45|90|-90|180>` sets character yaw.
-- `--utj-springbone` explicitly enables the experimental UTJ SpringBone runtime.
+- `--spring-runtime-mode unity-prefab` enables the Unity Prefab SpringBone runtime.
+- `--utj-springbone` is kept only as a compatibility alias for `unity-prefab`.
 
-UTJ SpringBone is off by default in both browser and capture mode. The metadata is still loaded and shown, but the runtime is disabled until the physics implementation is trustworthy again.
+SpringBone is off by default in both browser and capture mode. The metadata is still loaded and shown; use the Unity Prefab runtime for current debugging.
 
 ## Runtime Behavior
 
@@ -80,7 +81,7 @@ This file owns UI/runtime defaults such as:
 - character yaw presets
 - default render state
 - default animation state
-- default UTJ SpringBone enabled state
+- default SpringBone runtime state
 
 Lighting and sample catalog data still live in `src/data/sampleScene.ts` because they are part of the runtime package boundary and fallback sample data.
 

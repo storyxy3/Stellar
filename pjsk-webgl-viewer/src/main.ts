@@ -231,7 +231,6 @@ root.innerHTML = `
           <span>Spring Runtime</span>
           <select id="spring-runtime-mode">
             <option value="off">Off</option>
-            <option value="webgl-utj">WebGL UTJ</option>
             <option value="unity-prefab">Unity Prefab</option>
           </select>
         </label>
@@ -1716,11 +1715,21 @@ function renderSpringBoneStatus(loading = false) {
     return;
   }
 
-  const utj = snapshot.utjRuntime
-    ? ` | UTJ Runtime yes S${snapshot.utjRuntime.springCount}/B${snapshot.utjRuntime.boneCount}/C${snapshot.utjRuntime.colliderCount}/M${snapshot.utjRuntime.missingNodeCount}/Sleeve${snapshot.utjRuntime.maxSleeveOffset.toFixed(3)}/Skirt${snapshot.utjRuntime.maxSkirtOffset.toFixed(3)}/Skin${snapshot.utjRuntime.skinnedBoneMatches}:${snapshot.utjRuntime.skinnedBoneMisses}${formatUtjSpringBoneBindingSummary(snapshot.utjRuntime)}`
-    : " | UTJ Runtime no";
+  const runtime = snapshot.utjRuntime
+    ? ` | Runtime ${snapshot.utjRuntime.runtimeMode ?? "unity-prefab"} S${snapshot.utjRuntime.springCount}/B${snapshot.utjRuntime.boneCount}/C${snapshot.utjRuntime.colliderCount}/M${snapshot.utjRuntime.missingNodeCount}/Sleeve${snapshot.utjRuntime.maxSleeveOffset.toFixed(3)}/Skirt${snapshot.utjRuntime.maxSkirtOffset.toFixed(3)}/Skin${snapshot.utjRuntime.skinnedBoneMatches}:${snapshot.utjRuntime.skinnedBoneMisses}${formatSpringRuntimeSetupSummary(snapshot.utjRuntime)}${formatUtjSpringBoneBindingSummary(snapshot.utjRuntime)}`
+    : " | Runtime no";
   status.textContent =
-    `SpringBone metadata | Body Managers ${snapshot.bodyManagerCount}, Bones ${snapshot.bodySpringBoneCount}, ExtraBone ${snapshot.bodyExtraBoneCount}, Colliders S${snapshot.bodySphereColliderCount}/C${snapshot.bodyCapsuleColliderCount}/P${snapshot.bodyPanelColliderCount} | Head Managers ${snapshot.headManagerCount}, Bones ${snapshot.headSpringBoneCount}, ExtraBone ${snapshot.headExtraBoneCount}, Colliders S${snapshot.headSphereColliderCount}/C${snapshot.headCapsuleColliderCount}/P${snapshot.headPanelColliderCount} | CharacterHair ${snapshot.characterHairPresent ? "yes" : "no"} | CharacterEye ${snapshot.characterEyePresent ? "yes" : "no"} | VRM Manager ${snapshot.vrmSpringBoneManagerPresent ? "yes" : "no"}${utj}`;
+    `SpringBone metadata | Body Managers ${snapshot.bodyManagerCount}, Bones ${snapshot.bodySpringBoneCount}, ExtraBone ${snapshot.bodyExtraBoneCount}, Colliders S${snapshot.bodySphereColliderCount}/C${snapshot.bodyCapsuleColliderCount}/P${snapshot.bodyPanelColliderCount} | Head Managers ${snapshot.headManagerCount}, Bones ${snapshot.headSpringBoneCount}, ExtraBone ${snapshot.headExtraBoneCount}, Colliders S${snapshot.headSphereColliderCount}/C${snapshot.headCapsuleColliderCount}/P${snapshot.headPanelColliderCount} | CharacterHair ${snapshot.characterHairPresent ? "yes" : "no"} | CharacterEye ${snapshot.characterEyePresent ? "yes" : "no"} | VRM Manager ${snapshot.vrmSpringBoneManagerPresent ? "yes" : "no"}${runtime}`;
+}
+
+function formatSpringRuntimeSetupSummary(
+  runtime: NonNullable<SpringBoneRuntimeSnapshot["utjRuntime"]>
+): string {
+  const setup = runtime.setupDiagnostics;
+  if (!setup) {
+    return "";
+  }
+  return ` | Setup M${setup.managerCount}/B${setup.boneSourceCount}/C${setup.colliderSourceCount}/D${setup.bindingDecisionCount}/Cache${setup.managerColliderCacheCount}/Roots[${setup.activeRoots.join(",") || "none"}]`;
 }
 
 function formatUtjSpringBoneBindingSummary(
@@ -2252,11 +2261,11 @@ function readRenderIsolationMode(params: URLSearchParams): RenderIsolationMode {
 
 function readSpringRuntimeMode(params: URLSearchParams): SpringRuntimeMode {
   const mode = params.get("springRuntimeMode");
-  if (mode === "webgl-utj" || mode === "unity-prefab") {
+  if (mode === "unity-prefab") {
     return mode;
   }
-  if (params.get("utjSpringBoneEnabled") === "true") {
-    return "webgl-utj";
+  if (mode === "webgl-utj" || params.get("utjSpringBoneEnabled") === "true") {
+    return "unity-prefab";
   }
   return "off";
 }
@@ -2318,6 +2327,7 @@ async function prepareCaptureFrame(config: CaptureConfig) {
   captureWindow.__PJSK_CAPTURE_SNAPSHOT__ = {
     phase: config.phase,
     requestedClip: config.clip,
+    springRuntimeMode: config.springRuntimeMode,
     renderIsolation: config.renderIsolation,
     import: lastImportSnapshot,
     animation: lastAnimationSnapshot,

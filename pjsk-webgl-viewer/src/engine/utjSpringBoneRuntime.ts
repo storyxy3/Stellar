@@ -178,6 +178,7 @@ const EPSILON = 0.00001;
 const SPRING_LENGTH_EPSILON = 0.001;
 const FALLBACK_AXIS = new THREE.Vector3(1, 0, 0);
 
+// State setup
 export function createUtjSpringBoneState(
   headPosition: THREE.Vector3,
   tipPosition: THREE.Vector3
@@ -191,6 +192,7 @@ export function createUtjSpringBoneState(
   };
 }
 
+// UpdateSpring / integration
 export function computeAnimatedTipPosition(
   input: Pick<
     UtjSpringBoneUpdateInput,
@@ -202,6 +204,7 @@ export function computeAnimatedTipPosition(
   return input.headPosition.clone().addScaledVector(axis, input.springLength);
 }
 
+// UTJ.SpringBone.UpdateSpring RVA 0x0a59dbd8
 export function updateUtjSpring(state: UtjSpringBoneState, input: UtjSpringBoneUpdateInput): void {
   const previousTip = state.currTipPos.clone();
   const animatedTip = computeAnimatedTipPosition(input);
@@ -230,6 +233,7 @@ export function cacheUtjSpringBonePosition(
   state.cachedPosition.copy(headPosition);
 }
 
+// Length limits
 export function enforceSpringLength(
   tailPosition: THREE.Vector3,
   headPosition: THREE.Vector3,
@@ -280,6 +284,8 @@ export function applyUtjLengthLimits(input: UtjApplyLengthLimitsInput): void {
   input.currTipPos.add(movement);
 }
 
+// Collision dispatch and velocity response
+// UTJ.SpringBone.CheckForCollision RVA 0x0a59e454
 export function checkUtjCollisions(
   state: UtjSpringBoneState,
   input: UtjSpringBoneCollisionInput
@@ -394,6 +400,7 @@ function buildColliderTraceDetails(
   };
 }
 
+// Ground and panel colliders
 export function checkUtjGroundCollision(
   state: UtjSpringBoneState,
   input: UtjGroundCollisionInput
@@ -481,7 +488,7 @@ export function checkPanelCollisionAndReact(
   collider: UtjPanelCollider
 ): UtjCollisionResult {
   const localTail = tailPosition.clone().applyMatrix4(collider.worldToLocalMatrix);
-  const localTailRadius = tailRadius;
+  const localTailRadius = tailRadius * collider.worldToLocalRadiusScale;
   if (localTail.z >= localTailRadius) {
     return noCollision(tailPosition);
   }
@@ -597,6 +604,7 @@ export function checkCollisionWithAlignedPlaneAndReact(
   return UtjColliderStatus.TailCollision;
 }
 
+// Sphere colliders
 export function checkSphereCollisionAndReact(
   headPosition: THREE.Vector3,
   tailPosition: THREE.Vector3,
@@ -694,6 +702,7 @@ export function checkLocalSphereCollisionAndReact(
   };
 }
 
+// Capsule colliders
 export function checkCapsuleCollisionAndReact(
   headPosition: THREE.Vector3,
   tailPosition: THREE.Vector3,
@@ -769,7 +778,7 @@ export function checkLocalCapsuleCollisionAndReact(
 ): UtjCollisionResult {
   const localHead = headPosition.clone().applyMatrix4(collider.worldToLocalMatrix);
   const localTail = tailPosition.clone().applyMatrix4(collider.worldToLocalMatrix);
-  const localTailRadius = tailRadius * collider.worldToLocalRadiusScale;
+  const localTailRadius = tailRadius;
   const localResult = checkLocalYAxisCapsuleCollisionAndReact(
     localHead,
     localTail,
@@ -876,6 +885,7 @@ export function checkLocalCylinderCollisionAndReact(
   };
 }
 
+// Shared sphere/capsule solver helpers
 export type UtjSphereIntersectionCircle = {
   origin: THREE.Vector3;
   upVector: THREE.Vector3;
@@ -899,11 +909,15 @@ export function computeSphereIntersectionCircle(
   const radiusASq = radiusA * radiusA;
   const numerator = radiusASq + distanceSq - radiusB * radiusB;
   const halfOverDistance = 0.5 / distance;
+  const radicand = radiusASq * (distanceSq * 4.0) - numerator * numerator;
+  if (radicand < 0.0) {
+    return null;
+  }
   const x = numerator * halfOverDistance;
   return {
     origin: originA.clone().addScaledVector(upVector, x),
     upVector,
-    radius: halfOverDistance * Math.sqrt(radiusASq * (distanceSq * 4.0) - numerator * numerator),
+    radius: halfOverDistance * Math.sqrt(radicand),
   };
 }
 
@@ -917,6 +931,9 @@ export function computeNewTailPosition(
     .addScaledVector(intersection.upVector, originToTail.dot(intersection.upVector));
   const radial = tailPosition.clone().sub(projected);
   const radialLength = radial.length();
+  if (radialLength <= EPSILON || intersection.radius <= EPSILON) {
+    return intersection.origin.clone();
+  }
   return intersection.origin.clone().addScaledVector(radial, intersection.radius / radialLength);
 }
 
@@ -949,6 +966,8 @@ export function applyUtjCollisionVelocityResponse(
   }
 }
 
+// Angle limits
+// UTJ.SpringBone.ApplyAngleLimits RVA 0x0a59e91c
 export function constrainUtjAngleLimit(input: UtjConstrainVectorInput): boolean {
   if (!input.limit.active) {
     return false;
@@ -987,6 +1006,8 @@ export function constrainUtjAngleLimit(input: UtjConstrainVectorInput): boolean 
   return limitedAngle !== easedAngle;
 }
 
+// ComputeRotation
+// UTJ.SpringBone.ComputeRotation overloads RVA 0x0a59eb24 / 0x0a59ed20
 export function computeUtjWorldRotation(
   headPosition: THREE.Vector3,
   tailPosition: THREE.Vector3,
@@ -1018,6 +1039,7 @@ export function computeUtjLocalRotation(
   return initialLocalRotation.clone().multiply(delta);
 }
 
+// Shared math helpers
 function noCollision(tailPosition: THREE.Vector3): UtjCollisionResult {
   return {
     status: UtjColliderStatus.NoCollision,

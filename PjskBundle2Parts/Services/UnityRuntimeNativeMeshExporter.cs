@@ -102,7 +102,7 @@ public sealed class UnityRuntimeNativeMeshExporter
                 continue;
             }
 
-            if (!TryResolveSkinBonePaths(mesh, rendererBonePaths, transformPaths, out var bonePaths, out var skinFailure))
+            if (!TryResolveSkinBinding(mesh, rendererBonePaths, transformPaths, out var skinBinding, out var skinFailure))
             {
                 warnings.Add($"{partKind} mesh '{mesh.Path}' skipped: {skinFailure}");
                 continue;
@@ -119,7 +119,7 @@ public sealed class UnityRuntimeNativeMeshExporter
                 renderer,
                 renderer.TransformPath,
                 rootBonePath,
-                bonePaths,
+                skinBinding,
                 ResolveMorphTargets(mesh.Path, morphMap)
             ));
         }
@@ -190,8 +190,9 @@ public sealed class UnityRuntimeNativeMeshExporter
             .Select(candidate =>
             {
                 var importedBoneCount = candidate.Mesh.BoneList?.Count ?? 0;
-                var resolvedBoneCount = ResolveImportedBonePaths(candidate.Mesh, transformPaths, rendererBonePaths).Count;
-                return $"{candidate.Mesh.Path}:imported={importedBoneCount},resolved={resolvedBoneCount}";
+                var resolvedBoneCount = ResolveImportedBonePathsByIndex(candidate.Mesh, transformPaths, rendererBonePaths).Count;
+                var usedBoneCount = CollectUsedBoneIndices(candidate.Mesh).Count;
+                return $"{candidate.Mesh.Path}:imported={importedBoneCount},used={usedBoneCount},resolved={resolvedBoneCount}";
             })
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(8);
@@ -244,6 +245,18 @@ public sealed class UnityRuntimeNativeMeshExporter
         return 1000;
     }
 
+    private sealed record NativeSkinBinding(
+        IReadOnlyList<string> BonePaths,
+        IReadOnlyDictionary<int, int> BoneIndexRemap,
+        IReadOnlyList<float> BoneInverseBindMatrices
+    );
+
+    private static readonly NativeSkinBinding EmptySkinBinding = new(
+        Array.Empty<string>(),
+        new Dictionary<int, int>(),
+        Array.Empty<float>()
+    );
+
     private static bool IsSkinCompatible(
         SpringPrefabRenderer renderer,
         ImportedMesh mesh,
@@ -272,25 +285,34 @@ public sealed class UnityRuntimeNativeMeshExporter
             return false;
         }
 
-        var resolvedBonePaths = ResolveImportedBonePaths(mesh, transformPaths, rendererBonePaths);
-        return resolvedBonePaths.Count == importedBoneCount &&
-            resolvedBonePaths.All(rendererBonePaths.Contains);
+        return TryResolveSkinBinding(
+            mesh,
+            rendererBonePaths.ToList(),
+            transformPaths,
+            out _,
+            out _
+        );
     }
 
-    private static bool TryResolveSkinBonePaths(
+    private static bool TryResolveSkinBinding(
         ImportedMesh mesh,
         IReadOnlyList<string> rendererBonePaths,
         IReadOnlyList<string> transformPaths,
-        out IReadOnlyList<string> bonePaths,
+        out NativeSkinBinding binding,
         out string failure
     )
     {
         var importedBoneCount = mesh.BoneList?.Count ?? 0;
         if (importedBoneCount == 0)
         {
-            bonePaths = rendererBonePaths.Count == 0
+            var rigidBonePaths = rendererBonePaths.Count == 0
                 ? Array.Empty<string>()
                 : rendererBonePaths;
+            binding = new NativeSkinBinding(
+                rigidBonePaths,
+                new Dictionary<int, int>(),
+                Array.Empty<float>()
+            );
             failure = string.Empty;
             return true;
         }
@@ -298,44 +320,54 @@ public sealed class UnityRuntimeNativeMeshExporter
         var maxSkinBoneIndex = MaxSkinBoneIndex(mesh);
         if (maxSkinBoneIndex >= importedBoneCount)
         {
-            bonePaths = Array.Empty<string>();
+            binding = EmptySkinBinding;
             failure = $"vertex skin index {maxSkinBoneIndex} exceeds imported skin bone count {importedBoneCount}.";
             return false;
         }
 
         var rendererBonePathSet = rendererBonePaths.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var resolvedBonePaths = ResolveImportedBonePaths(mesh, transformPaths, rendererBonePathSet);
-        if (resolvedBonePaths.Count != importedBoneCount)
-        {
-            var missing = mesh.BoneList!
-                .Select(bone => bone.Path)
-                .Where(path => !string.IsNullOrWhiteSpace(path))
-                .Where(path => ResolveTransformPath(path, transformPaths, rendererBonePathSet) is null)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Take(8);
-            bonePaths = Array.Empty<string>();
-            failure = $"imported skin bones did not resolve to prefab transforms; imported={importedBoneCount}, resolved={resolvedBonePaths.Count}, sampleMissing=[{string.Join(", ", missing)}].";
-            return false;
-        }
-
-        var outsideRenderer = resolvedBonePaths
-            .Where(path => !rendererBonePathSet.Contains(path))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+        var resolvedBonePathsByImportedIndex = ResolveImportedBonePathsByIndex(mesh, transformPaths, rendererBonePathSet);
+        var usedBoneIndices = CollectUsedBoneIndices(mesh);
+        var unresolvedUsedBoneIndices = usedBoneIndices
+            .Where(index => !resolvedBonePathsByImportedIndex.TryGetValue(index, out var path) ||
+                string.IsNullOrWhiteSpace(path) ||
+                !rendererBonePathSet.Contains(path))
             .Take(8)
             .ToList();
-        if (outsideRenderer.Count > 0)
+        if (unresolvedUsedBoneIndices.Count > 0)
         {
-            bonePaths = Array.Empty<string>();
-            failure = $"imported skin bones resolved outside renderer m_Bones; sample=[{string.Join(", ", outsideRenderer)}].";
+            var missing = unresolvedUsedBoneIndices
+                .Select(index => $"{index}:{mesh.BoneList![index].Path}");
+            binding = EmptySkinBinding;
+            failure = $"used imported skin bones did not resolve to renderer m_Bones; imported={importedBoneCount}, used={usedBoneIndices.Count}, resolved={resolvedBonePathsByImportedIndex.Count}, sampleMissing=[{string.Join(", ", missing)}].";
             return false;
         }
 
-        bonePaths = resolvedBonePaths;
+        var orderedUsedBoneIndices = usedBoneIndices
+            .OrderBy(index => index)
+            .ToList();
+        if (orderedUsedBoneIndices.Count == 0)
+        {
+            orderedUsedBoneIndices.Add(0);
+        }
+
+        var remap = new Dictionary<int, int>();
+        var bonePaths = new List<string>(orderedUsedBoneIndices.Count);
+        var inverseBindMatrices = new List<float>(orderedUsedBoneIndices.Count * 16);
+        for (var newIndex = 0; newIndex < orderedUsedBoneIndices.Count; newIndex += 1)
+        {
+            var oldIndex = orderedUsedBoneIndices[newIndex];
+            remap[oldIndex] = newIndex;
+            bonePaths.Add(resolvedBonePathsByImportedIndex[oldIndex]);
+            AddMatrix(inverseBindMatrices, mesh.BoneList![oldIndex].Matrix);
+        }
+
+        binding = new NativeSkinBinding(bonePaths, remap, inverseBindMatrices);
         failure = string.Empty;
         return true;
     }
 
-    private static IReadOnlyList<string> ResolveImportedBonePaths(
+    private static IReadOnlyDictionary<int, string> ResolveImportedBonePathsByIndex(
         ImportedMesh mesh,
         IReadOnlyList<string> transformPaths,
         IReadOnlySet<string> preferredPaths
@@ -343,18 +375,19 @@ public sealed class UnityRuntimeNativeMeshExporter
     {
         if (mesh.BoneList is not { Count: > 0 })
         {
-            return Array.Empty<string>();
+            return new Dictionary<int, string>();
         }
 
-        var result = new List<string>(mesh.BoneList.Count);
-        foreach (var bone in mesh.BoneList)
+        var result = new Dictionary<int, string>();
+        for (var index = 0; index < mesh.BoneList.Count; index += 1)
         {
+            var bone = mesh.BoneList[index];
             var resolvedPath = ResolveTransformPath(bone.Path, transformPaths, preferredPaths);
             if (resolvedPath is null)
             {
                 continue;
             }
-            result.Add(resolvedPath);
+            result[index] = resolvedPath;
         }
 
         return result;
@@ -417,10 +450,22 @@ public sealed class UnityRuntimeNativeMeshExporter
     private static int MaxSkinBoneIndex(ImportedMesh mesh)
     {
         var max = -1;
+        foreach (var index in CollectUsedBoneIndices(mesh))
+        {
+            max = Math.Max(max, index);
+        }
+
+        return max;
+    }
+
+    private static IReadOnlySet<int> CollectUsedBoneIndices(ImportedMesh mesh)
+    {
+        var result = new HashSet<int>();
         foreach (var vertex in mesh.VertexList)
         {
             if (vertex.BoneIndices is null || vertex.Weights is null)
             {
+                result.Add(0);
                 continue;
             }
 
@@ -430,11 +475,11 @@ public sealed class UnityRuntimeNativeMeshExporter
                 {
                     continue;
                 }
-                max = Math.Max(max, vertex.BoneIndices[index]);
+                result.Add(vertex.BoneIndices[index]);
             }
         }
 
-        return max;
+        return result;
     }
 
     private static IReadOnlyDictionary<string, IReadOnlyList<ImportedMesh>> BuildImportedMeshLookupMap(
@@ -497,7 +542,7 @@ public sealed class UnityRuntimeNativeMeshExporter
         SpringPrefabRenderer renderer,
         string rendererTransformPath,
         string? rootBonePath,
-        IReadOnlyList<string> bonePaths,
+        NativeSkinBinding skinBinding,
         IReadOnlyList<ImportedMorph> morphs
     )
     {
@@ -529,7 +574,7 @@ public sealed class UnityRuntimeNativeMeshExporter
                 colors.Add(1);
                 colors.Add(1);
             }
-            AddSkin(vertex, skinIndices, skinWeights);
+            AddSkin(vertex, skinBinding.BoneIndexRemap, skinIndices, skinWeights);
         }
 
         var indexCursor = 0;
@@ -559,8 +604,8 @@ public sealed class UnityRuntimeNativeMeshExporter
             RendererPathId: renderer.PathId,
             RendererTransformPath: rendererTransformPath,
             RootBonePath: rootBonePath,
-            BonePaths: bonePaths,
-            BoneInverseBindMatrices: BuildBoneInverseBindMatrices(mesh),
+            BonePaths: skinBinding.BonePaths,
+            BoneInverseBindMatrices: skinBinding.BoneInverseBindMatrices,
             Submeshes: submeshes,
             Positions: positions,
             Normals: normals,
@@ -729,6 +774,7 @@ public sealed class UnityRuntimeNativeMeshExporter
 
     private static void AddSkin(
         ImportedVertex vertex,
+        IReadOnlyDictionary<int, int> boneIndexRemap,
         List<ushort> skinIndices,
         List<float> skinWeights
     )
@@ -742,7 +788,11 @@ public sealed class UnityRuntimeNativeMeshExporter
                 {
                     continue;
                 }
-                weights.Add((vertex.BoneIndices[index], vertex.Weights[index]));
+                var sourceIndex = vertex.BoneIndices[index];
+                var targetIndex = boneIndexRemap.TryGetValue(sourceIndex, out var remappedIndex)
+                    ? remappedIndex
+                    : sourceIndex;
+                weights.Add((targetIndex, vertex.Weights[index]));
             }
         }
 

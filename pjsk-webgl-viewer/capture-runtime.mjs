@@ -82,12 +82,12 @@ function parseArgs(argv) {
       options.renderIsolation = readValue();
     } else if (arg === "--spring-runtime-mode") {
       const mode = readValue();
-      if (!["off", "webgl-utj", "unity-prefab"].includes(mode)) {
+      if (!["off", "unity-prefab", "webgl-utj"].includes(mode)) {
         throw new Error(`Invalid --spring-runtime-mode ${mode}`);
       }
-      options.springRuntimeMode = mode;
+      options.springRuntimeMode = mode === "webgl-utj" ? "unity-prefab" : mode;
     } else if (arg === "--utj-springbone") {
-      options.springRuntimeMode = "webgl-utj";
+      options.springRuntimeMode = "unity-prefab";
     } else if (arg === "--no-utj-springbone") {
       options.springRuntimeMode = "off";
     } else if (arg === "--trace-utj-bone") {
@@ -165,17 +165,17 @@ Options:
   --timeout-ms <ms>    Capture-ready timeout. Default: 45000
   --warmup-ms <ms>     Let animation/runtime play before capture. Default: 0
   --warmup-frames <n>  Deterministically step n frames at 60fps instead of real-time warmup
-  --warmup-mode <mode> animation advances the loop; runtime freezes animation and settles UTJ. Default: animation
+  --warmup-mode <mode> animation advances the loop; runtime freezes animation and settles spring. Default: animation
   --yaw <mode>         Character yaw mode: 0, 45, -45, 90, -90, 180
   --render-isolation <mode>
                        Render isolation/debug mode. Default: normal
   --spring-runtime-mode <mode>
-                       Spring runtime: off, webgl-utj, unity-prefab. Default: off
-  --utj-springbone     Compatibility alias for --spring-runtime-mode webgl-utj
+                       Spring runtime: off, unity-prefab. Default: off
+  --utj-springbone     Compatibility alias for --spring-runtime-mode unity-prefab
   --no-utj-springbone  Compatibility alias for --spring-runtime-mode off
-  --trace-utj-bone <s> Trace UTJ stages for bones whose name/path contains this text
+  --trace-utj-bone <s> Trace spring stages for bones whose name/path contains this text
   --trace-utj-max-events <n>
-                       Maximum retained UTJ trace events. Default: 240
+                       Maximum retained spring trace events. Default: 240
   --trace-out <json>   Write only snapshot.utjSpringBoneTrace to a JSON file
   --chromium <path>    Chromium executable. Default: chromium
   --build              Run npm run build before capture

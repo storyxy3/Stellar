@@ -165,6 +165,8 @@ type CandidateJoint = {
   rawWindInfluence?: number | null;
   dragForce?: number;
   rawSpringForce?: { X?: number; Y?: number; Z?: number } | null;
+  rawBoneAxis?: { X?: number; Y?: number; Z?: number; x?: number; y?: number; z?: number } | number[] | null;
+  boneAxis?: { X?: number; Y?: number; Z?: number; x?: number; y?: number; z?: number } | number[] | null;
   lengthLimitTargets?: CandidateLengthLimitTarget[];
   rawAngleLimits?: {
     y?: CandidateAngleLimit | null;
@@ -266,6 +268,7 @@ type RuntimeBone = {
   lastAppliedLocalRotation: THREE.Quaternion;
   hasAppliedLocalRotation: boolean;
   boneAxis: THREE.Vector3;
+  boneAxisSource: RuntimeBoneAxisSource;
   springLength: number;
   dynamicRatio: number;
   isAnimated: boolean;
@@ -291,6 +294,13 @@ type RuntimeBone = {
   lastCollisionInfo: LastCollisionInfo | null;
   lastAngleLimitApplied: boolean;
 };
+
+type RuntimeBoneAxisSource =
+  | "raw-bone-axis"
+  | "prefab-local-child"
+  | "computed-local-tip"
+  | "computed-rotation-tip"
+  | "fallback-local-tip";
 
 type RuntimeForceProvider = RuntimeWindVolumeOneSelf;
 
@@ -417,6 +427,7 @@ export type UtjSpringBoneTraceEvent = {
   initialLocalRotation: QuaternionSnapshot;
   skinAnimationLocalRotation: QuaternionSnapshot;
   boneAxis: VectorSnapshot;
+  boneAxisSource: RuntimeBoneAxisSource;
   springLength: number;
   radius: number;
   tailRadius: number;
@@ -470,12 +481,22 @@ export type UtjSpringBoneTraceSnapshot = {
 };
 
 export type UtjSpringBoneRuntimeSnapshot = {
+  runtimeMode?: "webgl-utj" | "unity-prefab";
   enabled: boolean;
   springCount: number;
   boneCount: number;
   colliderCount: number;
   missingNodeCount: number;
   missingNodeSamples: string[];
+  setupDiagnostics?: {
+    managerCount: number;
+    boneSourceCount: number;
+    colliderSourceCount: number;
+    bindingDecisionCount: number;
+    managerColliderCacheCount: number;
+    activeRootCount: number;
+    activeRoots: string[];
+  };
   maxSleeveOffset: number;
   maxSkirtOffset: number;
   topOffsets: {
@@ -501,7 +522,9 @@ export type UtjSpringBoneRuntimeSnapshot = {
     hasSpringForce: boolean;
     forceProviderCount: number;
     stiffnessForce: number;
+    managerDynamicRatio?: number;
     dynamicRatio: number;
+    isAnimated?: boolean;
     animatedTipDelta: VectorSnapshot;
     velocity: VectorSnapshot;
     springForce: VectorSnapshot;
@@ -533,7 +556,9 @@ export type UtjSpringBoneRuntimeSnapshot = {
     forceProviderCount: number;
     stiffnessForce: number;
     dragForce: number;
+    managerDynamicRatio?: number;
     dynamicRatio: number;
+    isAnimated?: boolean;
     animatedTipDelta: VectorSnapshot;
     velocity: VectorSnapshot;
     headMovement: VectorSnapshot;
@@ -750,6 +775,7 @@ export class UtjSpringBoneRuntime {
     };
   }
 
+  // UTJ.SpringManager.UpdateDynamics RVA 0x0a59fe18
   update(deltaTime: number): void {
     if (this.bones.some((bone) => bone.automaticUpdates && !bone.isPaused)) {
       this.preUpdateColliders();
@@ -848,6 +874,7 @@ export class UtjSpringBoneRuntime {
     }
   }
 
+  // UTJ.SpringBone.SatisfyConstraintsAndComputeRotation RVA 0x0a59de74
   private updateBoneSpringAndRotation(
     bone: RuntimeBone,
     deltaTime: number,
@@ -1014,6 +1041,7 @@ export class UtjSpringBoneRuntime {
       initialLocalRotation: quaternionSnapshot(bone.initialLocalRotation),
       skinAnimationLocalRotation: quaternionSnapshot(bone.skinAnimationLocalRotation),
       boneAxis: vectorSnapshot(bone.boneAxis),
+      boneAxisSource: bone.boneAxisSource,
       springLength: bone.springLength,
       radius: bone.radius,
       tailRadius: 0,
@@ -1411,6 +1439,7 @@ export class UtjSpringBoneRuntime {
     topOffsets.sort((a, b) => b.offset - a.offset);
     skirtOffsets.sort((a, b) => b.offset - a.offset);
     return {
+      runtimeMode: "webgl-utj",
       enabled,
       springCount: new Set(this.bones.map((bone) => bone.springName)).size,
       boneCount: this.bones.length,
@@ -1440,6 +1469,7 @@ export class UtjSpringBoneRuntime {
     return result;
   }
 
+  // UTJ.SpringManager.PreUpdateCollider RVA 0x0a5a0010
   private preUpdateColliders(): void {
     this.frameColliderCache.clear();
     const uniqueColliders = new Set<RuntimeCollider>();
@@ -1638,9 +1668,7 @@ function createRuntimeBone(
 
   const initialLocalRotation = node.quaternion.clone();
   const localTipPosition = node.worldToLocal(tailPosition.clone());
-  const boneAxis = localTipPosition.lengthSq() <= 0.00001 * 0.00001
-    ? new THREE.Vector3(0, 0, 0)
-    : localTipPosition.normalize();
+  const boneAxisResolution = resolveRuntimeBoneAxis(joint, localTipPosition);
   const lengthLimitTargets = lengthLimitTargetNodes.map((targetNode) => ({
     node: targetNode,
     initialLength: targetNode.getWorldPosition(new THREE.Vector3()).distanceTo(tailPosition),
@@ -1676,7 +1704,8 @@ function createRuntimeBone(
     skinAnimationLocalRotation: initialLocalRotation.clone(),
     lastAppliedLocalRotation: initialLocalRotation.clone(),
     hasAppliedLocalRotation: false,
-    boneAxis,
+    boneAxis: boneAxisResolution.axis,
+    boneAxisSource: boneAxisResolution.source,
     springLength,
     dynamicRatio: isAnimated ? managerSettings.dynamicRatio : 1.0,
     isAnimated,
@@ -2615,10 +2644,32 @@ function enumeratePathCandidates(
 }
 
 function vectorFromRaw(
-  value?: { X?: number; Y?: number; Z?: number } | null,
+  value?: { X?: number; Y?: number; Z?: number; x?: number; y?: number; z?: number } | number[] | null,
   fallback = new THREE.Vector3(0, 0, 0)
 ): THREE.Vector3 {
-  return new THREE.Vector3(value?.X ?? fallback.x, value?.Y ?? fallback.y, value?.Z ?? fallback.z);
+  if (Array.isArray(value)) {
+    return new THREE.Vector3(value[0] ?? fallback.x, value[1] ?? fallback.y, value[2] ?? fallback.z);
+  }
+  return new THREE.Vector3(
+    value?.X ?? value?.x ?? fallback.x,
+    value?.Y ?? value?.y ?? fallback.y,
+    value?.Z ?? value?.z ?? fallback.z
+  );
+}
+
+function resolveRuntimeBoneAxis(
+  joint: CandidateJoint,
+  localTipPosition: THREE.Vector3
+): { axis: THREE.Vector3; source: RuntimeBoneAxisSource } {
+  const computedAxis = normalizeRuntimeAxis(localTipPosition);
+  if (!computedAxis) {
+    return { axis: new THREE.Vector3(0, 0, 0), source: "fallback-local-tip" };
+  }
+  return { axis: computedAxis, source: "computed-local-tip" };
+}
+
+function normalizeRuntimeAxis(axis: THREE.Vector3): THREE.Vector3 | null {
+  return axis.lengthSq() <= 0.00001 * 0.00001 ? null : axis.clone().normalize();
 }
 
 function vectorFromArray(values?: number[]): THREE.Vector3 {
@@ -2646,6 +2697,7 @@ function readRawObjectPathId(raw: JsonRecord, key: string): number | null {
   return readFiniteNumber(value?.m_PathID ?? value?.m_pathID ?? value?.pathId);
 }
 
+// UTJ.SpringManager.CalcTimeStep RVA 0x0a59ffac
 function calcUtjManagerTimeStep(
   unityDeltaTime: number,
   simulationFrameRate: number,

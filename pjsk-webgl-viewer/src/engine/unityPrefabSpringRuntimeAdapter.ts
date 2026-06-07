@@ -19,9 +19,13 @@ import type {
   UtjSpringBoneRuntimeSnapshot,
   UtjSpringBoneTraceSnapshot,
 } from "./utjSpringBoneRuntimeAdapter";
+import {
+  convertUnityAxisToThree,
+  type UnityVectorLike,
+} from "./unityCoordinateConversion";
 
 type UnknownRecord = Record<string, unknown>;
-type VectorLike = { X?: number; Y?: number; Z?: number; x?: number; y?: number; z?: number };
+type VectorLike = UnityVectorLike;
 type QuaternionLike = { x?: number; y?: number; z?: number; w?: number };
 type RuntimeColliderBindingDiagnostic = UtjSpringBoneRuntimeSnapshot["bindingDiagnostics"][number];
 type RuntimeTraceEvent = UtjSpringBoneTraceSnapshot["events"][number];
@@ -56,6 +60,7 @@ type RuntimePrefabTransform = {
   transformPath?: string | null;
   parentPathId?: number | null;
   childPathIds?: number[];
+  localPosition?: VectorLike | null;
 };
 
 type RuntimePrefabMonoBehaviour = {
@@ -113,6 +118,8 @@ type RuntimeBoneSource = {
   rawWindInfluence?: number | null;
   rawAngularStiffness?: number | null;
   rawSpringConstant?: number | null;
+  rawBoneAxis?: VectorLike | number[] | null;
+  boneAxis?: VectorLike | number[] | null;
   lengthLimitTargets?: RuntimeLengthLimitTargetSource[];
   rawAngleLimits?: {
     y?: RuntimeAngleLimitSource | null;
@@ -184,6 +191,9 @@ type RuntimeBindingDecisionSource = {
 type RuntimeManagerColliderCacheSource = {
   managerPathId?: number;
   managerNodeName?: string | null;
+  managerNodePath?: string | null;
+  sourcePoseRoot?: string | null;
+  runtimeRoot?: string | null;
   sphereColliderIndexes?: number[];
   capsuleColliderIndexes?: number[];
   panelColliderIndexes?: number[];
@@ -197,8 +207,8 @@ type NodeResolution = {
 type PrefabGraphIndex = {
   transformByPathId: Map<number, RuntimePrefabTransform>;
   transformByPath: Map<string, RuntimePrefabTransform>;
-  springBoneTransformPaths: Set<string>;
   pivotTransformPathIds: Set<number>;
+  pivotTransformPaths: Set<string>;
 };
 
 type RuntimeManagerColliderCacheBinding = {
@@ -216,11 +226,14 @@ type RuntimeColliderBinding = {
   diagnostics: RuntimeColliderBindingDiagnostic[];
 };
 
+type RuntimeSetupDiagnostics = NonNullable<UtjSpringBoneRuntimeSnapshot["setupDiagnostics"]>;
+
 type RuntimeTailBindingDiagnostic = {
   mode: "fallback" | "singleChild" | "averageChildren";
   childCount: number;
   childNames: string[];
   childPaths: string[];
+  childSources: RuntimePrefabTransform[];
   tailPosition: THREE.Vector3;
 };
 
@@ -264,6 +277,7 @@ type RuntimeBone = {
   lastAppliedLocalRotation: THREE.Quaternion;
   hasAppliedLocalRotation: boolean;
   boneAxis: THREE.Vector3;
+  boneAxisSource: RuntimeBoneAxisSource;
   springLength: number;
   dynamicRatio: number;
   isAnimated: boolean;
@@ -283,13 +297,19 @@ type RuntimeBone = {
   zAngleLimit: UtjAngleLimit | null;
   colliders: RuntimeCollider[];
   colliderBindingDiagnostics: RuntimeColliderBindingDiagnostic[];
-  angleLimitForwardSign: number;
   lastCollisionStatus: number;
   lastCollisionInfo: LastCollisionInfo | null;
   lastAngleLimitApplied: boolean;
 };
 
+type RuntimeBoneAxisSource =
+  | "computed-local-tip"
+  | "fallback-local-tip";
+
 const UNITY_MATHF_EPSILON = 1.401298464324817e-45;
+const UTJ_PIVOT_FORWARD_LOCAL = convertUnityAxisToThree("left");
+const UTJ_PIVOT_BACK_LOCAL = convertUnityAxisToThree("back");
+const UTJ_PIVOT_DOWN_LOCAL = convertUnityAxisToThree("down");
 
 export class UnityPrefabSpringRuntime {
   private readonly externalForce = new THREE.Vector3(0, 0, 0);
@@ -311,7 +331,8 @@ export class UnityPrefabSpringRuntime {
   private constructor(
     private readonly bones: RuntimeBone[],
     private readonly missingNodes: string[],
-    private readonly skinnedBones: Set<THREE.Object3D>
+    private readonly skinnedBones: Set<THREE.Object3D>,
+    private readonly setupDiagnostics: RuntimeSetupDiagnostics
   ) {}
 
   static fromPjskRuntimeExtension(
@@ -328,17 +349,18 @@ export class UnityPrefabSpringRuntime {
     const graphIndex = buildPrefabGraphIndex(setup);
     const skinnedBones = collectSkinnedBones(root);
     const missingNodes: string[] = [];
-    const colliderByIndex = buildRuntimeColliders(setup, resolution, missingNodes);
+    const activeRoots = buildActiveRootSet(setup);
+    const colliderByIndex = buildRuntimeColliders(setup, resolution, missingNodes, activeRoots);
     const bindingByBonePathId = buildColliderBindingMap(setup);
     const decisionByBonePathId = buildBindingDecisionMap(setup);
-    const managerCacheByPathId = buildManagerColliderCacheMap(setup);
+    const managerCacheByPathId = buildManagerColliderCacheMap(setup, colliderByIndex);
     const boneByPathId = buildBoneMap(setup);
-    const activeRoots = buildActiveRootSet(setup);
+    const setupDiagnostics = buildSetupDiagnostics(setup, activeRoots);
     const controlledNodes = new Set<THREE.Object3D>();
     const bones: RuntimeBone[] = [];
 
     for (const manager of setup.managers ?? []) {
-      if (!isSourceActive(manager)) {
+      if (!isSourceActive(manager) || !isRuntimePathActive(manager.nodePath ?? manager.poseRoot, activeRoots)) {
         continue;
       }
       for (const bonePathId of manager.bonePathIds ?? []) {
@@ -383,7 +405,7 @@ export class UnityPrefabSpringRuntime {
 
     bones.sort((a, b) => getObjectDepth(a.node) - getObjectDepth(b.node));
     return bones.length > 0
-      ? new UnityPrefabSpringRuntime(bones, missingNodes, skinnedBones)
+      ? new UnityPrefabSpringRuntime(bones, missingNodes, skinnedBones, setupDiagnostics)
       : null;
   }
 
@@ -409,6 +431,7 @@ export class UnityPrefabSpringRuntime {
     };
   }
 
+  // UTJ.SpringManager.UpdateDynamics RVA 0x0a59fe18
   update(deltaTime: number): void {
     if (this.bones.some((bone) => bone.automaticUpdates && bone.enabled && !bone.isPaused)) {
       this.preUpdateColliders();
@@ -421,7 +444,10 @@ export class UnityPrefabSpringRuntime {
       bone.node.parent?.getWorldQuaternion(this.parentRotation);
       bone.node.getWorldPosition(this.headPosition);
       if (bone.isPaused) {
-        this.applyBoneRotation(bone);
+        this.applyBoneRotation(bone, getEffectiveDynamicRatio(bone));
+        continue;
+      }
+      if (!bone.isSumOfForcesOnBone) {
         continue;
       }
       this.externalForce.copy(bone.gravity);
@@ -429,7 +455,7 @@ export class UnityPrefabSpringRuntime {
         bone,
         calcUtjManagerTimeStep(deltaTime, bone.simulationFrameRate, bone.slowMotionScale),
         this.externalForce,
-        bone.dynamicRatio
+        getEffectiveDynamicRatio(bone)
       );
     }
   }
@@ -535,7 +561,9 @@ export class UnityPrefabSpringRuntime {
         hasSpringForce: bone.springForce.lengthSq() > 0.00000001,
         forceProviderCount: 0,
         stiffnessForce: bone.stiffnessForce,
-        dynamicRatio: bone.dynamicRatio,
+        managerDynamicRatio: bone.dynamicRatio,
+        dynamicRatio: getEffectiveDynamicRatio(bone),
+        isAnimated: bone.isAnimated,
         animatedTipDelta: vectorSnapshot(animatedTipDelta),
         velocity: vectorSnapshot(velocity),
         springForce: vectorSnapshot(bone.springForce),
@@ -572,7 +600,9 @@ export class UnityPrefabSpringRuntime {
           forceProviderCount: 0,
           stiffnessForce: bone.stiffnessForce,
           dragForce: bone.dragForce,
-          dynamicRatio: bone.dynamicRatio,
+          managerDynamicRatio: bone.dynamicRatio,
+          dynamicRatio: getEffectiveDynamicRatio(bone),
+          isAnimated: bone.isAnimated,
           animatedTipDelta: vectorSnapshot(animatedTipDelta),
           velocity: vectorSnapshot(velocity),
           headMovement: vectorSnapshot(bone.state.cachedMovement),
@@ -585,12 +615,17 @@ export class UnityPrefabSpringRuntime {
     topOffsets.sort((a, b) => b.offset - a.offset);
     skirtOffsets.sort((a, b) => b.offset - a.offset);
     return {
+      runtimeMode: "unity-prefab",
       enabled,
       springCount: new Set(this.bones.map((bone) => bone.springName)).size,
       boneCount: this.bones.length,
       colliderCount: colliderIndexes.size,
       missingNodeCount: this.missingNodes.length,
       missingNodeSamples: this.missingNodes.slice(0, 96),
+      setupDiagnostics: {
+        ...this.setupDiagnostics,
+        activeRoots: [...this.setupDiagnostics.activeRoots],
+      },
       maxSleeveOffset,
       maxSkirtOffset,
       topOffsets: topOffsets.slice(0, 8),
@@ -603,6 +638,7 @@ export class UnityPrefabSpringRuntime {
     };
   }
 
+  // UTJ.SpringBone.SatisfyConstraintsAndComputeRotation RVA 0x0a59de74
   private updateBoneSpringAndRotation(
     bone: RuntimeBone,
     deltaTime: number,
@@ -740,16 +776,15 @@ export class UnityPrefabSpringRuntime {
     if (!bone.yAngleLimit && !bone.zAngleLimit) {
       return false;
     }
-    const pivot = bone.pivotNode;
-    if (!pivot) {
-      return false;
-    }
+    const pivot = bone.pivotNode ?? bone.node.parent ?? bone.node;
 
     pivot.updateMatrixWorld(true);
     this.angleVector.copy(bone.state.currTipPos).sub(bone.state.cachedPosition);
-    const forward = new THREE.Vector3(bone.angleLimitForwardSign, 0, 0).transformDirection(pivot.matrixWorld);
-    const back = new THREE.Vector3(0, 0, -1).transformDirection(pivot.matrixWorld);
-    const down = new THREE.Vector3(0, -1, 0).transformDirection(pivot.matrixWorld);
+    // F5 names these basis vectors in Unity space. Convert the named Unity axes
+    // once before applying the viewer-space pivot matrix.
+    const forward = UTJ_PIVOT_FORWARD_LOCAL.clone().transformDirection(pivot.matrixWorld);
+    const back = UTJ_PIVOT_BACK_LOCAL.clone().transformDirection(pivot.matrixWorld);
+    const down = UTJ_PIVOT_DOWN_LOCAL.clone().transformDirection(pivot.matrixWorld);
     if (trace) {
       trace.enabled = true;
       trace.hasPivot = true;
@@ -902,6 +937,7 @@ export class UnityPrefabSpringRuntime {
       initialLocalRotation: quaternionSnapshot(bone.initialLocalRotation),
       skinAnimationLocalRotation: quaternionSnapshot(bone.skinAnimationLocalRotation),
       boneAxis: vectorSnapshot(bone.boneAxis),
+      boneAxisSource: bone.boneAxisSource,
       springLength: bone.springLength,
       radius: bone.radius,
       tailRadius: 0,
@@ -951,6 +987,7 @@ export class UnityPrefabSpringRuntime {
     return result;
   }
 
+  // UTJ.SpringManager.PreUpdateCollider RVA 0x0a5a0010
   private preUpdateColliders(): void {
     this.frameColliderCache.clear();
     const uniqueColliders = new Set<RuntimeCollider>();
@@ -1055,12 +1092,8 @@ function createRuntimeBone(
   const direction = tailPosition.clone().sub(headPosition);
   const springLength = direction.length();
   const initialLocalRotation = node.quaternion.clone();
-  const localTipPosition = node.worldToLocal(tailPosition.clone());
-  const boneAxis = localTipPosition.lengthSq() <= 0.00001 * 0.00001
-    ? new THREE.Vector3(0, 0, 0)
-    : localTipPosition.normalize();
+  const boneAxisResolution = resolveRuntimeBoneAxis(node, tailPosition);
   const dynamicRatio = THREE.MathUtils.clamp(readFiniteNumber(manager.dynamicRatio) ?? 0.5, 0, 1);
-  const angleLimitForwardSign = computeAngleLimitForwardSign(pivotNode, direction);
   const initializedLengthLimitTargets = lengthLimitTargets.map((target) => ({
     node: target.node,
     initialLength: target.node.getWorldPosition(new THREE.Vector3()).distanceTo(tailPosition),
@@ -1092,7 +1125,8 @@ function createRuntimeBone(
     skinAnimationLocalRotation: initialLocalRotation.clone(),
     lastAppliedLocalRotation: initialLocalRotation.clone(),
     hasAppliedLocalRotation: false,
-    boneAxis,
+    boneAxis: boneAxisResolution.axis,
+    boneAxisSource: boneAxisResolution.source,
     springLength,
     dynamicRatio,
     isAnimated: isBoneAnimated(sourceBone, node, manager),
@@ -1112,7 +1146,6 @@ function createRuntimeBone(
     zAngleLimit: angleLimitFromSource(sourceBone.rawAngleLimits?.z),
     colliders: colliderBinding.colliders,
     colliderBindingDiagnostics: colliderBinding.diagnostics,
-    angleLimitForwardSign,
     lastCollisionStatus: 0,
     lastCollisionInfo: null,
     lastAngleLimitApplied: false,
@@ -1122,14 +1155,15 @@ function createRuntimeBone(
 function buildRuntimeColliders(
   setup: RuntimeUnitySetup0414,
   resolution: NodeResolution,
-  missingNodes: string[]
+  missingNodes: string[],
+  activeRoots: ReadonlySet<string>
 ): Map<number, RuntimeCollider> {
   const result = new Map<number, RuntimeCollider>();
   for (const source of setup.colliders ?? []) {
     if (typeof source.index !== "number") {
       continue;
     }
-    if (!isSourceActive(source)) {
+    if (!isSourceActive(source) || !isRuntimePathActive(source.nodePath, activeRoots)) {
       continue;
     }
     const node = resolveNode(resolution, source.nodePath);
@@ -1142,6 +1176,21 @@ function buildRuntimeColliders(
   return result;
 }
 
+function buildSetupDiagnostics(
+  setup: RuntimeUnitySetup0414,
+  activeRoots: ReadonlySet<string>
+): RuntimeSetupDiagnostics {
+  return {
+    managerCount: setup.managers?.length ?? 0,
+    boneSourceCount: setup.bones?.length ?? 0,
+    colliderSourceCount: setup.colliders?.length ?? 0,
+    bindingDecisionCount: setup.bindingDecisions?.length ?? 0,
+    managerColliderCacheCount: setup.managerColliderCaches?.length ?? 0,
+    activeRootCount: activeRoots.size,
+    activeRoots: [...activeRoots].sort(),
+  };
+}
+
 function resolveColliderBinding(
   setup: RuntimeUnitySetup0414,
   manager: RuntimeManagerSource,
@@ -1152,7 +1201,22 @@ function resolveColliderBinding(
   colliderByIndex: ReadonlyMap<number, RuntimeCollider>
 ): RuntimeColliderBinding {
   if (!binding && !decision) {
-    return { colliders: [], diagnostics: [] };
+    return {
+      colliders: [],
+      diagnostics: managerCache
+        ? [buildColliderBindingDiagnostic(
+          manager,
+          bone,
+          binding,
+          decision,
+          null,
+          null,
+          null,
+          `no per-bone collider binding; manager cache not used as fallback; ${managerCacheSummary(managerCache)}`,
+          []
+        )]
+        : [],
+    };
   }
 
   const candidateRoots = buildCandidateRootMap(decision?.candidateRoots ?? binding?.collidersByRoot, colliderByIndex);
@@ -1168,7 +1232,7 @@ function resolveColliderBinding(
         binding,
         decision,
         candidateRoots,
-        binding?.defaultRoot ?? decision?.defaultRoot,
+        decision?.defaultRoot ?? binding?.defaultRoot,
         selection.root,
         `${selection.reason}; manager cache constrained; ${managerCacheSummary(managerCache)}`,
         colliders
@@ -1176,7 +1240,9 @@ function resolveColliderBinding(
     };
   }
 
-  const directIndexes = binding?.colliders ?? decision?.selectedColliderIndexes ?? [];
+  const directIndexes = decision?.selectedColliderIndexes ??
+    binding?.colliders ??
+    [];
   const directColliders = directIndexes
     .map((index) => colliderByIndex.get(index))
     .filter((collider): collider is RuntimeCollider => Boolean(collider));
@@ -1193,9 +1259,9 @@ function resolveColliderBinding(
       binding,
       decision,
       null,
-      binding?.defaultRoot ?? decision?.defaultRoot,
+      decision?.defaultRoot ?? binding?.defaultRoot,
       null,
-      `direct collider group / manager cache constraint / pose root preference; ${managerCacheSummary(managerCache)}`,
+      `${decision?.selectedColliderIndexes ? "bindingDecision.selectedColliderIndexes" : binding?.colliders ? "colliderBinding.colliders" : "no direct collider indexes"} / manager cache constraint / pose root preference; ${managerCacheSummary(managerCache)}`,
       colliders
     )],
   };
@@ -1209,7 +1275,7 @@ function computeUnityPrefabChildPosition(
 ): RuntimeTailBindingDiagnostic {
   node.updateMatrixWorld(true);
   const headPosition = node.getWorldPosition(new THREE.Vector3());
-  const right = new THREE.Vector3(1, 0, 0).transformDirection(node.matrixWorld);
+  const right = convertUnityAxisToThree("right").transformDirection(node.matrixWorld);
   const fallback = headPosition.clone().addScaledVector(right, -0.1);
   const transform = bone.nodePath ? graphIndex.transformByPath.get(bone.nodePath) : undefined;
   const validChildren = transform
@@ -1224,6 +1290,7 @@ function computeUnityPrefabChildPosition(
       childCount: 0,
       childNames,
       childPaths,
+      childSources: [],
       tailPosition: fallback,
     };
   }
@@ -1234,6 +1301,7 @@ function computeUnityPrefabChildPosition(
       childCount: 1,
       childNames,
       childPaths,
+      childSources: validChildren.map((child) => child.source),
       tailPosition: validChildren[0].node.getWorldPosition(new THREE.Vector3()),
     };
   }
@@ -1253,6 +1321,7 @@ function computeUnityPrefabChildPosition(
     childCount: validChildren.length,
     childNames,
     childPaths,
+    childSources: validChildren.map((child) => child.source),
     tailPosition: direction.lengthSq() <= 0.00000001
       ? headPosition.clone()
       : headPosition.clone().addScaledVector(direction.normalize(), averageDistance),
@@ -1265,67 +1334,35 @@ function collectUnityPrefabTailChildren(
   resolution: NodeResolution
 ): { source: RuntimePrefabTransform; node: THREE.Object3D }[] {
   const result: { source: RuntimePrefabTransform; node: THREE.Object3D }[] = [];
-  const visited = new Set<number>();
-  const visitChild = (child: RuntimePrefabTransform) => {
-    if (typeof child.pathId === "number") {
-      if (visited.has(child.pathId)) {
-        return;
-      }
-      visited.add(child.pathId);
+  for (const childPathId of transform.childPathIds ?? []) {
+    const child = graphIndex.transformByPathId.get(childPathId);
+    if (!child) {
+      continue;
     }
-
-    if (isUnityPrefabTailBridge(child, graphIndex)) {
-      for (const grandchildPathId of child.childPathIds ?? []) {
-        const grandchild = graphIndex.transformByPathId.get(grandchildPathId);
-        if (grandchild) {
-          visitChild(grandchild);
-        }
-      }
-      return;
-    }
-
-    if (!isValidPrefabSpringTailChild(child)) {
-      return;
+    if (!isValidPrefabSpringTailChild(child, graphIndex)) {
+      continue;
     }
 
     const node = resolveNode(resolution, child.transformPath);
     if (node) {
       result.push({ source: child, node });
     }
-  };
-
-  for (const childPathId of transform.childPathIds ?? []) {
-    const child = graphIndex.transformByPathId.get(childPathId);
-    if (child) {
-      visitChild(child);
-    }
   }
   return result;
 }
 
-function isUnityPrefabTailBridge(
-  child: RuntimePrefabTransform,
-  graphIndex: PrefabGraphIndex
-): boolean {
-  if (child.transformPath && graphIndex.springBoneTransformPaths.has(child.transformPath)) {
-    return true;
-  }
+function isValidPrefabSpringTailChild(child: RuntimePrefabTransform, graphIndex: PrefabGraphIndex): boolean {
   if (typeof child.pathId === "number" && graphIndex.pivotTransformPathIds.has(child.pathId)) {
-    return true;
+    return false;
   }
-  return child.name?.endsWith("_offset") === true &&
-    (child.childPathIds?.length ?? 0) > 0;
-}
-
-function isValidPrefabSpringTailChild(child: RuntimePrefabTransform): boolean {
-  return child.name?.endsWith("_spring_tail") !== true;
+  return !child.transformPath || !graphIndex.pivotTransformPaths.has(child.transformPath);
 }
 
 function buildPrefabGraphIndex(setup: RuntimeUnitySetup0414): PrefabGraphIndex {
   const transformByPathId = new Map<number, RuntimePrefabTransform>();
   const transformByPath = new Map<string, RuntimePrefabTransform>();
-  const springBoneTransformPaths = new Set<string>();
   const pivotTransformPathIds = new Set<number>();
+  const pivotTransformPaths = new Set<string>();
 
   for (const graph of setup.prefabGraphs ?? []) {
     for (const transform of graph.transforms ?? []) {
@@ -1336,24 +1373,28 @@ function buildPrefabGraphIndex(setup: RuntimeUnitySetup0414): PrefabGraphIndex {
         transformByPath.set(transform.transformPath, transform);
       }
     }
-    for (const behaviour of graph.monoBehaviours ?? []) {
-      if (behaviour.scriptName === "SekaiSpringBone" && behaviour.transformPath) {
-        springBoneTransformPaths.add(behaviour.transformPath);
-      }
-    }
   }
 
-  for (const bone of setup.bones ?? []) {
-    if (typeof bone.pivotSourcePathId === "number") {
-      pivotTransformPathIds.add(bone.pivotSourcePathId);
+  for (const graph of setup.prefabGraphs ?? []) {
+    for (const monoBehaviour of graph.monoBehaviours ?? []) {
+      if (monoBehaviour.scriptName?.toLowerCase() !== "springbonepivot") {
+        continue;
+      }
+      if (monoBehaviour.transformPath) {
+        pivotTransformPaths.add(monoBehaviour.transformPath);
+        const transform = transformByPath.get(monoBehaviour.transformPath);
+        if (typeof transform?.pathId === "number") {
+          pivotTransformPathIds.add(transform.pathId);
+        }
+      }
     }
   }
 
   return {
     transformByPathId,
     transformByPath,
-    springBoneTransformPaths,
     pivotTransformPathIds,
+    pivotTransformPaths,
   };
 }
 
@@ -1465,7 +1506,8 @@ function buildBindingDecisionMap(setup: RuntimeUnitySetup0414): Map<number, Runt
 }
 
 function buildManagerColliderCacheMap(
-  setup: RuntimeUnitySetup0414
+  setup: RuntimeUnitySetup0414,
+  colliderByIndex: ReadonlyMap<number, RuntimeCollider>
 ): Map<number, RuntimeManagerColliderCacheBinding> {
   const result = new Map<number, RuntimeManagerColliderCacheBinding>();
   for (const cache of setup.managerColliderCaches ?? []) {
@@ -1478,13 +1520,31 @@ function buildManagerColliderCacheMap(
       ...(cache.capsuleColliderIndexes ?? []),
       ...(cache.panelColliderIndexes ?? []),
     ]) {
-      if (typeof index === "number") {
+      const collider = typeof index === "number" ? colliderByIndex.get(index) : undefined;
+      if (typeof index === "number" && collider && isRuntimeManagerCacheCollider(cache, collider)) {
         colliderIndexes.add(index);
       }
     }
     result.set(cache.managerPathId, { source: cache, colliderIndexes });
   }
   return result;
+}
+
+function isRuntimeManagerCacheCollider(
+  cache: RuntimeManagerColliderCacheSource,
+  collider: RuntimeCollider
+): boolean {
+  const managerPath = cache.managerNodePath ?? "";
+  const colliderPath = collider.source.nodePath ?? "";
+  const shape = collider.source.shape;
+  if (managerPath.endsWith("/Position/PositionOffset/Hip")) {
+    if (!shape?.sphere) {
+      return false;
+    }
+    return /\/(?:Left_Thigh|Right_Thigh)\/CL_/.test(colliderPath) ||
+      /\/Hip\/CL_HipSphereCollider$/.test(colliderPath);
+  }
+  return true;
 }
 
 function buildActiveRootSet(setup: RuntimeUnitySetup0414): Set<string> {
@@ -1744,17 +1804,8 @@ function angleLimitFromSource(limit?: RuntimeAngleLimitSource | null): UtjAngleL
   };
 }
 
-function computeAngleLimitForwardSign(
-  pivotNode: THREE.Object3D | null,
-  worldDirection: THREE.Vector3
-): number {
-  if (!pivotNode || worldDirection.lengthSq() <= 0.00000001) {
-    return -1;
-  }
-  pivotNode.updateMatrixWorld(true);
-  const pivotRotation = pivotNode.getWorldQuaternion(new THREE.Quaternion()).invert();
-  const pivotLocalDirection = worldDirection.clone().normalize().applyQuaternion(pivotRotation);
-  return pivotLocalDirection.x >= 0 ? 1 : -1;
+function getEffectiveDynamicRatio(bone: RuntimeBone): number {
+  return bone.isAnimated ? bone.dynamicRatio : 1.0;
 }
 
 function isBoneAnimated(
@@ -1789,6 +1840,7 @@ function readStringSet(value: unknown): ReadonlySet<string> {
   return new Set(value.filter((item): item is string => typeof item === "string"));
 }
 
+// UTJ.SpringManager.CalcTimeStep RVA 0x0a59ffac
 function calcUtjManagerTimeStep(
   unityDeltaTime: number,
   simulationFrameRate: number,
@@ -1913,12 +1965,32 @@ function normalizeRootName(root?: string | null): string | null {
   return root.endsWith("/") ? root.slice(0, -1) : root;
 }
 
-function vectorFromRaw(value?: VectorLike | null, fallback = new THREE.Vector3(0, 0, 0)): THREE.Vector3 {
+function vectorFromRaw(value?: VectorLike | number[] | null, fallback = new THREE.Vector3(0, 0, 0)): THREE.Vector3 {
+  if (Array.isArray(value)) {
+    return new THREE.Vector3(value[0] ?? fallback.x, value[1] ?? fallback.y, value[2] ?? fallback.z);
+  }
   return new THREE.Vector3(
     value?.X ?? value?.x ?? fallback.x,
     value?.Y ?? value?.y ?? fallback.y,
     value?.Z ?? value?.z ?? fallback.z
   );
+}
+
+function resolveRuntimeBoneAxis(
+  node: THREE.Object3D,
+  tailPosition: THREE.Vector3
+): { axis: THREE.Vector3; source: RuntimeBoneAxisSource } {
+  node.updateMatrixWorld(true);
+  const localTipPosition = node.worldToLocal(tailPosition.clone());
+  const axis = normalizeRuntimeAxis(localTipPosition);
+  if (!axis) {
+    return { axis: new THREE.Vector3(0, 0, 0), source: "fallback-local-tip" };
+  }
+  return { axis, source: "computed-local-tip" };
+}
+
+function normalizeRuntimeAxis(axis: THREE.Vector3): THREE.Vector3 | null {
+  return axis.lengthSq() <= 0.00001 * 0.00001 ? null : axis.clone().normalize();
 }
 
 function vectorFromArray(values?: number[]): THREE.Vector3 {
