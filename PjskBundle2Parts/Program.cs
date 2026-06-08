@@ -145,13 +145,23 @@ if (HasMissingHeadLayerTextures(plan.HeadManifestTemplate))
 var importedAccessory = accessoryInput is not null
     ? modelFactory.CreateImportedModel(accessoryInput, SelectAccessoryRootName(accessoryInventory))
     : null;
+IReadOnlyList<ImportedTexture> bodyOverrideTextures =
+    resolvedCharacter3dCostume?.BodyColorVariationPath is not null
+        ? modelFactory.CreateImportedTextures(resolvedCharacter3dCostume.BodyColorVariationPath)
+        : Array.Empty<ImportedTexture>();
+IReadOnlyList<ImportedTexture> accessoryOverrideTextures =
+    resolvedCharacter3dCostume?.AccessoryColorVariationPath is not null
+        ? modelFactory.CreateImportedTextures(resolvedCharacter3dCostume.AccessoryColorVariationPath)
+        : Array.Empty<ImportedTexture>();
 
 outputPruner.PruneLegacyContainers(options.OutputDirectory);
 var characterTexturePathByName = unityRuntimeTextureExporter.ExportCharacterTextures(
     Path.Combine(options.OutputDirectory, "character"),
     importedBody,
     importedHead,
-    importedAccessory
+    importedAccessory,
+    bodyOverrideTextures: bodyOverrideTextures,
+    accessoryOverrideTextures: accessoryOverrideTextures
 );
 var updatedBodyManifest = UpdateBodyManifestForUnityRuntime(plan.BodyManifestTemplate);
 var updatedHeadManifest = UpdateHeadManifestForUnityRuntime(plan.HeadManifestTemplate, importedHead);
@@ -266,6 +276,10 @@ if (resolvedCharacter3dCostume is not null)
     Console.WriteLine($"  Character3D: {resolvedCharacter3dCostume.Character3dId} ({resolvedCharacter3dCostume.CharacterName})");
     Console.WriteLine($"  Unit: {resolvedCharacter3dCostume.Unit ?? "<none>"}");
     Console.WriteLine($"  Body costume: {resolvedCharacter3dCostume.BodyCostume3dId} -> {resolvedCharacter3dCostume.BodyAssetbundleName}");
+    if (resolvedCharacter3dCostume.BodyColorAssetbundleName is not null)
+    {
+        Console.WriteLine($"  Body color: {resolvedCharacter3dCostume.BodyColorAssetbundleName} -> {resolvedCharacter3dCostume.BodyColorVariationPath ?? "<missing>"}");
+    }
     Console.WriteLine($"  Hair costume: {resolvedCharacter3dCostume.HairCostume3dId} -> {resolvedCharacter3dCostume.HairAssetbundleName} ({resolvedCharacter3dCostume.HairBundleKind}, group {resolvedCharacter3dCostume.HairVariantGroupKey})");
     Console.WriteLine($"  Head costume: {resolvedCharacter3dCostume.HeadCostume3dId} -> {resolvedCharacter3dCostume.HeadAssetbundleName} ({resolvedCharacter3dCostume.HeadColorAssetbundleName ?? "default"}, {resolvedCharacter3dCostume.HeadBundleKind}, group {resolvedCharacter3dCostume.HeadVariantGroupKey})");
     Console.WriteLine($"  Head composition: {resolvedCharacter3dCostume.HeadCompositionKind}");

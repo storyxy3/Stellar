@@ -8,7 +8,10 @@ public sealed class UnityRuntimeTextureExporter
         string outputDirectory,
         IImported bodyImported,
         IImported headImported,
-        IImported? accessoryImported = null
+        IImported? accessoryImported = null,
+        IReadOnlyList<ImportedTexture>? bodyOverrideTextures = null,
+        IReadOnlyList<ImportedTexture>? headOverrideTextures = null,
+        IReadOnlyList<ImportedTexture>? accessoryOverrideTextures = null
     )
     {
         Directory.CreateDirectory(outputDirectory);
@@ -22,8 +25,22 @@ public sealed class UnityRuntimeTextureExporter
             result
         );
         ExportPartTextures(
+            Path.Combine(outputDirectory, "textures", "body"),
+            bodyOverrideTextures,
+            "body",
+            Path.Combine("textures", "body"),
+            result
+        );
+        ExportPartTextures(
             Path.Combine(outputDirectory, "textures", "head"),
             headImported.TextureList,
+            "head",
+            Path.Combine("textures", "head"),
+            result
+        );
+        ExportPartTextures(
+            Path.Combine(outputDirectory, "textures", "head"),
+            headOverrideTextures,
             "head",
             Path.Combine("textures", "head"),
             result
@@ -38,18 +55,30 @@ public sealed class UnityRuntimeTextureExporter
                 result
             );
         }
+        ExportPartTextures(
+            Path.Combine(outputDirectory, "textures", "accessory"),
+            accessoryOverrideTextures,
+            "accessory",
+            Path.Combine("textures", "accessory"),
+            result
+        );
 
         return result;
     }
 
     private static void ExportPartTextures(
         string textureDirectory,
-        IReadOnlyList<ImportedTexture> textures,
+        IReadOnlyList<ImportedTexture>? textures,
         string prefix,
         string relativeTextureDirectory,
         Dictionary<string, string> result
     )
     {
+        if (textures is null || textures.Count == 0)
+        {
+            return;
+        }
+
         Directory.CreateDirectory(textureDirectory);
         foreach (var texture in textures)
         {

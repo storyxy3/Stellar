@@ -168,16 +168,26 @@ public sealed record PjskSekaiRuntimeCostumeMetadata(
     [property: JsonPropertyName("unit")] string? Unit,
     [property: JsonPropertyName("bodyCostume3dId")] int BodyCostume3dId,
     [property: JsonPropertyName("bodyAssetbundleName")] string BodyAssetbundleName,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("bodyColorAssetbundleName")] string? BodyColorAssetbundleName,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("bodyColorVariationPath")] string? BodyColorVariationPath,
     [property: JsonPropertyName("hairCostume3dId")] int HairCostume3dId,
     [property: JsonPropertyName("hairAssetbundleName")] string HairAssetbundleName,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("hairColorAssetbundleName")] string? HairColorAssetbundleName,
     [property: JsonPropertyName("hairBundleKind")] string HairBundleKind,
     [property: JsonPropertyName("hairVariantGroupKey")] string HairVariantGroupKey,
     [property: JsonPropertyName("headCostume3dId")] int HeadCostume3dId,
     [property: JsonPropertyName("headAssetbundleName")] string HeadAssetbundleName,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("headColorAssetbundleName")] string? HeadColorAssetbundleName,
     [property: JsonPropertyName("headBundleKind")] string HeadBundleKind,
     [property: JsonPropertyName("headVariantGroupKey")] string HeadVariantGroupKey,
     [property: JsonPropertyName("headCompositionKind")] string HeadCompositionKind,
     [property: JsonPropertyName("mainHeadAssetbundleName")] string MainHeadAssetbundleName,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("mainHeadColorVariationPath")] string? MainHeadColorVariationPath,
     [property: JsonPropertyName("mainHeadMode")] string MainHeadMode,
     [property: JsonPropertyName("mainHeadCostumeType")] string MainHeadCostumeType,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -187,7 +197,9 @@ public sealed record PjskSekaiRuntimeCostumeMetadata(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     [property: JsonPropertyName("accessoryAttachNode")] string? AccessoryAttachNode,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    [property: JsonPropertyName("accessoryColorAssetbundleName")] string? AccessoryColorAssetbundleName
+    [property: JsonPropertyName("accessoryColorAssetbundleName")] string? AccessoryColorAssetbundleName,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("accessoryColorVariationPath")] string? AccessoryColorVariationPath
 );
 
 public sealed record PjskSekaiRuntimeContainer(

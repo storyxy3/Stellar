@@ -40,7 +40,14 @@ public sealed class Character3dCostumeResolver
         var hair = ResolveCostume(costumesById, character3d.HairCostume3dId, character3d.Unit, "hair");
         var head = ResolveCostume(costumesById, character3d.HeadCostume3dId, character3d.Unit, "head");
 
-        var bodyPath = ResolveBodyBundlePath(normalizedAssetRoot, body.AssetbundleName!, character);
+        var bodyDefaultPath = ResolveBodyBundlePath(normalizedAssetRoot, body.AssetbundleName!, character);
+        var bodyColorVariationPath = ResolveBodyColorVariationPath(
+            normalizedAssetRoot,
+            body.AssetbundleName!,
+            ResolveBodyBundleFileName(character),
+            body.ColorAssetbundleName
+        );
+        var bodyPath = bodyDefaultPath;
         var hairPath = ResolveFaceBundlePath(normalizedAssetRoot, hair.AssetbundleName!, "hair");
         var headType = head.HeadCostume3dAssetbundleType ?? "unknown";
         var hairType = hair.HeadCostume3dAssetbundleType ?? "head_and_hair";
@@ -57,6 +64,9 @@ public sealed class Character3dCostumeResolver
         var useHeadAsMain = completeHeadPath is not null;
         var mainHeadPath = useHeadAsMain ? completeHeadPath! : hairPath;
         var mainHeadAssetbundleName = useHeadAsMain ? head.AssetbundleName! : hair.AssetbundleName!;
+        var mainHeadColorVariationPath = (useHeadAsMain ? head.ColorAssetbundleName : hair.ColorAssetbundleName) is not null
+            ? mainHeadPath
+            : null;
         var mainHeadType = useHeadAsMain ? headType : hairType;
         var mainHeadMode = useHeadAsMain ? "complete_head" : "base_hair";
         // Same-group n/letter/unsuffixed face bundles are complete head alternatives, not attachable
@@ -84,9 +94,11 @@ public sealed class Character3dCostumeResolver
             CharacterName: character3d.Name,
             Unit: character3d.Unit,
             BodyPath: bodyPath,
+            BodyColorVariationPath: bodyColorVariationPath,
             HairPath: hairPath,
             MainHeadPath: mainHeadPath,
             MainHeadAssetbundleName: mainHeadAssetbundleName,
+            MainHeadColorVariationPath: mainHeadColorVariationPath,
             MainHeadMode: hasAccessory ? $"{mainHeadMode}_with_optional_accessory" : mainHeadMode,
             MainHeadCostumeType: mainHeadType,
             HeadTextureFallbackPath: headTextureFallbackPath,
@@ -305,6 +317,37 @@ public sealed class Character3dCostumeResolver
                 baseDirectory,
                 accessoryId,
                 attachNode,
+                $"{colorAssetbundleName}.bundle"
+            );
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? ResolveBodyColorVariationPath(
+        string assetRoot,
+        string assetbundleName,
+        string bodyBundleFileName,
+        string? colorAssetbundleName
+    )
+    {
+        if (string.IsNullOrWhiteSpace(colorAssetbundleName))
+        {
+            return null;
+        }
+
+        var normalizedName = assetbundleName.Replace('\\', '/').Trim('/');
+        var bodyType = Path.GetFileNameWithoutExtension(bodyBundleFileName);
+        foreach (var baseDirectory in ResolveColorVariationBaseDirectoryCandidates(assetRoot, "body"))
+        {
+            var candidate = Path.Combine(
+                baseDirectory,
+                ToSystemPath(normalizedName),
+                bodyType,
                 $"{colorAssetbundleName}.bundle"
             );
             if (File.Exists(candidate))

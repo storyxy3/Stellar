@@ -1086,22 +1086,28 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
             Unit: costume.Unit,
             BodyCostume3dId: costume.BodyCostume3dId,
             BodyAssetbundleName: costume.BodyAssetbundleName,
+            BodyColorAssetbundleName: costume.BodyColorAssetbundleName,
+            BodyColorVariationPath: costume.BodyColorVariationPath,
             HairCostume3dId: costume.HairCostume3dId,
             HairAssetbundleName: costume.HairAssetbundleName,
+            HairColorAssetbundleName: costume.HairColorAssetbundleName,
             HairBundleKind: costume.HairBundleKind,
             HairVariantGroupKey: costume.HairVariantGroupKey,
             HeadCostume3dId: costume.HeadCostume3dId,
             HeadAssetbundleName: costume.HeadAssetbundleName,
+            HeadColorAssetbundleName: costume.HeadColorAssetbundleName,
             HeadBundleKind: costume.HeadBundleKind,
             HeadVariantGroupKey: costume.HeadVariantGroupKey,
             HeadCompositionKind: costume.HeadCompositionKind,
             MainHeadAssetbundleName: costume.MainHeadAssetbundleName,
+            MainHeadColorVariationPath: costume.MainHeadColorVariationPath,
             MainHeadMode: costume.MainHeadMode,
             MainHeadCostumeType: costume.MainHeadCostumeType,
             HeadTextureFallbackAssetbundleName: costume.HeadTextureFallbackAssetbundleName,
             AccessoryHeadAssetbundleName: costume.AccessoryHeadAssetbundleName,
             AccessoryAttachNode: costume.AccessoryAttachNode,
-            AccessoryColorAssetbundleName: costume.AccessoryColorAssetbundleName
+            AccessoryColorAssetbundleName: costume.AccessoryColorAssetbundleName,
+            AccessoryColorVariationPath: costume.AccessoryColorVariationPath
         );
     }
 
