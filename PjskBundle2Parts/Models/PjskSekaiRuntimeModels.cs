@@ -164,6 +164,8 @@ public sealed record PjskSekaiRuntimeCharacter(
 public sealed record PjskSekaiRuntimeCostumeMetadata(
     [property: JsonPropertyName("character3dId")] int Character3dId,
     [property: JsonPropertyName("characterName")] string CharacterName,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("unit")] string? Unit,
     [property: JsonPropertyName("bodyCostume3dId")] int BodyCostume3dId,
     [property: JsonPropertyName("bodyAssetbundleName")] string BodyAssetbundleName,
     [property: JsonPropertyName("hairCostume3dId")] int HairCostume3dId,

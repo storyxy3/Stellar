@@ -82,6 +82,7 @@ public sealed class Character3dCostumeResolver
             Character3dId: character3d.Id,
             CharacterId: character3d.CharacterId,
             CharacterName: character3d.Name,
+            Unit: character3d.Unit,
             BodyPath: bodyPath,
             HairPath: hairPath,
             MainHeadPath: mainHeadPath,
@@ -116,7 +117,7 @@ public sealed class Character3dCostumeResolver
     private static Costume3dModelMaster ResolveCostume(
         IReadOnlyDictionary<int, IReadOnlyList<Costume3dModelMaster>> costumesById,
         int costume3dId,
-        string unit,
+        string? unit,
         string label
     )
     {

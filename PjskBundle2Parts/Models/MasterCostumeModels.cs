@@ -36,6 +36,7 @@ public sealed record ResolvedCharacter3dCostume(
     int Character3dId,
     int CharacterId,
     string CharacterName,
+    string? Unit,
     string BodyPath,
     string HairPath,
     string MainHeadPath,

@@ -65,7 +65,7 @@ try
         }
         motionPath ??= ResolveDefaultCostumeSettingMotionPath(
             options.AssetRoot!,
-            resolvedCharacter3dCostume.CharacterId
+            resolvedCharacter3dCostume
         );
     }
     else
@@ -264,6 +264,7 @@ Console.WriteLine("Resolved inputs");
 if (resolvedCharacter3dCostume is not null)
 {
     Console.WriteLine($"  Character3D: {resolvedCharacter3dCostume.Character3dId} ({resolvedCharacter3dCostume.CharacterName})");
+    Console.WriteLine($"  Unit: {resolvedCharacter3dCostume.Unit ?? "<none>"}");
     Console.WriteLine($"  Body costume: {resolvedCharacter3dCostume.BodyCostume3dId} -> {resolvedCharacter3dCostume.BodyAssetbundleName}");
     Console.WriteLine($"  Hair costume: {resolvedCharacter3dCostume.HairCostume3dId} -> {resolvedCharacter3dCostume.HairAssetbundleName} ({resolvedCharacter3dCostume.HairBundleKind}, group {resolvedCharacter3dCostume.HairVariantGroupKey})");
     Console.WriteLine($"  Head costume: {resolvedCharacter3dCostume.HeadCostume3dId} -> {resolvedCharacter3dCostume.HeadAssetbundleName} ({resolvedCharacter3dCostume.HeadColorAssetbundleName ?? "default"}, {resolvedCharacter3dCostume.HeadBundleKind}, group {resolvedCharacter3dCostume.HeadVariantGroupKey})");
@@ -337,10 +338,13 @@ static async Task WriteJsonAsync<T>(string path, T payload)
     );
 }
 
-static string? ResolveDefaultCostumeSettingMotionPath(string assetRoot, int characterId)
+static string? ResolveDefaultCostumeSettingMotionPath(
+    string assetRoot,
+    ResolvedCharacter3dCostume costume
+)
 {
     var root = Path.GetFullPath(assetRoot);
-    var fileName = $"{characterId:00}_00.bundle";
+    var fileName = $"{ResolveCostumeSettingMotionCharacterId(costume):00}_00.bundle";
     var candidates = new[]
     {
         Path.Combine(root, "character", "motion", "costume_setting", fileName),
@@ -348,6 +352,24 @@ static string? ResolveDefaultCostumeSettingMotionPath(string assetRoot, int char
         Path.Combine(root, "costume_setting", fileName),
     };
     return candidates.FirstOrDefault(File.Exists);
+}
+
+static int ResolveCostumeSettingMotionCharacterId(ResolvedCharacter3dCostume costume)
+{
+    if (costume.CharacterId != 21)
+    {
+        return costume.CharacterId;
+    }
+
+    return (costume.Unit ?? string.Empty).ToLowerInvariant() switch
+    {
+        "light_sound" => 27,
+        "idol" => 28,
+        "street" => 29,
+        "theme_park" => 30,
+        "school_refusal" => 31,
+        _ => 21,
+    };
 }
 
 static BodyAssetManifest UpdateBodyManifestForUnityRuntime(BodyAssetManifest manifest)

@@ -1083,6 +1083,7 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
         return new PjskSekaiRuntimeCostumeMetadata(
             Character3dId: costume.Character3dId,
             CharacterName: costume.CharacterName,
+            Unit: costume.Unit,
             BodyCostume3dId: costume.BodyCostume3dId,
             BodyAssetbundleName: costume.BodyAssetbundleName,
             HairCostume3dId: costume.HairCostume3dId,
