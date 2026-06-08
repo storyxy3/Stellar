@@ -116,7 +116,10 @@ export type BodyDebugMode =
   | "rim_add"
   | "rim_gate"
   | "rim_color"
-  | "rim_scalar";
+  | "rim_scalar"
+  | "toon_luma"
+  | "shadow_mask"
+  | "shadow_target";
 export type FaceSdfDebugMode = "off" | "sdf" | "mask" | "limit" | "basis";
 export type FaceSdfDebugLightMode = "scene" | "front" | "left" | "right" | "back";
 export type RenderIsolationMode =
@@ -814,6 +817,8 @@ function getEyeThroughHairSourceKind(kind: unknown) {
     case "eyebrow_through_hair":
     case "eyebrow_stencil_prepass":
       return "eyebrow";
+    case "eyelight_through_hair":
+      return "eyelight";
     default:
       return "";
   }
@@ -1228,6 +1233,12 @@ function bodyDebugModeToUniform(mode: BodyDebugMode) {
       return 20;
     case "rim_scalar":
       return 21;
+    case "toon_luma":
+      return 24;
+    case "shadow_mask":
+      return 25;
+    case "shadow_target":
+      return 26;
     default:
       return 0;
   }
@@ -1509,6 +1520,8 @@ function getHeadLayerRenderOrder(kind: string) {
       return 32;
     case "eyelight":
       return 33;
+    case "eyelight_through_hair":
+      return 34;
     default:
       return 0;
   }
@@ -1594,6 +1607,15 @@ function configureFaceLayerOverlayStencil(
   material.stencilFail = THREE.KeepStencilOp;
   material.stencilZFail = THREE.KeepStencilOp;
   material.stencilZPass = THREE.KeepStencilOp;
+  material.depthTest = true;
+  material.depthWrite = false;
+  material.depthFunc = THREE.GreaterDepth;
+}
+
+function configureEyelightThroughHairOverlay(
+  material: THREE.Material
+) {
+  material.stencilWrite = false;
   material.depthTest = true;
   material.depthWrite = false;
   material.depthFunc = THREE.GreaterDepth;
@@ -3752,13 +3774,14 @@ export class PjskViewerApp {
       let isEyelightLayer = false;
       for (const material of materials) {
         if (material instanceof THREE.ShaderMaterial) {
+          const materialDraws = material.visible !== false && material.colorWrite !== false;
           if (material.uniforms.uFaceSdfEnabled) {
             material.uniforms.uFaceSdfEnabled.value = faceSdfEnabled ? 1.0 : 0.0;
             isFaceLayer = true;
           }
           if (material.uniforms.uMode && !material.uniforms.uFaceSdfEnabled) {
             isFaceLayer = true;
-            isEyelightLayer = isEyelightLayer || material.uniforms.uMode.value > 1.5;
+            isEyelightLayer = isEyelightLayer || (materialDraws && material.uniforms.uMode.value > 1.5);
           }
         }
       }
@@ -3875,7 +3898,7 @@ export class PjskViewerApp {
 
   private applyBodyDebugUniforms() {
     const debugUniform = bodyDebugModeToUniform(this.bodyDebugMode);
-    for (const slot of [this.bodySlot]) {
+    for (const slot of [this.bodySlot, this.headSlot]) {
       slot.traverse((node) => {
         const mesh = node as THREE.Mesh;
         if (!mesh.isMesh) {
@@ -3889,9 +3912,11 @@ export class PjskViewerApp {
         }
       });
     }
-    for (const entry of this.runtimeDebug.body) {
-      if (entry.shaderBodyDebugMode !== undefined || entry.resolvedKind === "body") {
-        entry.shaderBodyDebugMode = debugUniform;
+    for (const entries of [this.runtimeDebug.body, this.runtimeDebug.head]) {
+      for (const entry of entries) {
+        if (entry.shaderBodyDebugMode !== undefined || entry.resolvedKind === "body") {
+          entry.shaderBodyDebugMode = debugUniform;
+        }
       }
     }
   }
@@ -6049,6 +6074,34 @@ export class PjskViewerApp {
         material.visible = false;
         material.colorWrite = false;
         material.depthWrite = false;
+        const overlayMaterial = createSekaiLayerMaterial(
+          mainTex,
+          "eyelight",
+          options.eyeController?.highlightTiling,
+          {
+            tintColor: options.eyeController?.tintColor,
+            emissionColor: options.eyeController?.emissionColor,
+            lightInfluence: options.eyeController?.lightInfluence ?? lighting?.lightInfluence,
+            highlightInfluence: options.eyeController?.lightInfluenceForEyeHighlight ?? lighting?.lightInfluenceForEyeHighlight,
+            distortionFps: lighting?.distortionFps,
+            distortionIntensity: lighting?.distortionIntensity,
+            distortionIntensityX: lighting?.distortionIntensityX,
+            distortionIntensityY: lighting?.distortionIntensityY,
+            distortionOffsetX: lighting?.distortionOffsetX,
+            distortionOffsetY: lighting?.distortionOffsetY,
+            distortionScrollSpeed: lighting?.distortionScrollSpeed,
+            distortionScrollX: lighting?.distortionScrollX,
+            distortionScrollY: lighting?.distortionScrollY,
+            distortionTexTilingX: lighting?.distortionTexTilingX,
+            distortionTexTilingY: lighting?.distortionTexTilingY,
+            threshold: lighting?.threshold,
+            alphaScale: EYE_THROUGH_HAIR_ALPHA,
+          }
+        );
+        overlayMaterial.side = THREE.FrontSide;
+        configureEyelightThroughHairOverlay(overlayMaterial);
+        overlayMaterial.userData.pjskMaterialKind = "eyelight_through_hair";
+        material.userData.pjskOverlayMaterial = overlayMaterial;
       } else if (kind === "eyelash" || kind === "eyebrow") {
         material = createSekaiLayerMaterial(mainTex, "alpha", null, {
           vertexBViewOffset: 0.015,
@@ -6102,6 +6155,7 @@ export class PjskViewerApp {
           hairShadowEnabled: this.isLegacyHairShadowEnabled(),
           lambertEnabled: false,
           headPosition: this.hairHeadPosition,
+          bodyDebugMode: bodyDebugModeToUniform(this.bodyDebugMode),
           alphaCutoff: HAIR_ALPHA_CUTOFF,
         });
         configureHairOccluderStencil(material);
@@ -6117,6 +6171,7 @@ export class PjskViewerApp {
           skinColor2: headAsset.proxy.skinColor2 ?? headAsset.proxy.faceShadeColor,
           lighting,
           skinTintEnabled: usesSekaiSkinTint(kind),
+          bodyDebugMode: bodyDebugModeToUniform(this.bodyDebugMode),
           alphaCutoff: kind === "accessory" ? ACCESSORY_ALPHA_CUTOFF : 0.0,
         });
         configureBaseStencilClear(material);
@@ -6271,6 +6326,8 @@ export class PjskViewerApp {
               shaderUniforms?.uFaceShadowRangeLimitEnabled?.value ?? null,
             shaderFaceShadowRangeLimit:
               shaderUniforms?.uFaceShadowRangeLimit?.value ?? null,
+            shaderBodyDebugMode:
+              shaderUniforms?.uBodyDebugMode?.value ?? null,
             shaderHeadDotDirectionalLightX:
               shaderUniforms?.uHeadDotDirectionalLight?.value?.x ?? null,
             shaderHeadDotDirectionalLightY:

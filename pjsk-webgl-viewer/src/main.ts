@@ -8,9 +8,8 @@ import {
   cloneAssemblyState,
   getBodyAsset,
   getHeadAsset,
-  previewLightDirectionFit,
   previewLightDefaults,
-  previewShadowThresholdFit,
+  sekaiPluginLightLocationToThreeDirection,
   sampleCatalog,
 } from "./data/sampleScene";
 import {
@@ -18,6 +17,7 @@ import {
   type AnimationPlaybackSnapshot,
   type BodyAnimationKind,
   type BodyAnimationSelection,
+  type BodyDebugMode,
   type FaceMotionPlaybackSnapshot,
   type FaceMotionSet,
   type HairShadowMode,
@@ -876,28 +876,57 @@ function readRuntimePreviewLight(extension: UnknownRecord) {
   const preview = asRecord(
     profile.viewerTunedPreview ?? profile.ViewerTunedPreview
   );
-  if (!Object.keys(preview).length) {
+  const pluginPreview = asRecord(
+    profile.pluginPreview ?? profile.PluginPreview
+  );
+  const hasPreview = Object.keys(preview).length > 0;
+  const hasPluginPreview = Object.keys(pluginPreview).length > 0;
+  if (!hasPreview && !hasPluginPreview) {
     return null;
   }
-  // Keep this pass on one known candidate direction even when old imported packages
-  // still carry earlier ViewerTunedPreview / PluginPreview vectors.
-  const runtimeLightDirection = previewLightDirectionFit;
+  const pluginDirectionalLocation = readVec3Record(
+    pluginPreview.directionalLocation ?? pluginPreview.DirectionalLocation,
+    {
+      x: previewState.x,
+      y: -previewState.z,
+      z: previewState.y,
+    }
+  );
+  const pluginLightDirection =
+    sekaiPluginLightLocationToThreeDirection(pluginDirectionalLocation);
+  const readProfileNumber = (
+    previewCamel: string,
+    previewPascal: string,
+    pluginCamel: string,
+    pluginPascal: string,
+    fallback: number
+  ) =>
+    readNumber(
+      preview[previewCamel] ?? preview[previewPascal],
+      readNumber(pluginPreview[pluginCamel] ?? pluginPreview[pluginPascal], fallback)
+    );
   return {
-    x: runtimeLightDirection.x,
-    y: runtimeLightDirection.y,
-    z: runtimeLightDirection.z,
-    intensity: readNumber(preview.intensity ?? preview.Intensity, previewState.intensity),
-    ambient: readNumber(preview.ambient ?? preview.Ambient, previewState.ambient),
-    shadowThreshold: previewShadowThresholdFit,
-    shadowWeight: readNumber(preview.shadowWeight ?? preview.ShadowWeight, previewState.shadowWeight),
-    characterAmbient: readNumber(
-      preview.characterAmbient ?? preview.CharacterAmbient,
+    x: readNumber(preview.x ?? preview.X, pluginLightDirection.x),
+    y: readNumber(preview.y ?? preview.Y, pluginLightDirection.y),
+    z: readNumber(preview.z ?? preview.Z, pluginLightDirection.z),
+    intensity: readProfileNumber("intensity", "Intensity", "directionalEnergy", "DirectionalEnergy", previewState.intensity),
+    ambient: readProfileNumber("ambient", "Ambient", "ambientIntensity", "AmbientIntensity", previewState.ambient),
+    shadowThreshold: readProfileNumber("shadowThreshold", "ShadowThreshold", "shadowThreshold", "ShadowThreshold", previewState.shadowThreshold),
+    shadowWeight: readProfileNumber("shadowWeight", "ShadowWeight", "shadowWeight", "ShadowWeight", previewState.shadowWeight),
+    characterAmbient: readProfileNumber(
+      "characterAmbient",
+      "CharacterAmbient",
+      "characterAmbientIntensity",
+      "CharacterAmbientIntensity",
       previewState.characterAmbient
     ),
-    rimIntensity: readNumber(preview.rimIntensity ?? preview.RimIntensity, previewState.rimIntensity),
-    rimThreshold: readNumber(preview.rimThreshold ?? preview.RimThreshold, previewState.rimThreshold),
-    rimDirectionality: readNumber(
-      preview.rimDirectionality ?? preview.RimDirectionality,
+    rimIntensity: readProfileNumber("rimIntensity", "RimIntensity", "rimIntensity", "RimIntensity", previewState.rimIntensity),
+    rimThreshold: readProfileNumber("rimThreshold", "RimThreshold", "rimThreshold", "RimThreshold", previewState.rimThreshold),
+    rimDirectionality: readProfileNumber(
+      "rimDirectionality",
+      "RimDirectionality",
+      "rimDirectionality",
+      "RimDirectionality",
       previewState.rimDirectionality
     ),
     faceSoftness: readNumber(preview.faceSoftness ?? preview.FaceSoftness, previewState.faceSoftness),
@@ -2224,6 +2253,7 @@ type CaptureConfig = {
   warmupMs: number;
   warmupFrames: number;
   warmupMode: "animation" | "runtime";
+  bodyDebugMode: BodyDebugMode;
   renderIsolation: RenderIsolationMode;
   springRuntimeMode: SpringRuntimeMode;
   utjTraceBones: string[];
@@ -2260,6 +2290,7 @@ function readCaptureConfig(): CaptureConfig | null {
   const warmupFrames = Number(params.get("captureWarmupFrames") ?? "0");
   const warmupModeParam = params.get("captureWarmupMode");
   const warmupMode = warmupModeParam === "runtime" ? "runtime" : "animation";
+  const bodyDebugMode = readBodyDebugMode(params);
   const renderIsolation = readRenderIsolationMode(params);
   const springRuntimeMode = readSpringRuntimeMode(params);
   const utjTraceBones = params
@@ -2271,6 +2302,7 @@ function readCaptureConfig(): CaptureConfig | null {
   renderState.springRuntimeMode = springRuntimeMode;
   renderState.hairShadowMode = readHairShadowMode(params);
   viewer.setSpringRuntimeMode(springRuntimeMode);
+  viewer.setBodyDebugMode(bodyDebugMode);
   viewer.setRenderIsolationMode(renderIsolation);
   viewer.setHairShadowMode(renderState.hairShadowMode);
 
@@ -2281,11 +2313,47 @@ function readCaptureConfig(): CaptureConfig | null {
     warmupMs: Math.max(Math.trunc(Number.isFinite(warmupMs) ? warmupMs : 0), 0),
     warmupFrames: Math.max(Math.trunc(Number.isFinite(warmupFrames) ? warmupFrames : 0), 0),
     warmupMode,
+    bodyDebugMode,
     renderIsolation,
     springRuntimeMode,
     utjTraceBones,
     utjTraceMaxEvents: Math.max(Math.trunc(Number.isFinite(traceMaxEvents) ? traceMaxEvents : 240), 1),
   };
+}
+
+function readBodyDebugMode(params: URLSearchParams): BodyDebugMode {
+  const mode = params.get("bodyDebugMode");
+  switch (mode) {
+    case "skin":
+    case "neck":
+    case "contact":
+    case "h_r":
+    case "h_g":
+    case "h_b":
+    case "h_a":
+    case "vertex_r":
+    case "vertex_g":
+    case "base_shadow":
+    case "ndotl_raw":
+    case "h_b_adjusted_shadow":
+    case "ambient_target":
+    case "ambient_weight":
+    case "ambient_tint":
+    case "specular":
+    case "specular_mask":
+    case "specular_add":
+    case "rim_raw":
+    case "rim_add":
+    case "rim_gate":
+    case "rim_color":
+    case "rim_scalar":
+    case "toon_luma":
+    case "shadow_mask":
+    case "shadow_target":
+      return mode;
+    default:
+      return "off";
+  }
 }
 
 function readRenderIsolationMode(params: URLSearchParams): RenderIsolationMode {
@@ -2390,6 +2458,7 @@ async function prepareCaptureFrame(config: CaptureConfig) {
     phase: config.phase,
     requestedClip: config.clip,
     springRuntimeMode: config.springRuntimeMode,
+    bodyDebugMode: config.bodyDebugMode,
     renderIsolation: config.renderIsolation,
     import: lastImportSnapshot,
     animation: lastAnimationSnapshot,

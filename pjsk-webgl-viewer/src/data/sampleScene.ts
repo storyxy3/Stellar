@@ -223,11 +223,23 @@ export type CharacterImportCatalog = {
   defaultAssembly: CharacterAssemblyState;
 };
 
-export const previewLightDirectionFit: Vec3 = {
+export const sekaiReferenceDirectionalLocation: Vec3 = {
   x: -1.6,
-  y: 0.9,
-  z: 0.75,
+  y: -0.75,
+  z: 0.9,
 };
+
+export function sekaiPluginLightLocationToThreeDirection(location: Vec3): Vec3 {
+  // Blender/plugin light location uses Y-forward/Z-up. The viewer uses Three's Y-up/Z-forward basis.
+  return {
+    x: location.x,
+    y: location.z,
+    z: -location.y,
+  };
+}
+
+export const previewLightDirectionFit: Vec3 =
+  sekaiPluginLightLocationToThreeDirection(sekaiReferenceDirectionalLocation);
 
 export const previewShadowThresholdFit = 0.33;
 
@@ -261,7 +273,7 @@ export const sekaiRuntimeMaterialProfile: SekaiRuntimeMaterialProfile = {
     faceShadow: "Sekai SDF",
   },
   pluginPreview: {
-    directionalLocation: { x: -1.6, y: -0.75, z: 0.9 },
+    directionalLocation: sekaiReferenceDirectionalLocation,
     directionalEnergy: 0.48,
     ambientIntensity: 0.16,
     shadowThreshold: previewShadowThresholdFit,

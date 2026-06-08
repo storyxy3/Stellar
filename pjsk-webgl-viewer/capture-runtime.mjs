@@ -37,6 +37,7 @@ function parseArgs(argv) {
     warmupFrames: 0,
     warmupMode: "animation",
     yaw: "",
+    bodyDebugMode: "off",
     renderIsolation: "normal",
     springRuntimeMode: "off",
     traceUtjBones: [],
@@ -78,6 +79,8 @@ function parseArgs(argv) {
       options.warmupMode = readValue();
     } else if (arg === "--yaw") {
       options.yaw = readValue();
+    } else if (arg === "--body-debug-mode") {
+      options.bodyDebugMode = readValue();
     } else if (arg === "--render-isolation") {
       options.renderIsolation = readValue();
     } else if (arg === "--spring-runtime-mode") {
@@ -136,6 +139,16 @@ function parseArgs(argv) {
     "face_sdf",
     "no_face_sdf",
     "no_face_layers",
+    "no_eye_through_hair",
+    "eye_through_hair_only",
+    "eye_through_hair_eye_only",
+    "eye_through_hair_eyebrow_only",
+    "eye_through_hair_eyelash_only",
+    "no_eye_through_hair_eye",
+    "no_eye_through_hair_eyebrow",
+    "no_eye_through_hair_eyelash",
+    "no_eye_through_hair_eyelash_overlay",
+    "no_eye_through_hair_eyelash_prepass",
     "eyelight_only",
     "no_eyelight",
     "outline_only",
@@ -167,6 +180,8 @@ Options:
   --warmup-frames <n>  Deterministically step n frames at 60fps instead of real-time warmup
   --warmup-mode <mode> animation advances the loop; runtime freezes animation and settles spring. Default: animation
   --yaw <mode>         Character yaw mode: 0, 45, -45, 90, -90, 180
+  --body-debug-mode <mode>
+                       Body/hair shader debug: off, toon_luma, shadow_mask, shadow_target, etc.
   --render-isolation <mode>
                        Render isolation/debug mode. Default: normal
   --spring-runtime-mode <mode>
@@ -524,6 +539,7 @@ async function capture(options) {
     `&captureWarmupMs=${options.warmupMs}` +
     `&captureWarmupFrames=${options.warmupFrames}` +
     `&captureWarmupMode=${encodeURIComponent(options.warmupMode)}` +
+    `&bodyDebugMode=${encodeURIComponent(options.bodyDebugMode)}` +
     `&renderIsolation=${encodeURIComponent(options.renderIsolation)}` +
     `&springRuntimeMode=${encodeURIComponent(options.springRuntimeMode)}` +
     `&utjTraceMaxEvents=${options.traceUtjMaxEvents}` +

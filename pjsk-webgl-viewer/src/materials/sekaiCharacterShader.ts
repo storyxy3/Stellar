@@ -274,7 +274,7 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
           shadowValue = mix(shadowValue, texture2D(uShadowTex, vUv).rgb, clamp(uShadowTexWeight, 0.0, 1.0));
         }
         vec3 rawShadowValue = shadowValue;
-        vec4 valueSample = vec4(0.0, 0.0, 1.0, 0.0);
+        vec4 valueSample = vec4(0.0, 0.0, 0.5, 0.0);
         if (uUseValueTex > 0.5) {
           valueSample = texture2D(uValueTex, vUv);
         }
@@ -306,15 +306,15 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
         float shadowWidth = (uShadowWidthOverride >= 0.0)
           ? uShadowWidthOverride
           : uShadowWidth;
-        float litBand = toonBand(toonLightInput, materialShadowThreshold, shadowWidth);
-        float shadowBand = clamp((1.0 - litBand) * uShadowWeight, 0.0, 1.0);
-        float hAdjustedHalfNdl = (uUseValueTex > 0.5)
-          ? clamp(toonLightInput + (valueSample.b * 2.0 - 1.0), 0.0, 1.0)
-          : toonLightInput;
-        float hAdjustedLitBand = toonBand(hAdjustedHalfNdl, materialShadowThreshold, shadowWidth);
+        float geometricLitBand = toonBand(toonLightInput, materialShadowThreshold, shadowWidth);
+        float hShadowOffset = (uUseValueTex > 0.5) ? (hMask * 2.0 - 1.0) : 0.0;
+        float toonLuma = clamp(toonLightInput + hShadowOffset, 0.0, 1.0);
+        float hAdjustedLitBand = toonBand(toonLuma, materialShadowThreshold, shadowWidth);
+        float geometricShadowBand = clamp((1.0 - geometricLitBand) * uShadowWeight, 0.0, 1.0);
         float hAdjustedShadowBand = clamp((1.0 - hAdjustedLitBand) * uShadowWeight, 0.0, 1.0);
         float valueShadowInfluence = clamp(uValueShadowInfluence, 0.0, 1.0);
-        shadowBand = mix(shadowBand, hAdjustedShadowBand, valueShadowInfluence);
+        float litBand = mix(geometricLitBand, hAdjustedLitBand, valueShadowInfluence);
+        float shadowBand = mix(geometricShadowBand, hAdjustedShadowBand, valueShadowInfluence);
         if (uHairShadowEnabled > 0.5) {
           vec3 fromHead = vWorldPosition - uHeadPosition;
           float headDistance = length(fromHead);
@@ -329,11 +329,11 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
           float rangeLimit = clamp(uFaceShadowRangeLimit, 0.0, 1.0);
           shadowBand = max(shadowBand, headDotShadow * headYawShadow * rangeLimit * uShadowWeight);
         }
+        litBand = clamp(1.0 - shadowBand, 0.0, 1.0);
 
         // PJSK character shader semantics: C is the lit color; S already owns the toon-shadow target color.
         vec3 fallbackShadowColor = mainColor * uShadowColor * uGlobalShadowColor;
         vec3 shadowColor = (uUseShadowTex > 0.5) ? shadowValue * uGlobalShadowColor : fallbackShadowColor;
-        shadowColor *= vec3(0.88);
         float staticShadowDelta = max(0.0, dot(rawMainColor - rawShadowValue, vec3(0.299, 0.587, 0.114)));
         float hShadowPushMask = (uUseValueTex > 0.5) ? clamp((1.0 - valueSample.b) * 1.35, 0.0, 1.0) : 0.0;
         vec3 neckContactSize = max(uNeckContactSize, vec3(0.001));
@@ -378,10 +378,16 @@ export function createSekaiBodyMaterial(initial: BodyMaterialUniforms) {
           return;
         }
         // Experimental neck/contact shadow is kept debuggable but disabled until its data path is complete.
-        float lightSurfaceMask = (1.0 - skinMask) * smoothstep(0.58, 0.86, dot(mainColor, vec3(0.299, 0.587, 0.114)));
-        shadowBand *= mix(1.0, 0.62, lightSurfaceMask);
-        vec3 cleanLightShadowColor = mix(shadowColor, mainColor * vec3(0.93, 0.96, 0.99), 0.34);
-        shadowColor = mix(shadowColor, cleanLightShadowColor, lightSurfaceMask);
+        if (uBodyDebugMode > 23.5 && uBodyDebugMode < 24.5) {
+          gl_FragColor = vec4(outputColor(vec3(clamp(toonLuma, 0.0, 1.0))), 1.0);
+          return;
+        } else if (uBodyDebugMode > 24.5 && uBodyDebugMode < 25.5) {
+          gl_FragColor = vec4(outputColor(vec3(clamp(1.0 - litBand, 0.0, 1.0))), 1.0);
+          return;
+        } else if (uBodyDebugMode > 25.5 && uBodyDebugMode < 26.5) {
+          gl_FragColor = vec4(outputColor(clamp(shadowColor, 0.0, 1.0)), 1.0);
+          return;
+        }
         vec3 color = mix(mainColor, shadowColor, shadowBand);
 
         vec3 partsAmbient = mix(vec3(1.0), uPartsAmbientColor, 0.62);
@@ -1033,12 +1039,14 @@ export function createSekaiLayerMaterial(
           uv += (normalDrift + distortion) * mix(0.25, 1.0, uHighlightInfluence);
         }
         vec4 sampleColor = uUseMainTex > 0.5 ? texture2D(uMainTex, uv) : vec4(1.0);
-        float alpha = sampleColor.a;
+        float textureAlpha = sampleColor.a;
+        float alpha = textureAlpha;
         if (uMode > 1.5 && uStrictAlpha < 0.5) {
           float brightness = max(max(sampleColor.r, sampleColor.g), sampleColor.b);
-          float alphaHigh = mix(0.055, 0.14, uThreshold);
-          float brightnessAlpha = smoothstep(0.004, alphaHigh, brightness);
-          alpha = max(sampleColor.a, brightnessAlpha);
+          float alphaLow = mix(0.06, 0.16, uThreshold);
+          float alphaHigh = mix(0.32, 0.55, uThreshold);
+          float brightnessMask = smoothstep(alphaLow, alphaHigh, brightness);
+          alpha = textureAlpha * brightnessMask;
         }
         if (alpha < max(uAlphaCutoff, 0.001)) {
           discard;
