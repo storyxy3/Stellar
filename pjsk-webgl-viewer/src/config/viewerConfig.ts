@@ -1,4 +1,4 @@
-import type { MaterialBindingMode } from "../engine/PjskViewerApp";
+import type { HairShadowMode, MaterialBindingMode } from "../engine/PjskViewerApp";
 
 export type ToonShadowSmoothMode =
   | "auto"
@@ -13,6 +13,7 @@ export type SpringRuntimeMode = "off" | "unity-prefab";
 
 export type ViewerRenderState = {
   materialBindingMode: MaterialBindingMode;
+  hairShadowMode: HairShadowMode;
   toonShadowSmoothMode: ToonShadowSmoothMode;
   valueShadowInfluenceMode: ValueShadowInfluenceMode;
   characterYawMode: CharacterYawMode;
@@ -56,6 +57,7 @@ export const characterYawDegreesByMode: Record<CharacterYawMode, number> = {
 
 export const defaultRenderState: ViewerRenderState = {
   materialBindingMode: "manifest",
+  hairShadowMode: "light",
   toonShadowSmoothMode: "auto",
   valueShadowInfluenceMode: "1",
   characterYawMode: "0",

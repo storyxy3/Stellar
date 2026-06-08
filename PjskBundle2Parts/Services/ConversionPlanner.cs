@@ -369,6 +369,7 @@ public sealed class ConversionPlanner
                     MaterialKind: ClassifyHeadMaterialKind(materialName, hasFaceShadowTex),
                     MainTex: FindTextureSlot(material, "_MainTex"),
                     ShadowTex: FindTextureSlot(material, "_ShadowTex"),
+                    ValueTex: FindTextureSlot(material, "_ValueTex"),
                     FaceShadowTex: FindTextureSlot(material, "_FaceShadowTex"),
                     Mode: hasFaceShadowTex ? "sdf" : "clean",
                     Lighting: BuildLightingSettings(material)

@@ -58,7 +58,7 @@ public sealed class GltfEmitter
             textureSelector: (_, importedMaterial) =>
                 ResolvePreferredTextureName(
                     importedMaterial,
-                    manifest.FaceMaterials.SelectMany(slot => new[] { slot.MainTex, slot.ShadowTex, slot.FaceShadowTex })
+                    manifest.FaceMaterials.SelectMany(slot => new[] { slot.MainTex, slot.ShadowTex, slot.ValueTex, slot.FaceShadowTex })
                 )
         );
     }
@@ -108,7 +108,7 @@ public sealed class GltfEmitter
             material => material.Name,
             material => CreateMaterial(material, ResolvePreferredTextureName(
                     material,
-                    headManifest.FaceMaterials.SelectMany(slot => new[] { slot.MainTex, slot.ShadowTex, slot.FaceShadowTex })),
+                    headManifest.FaceMaterials.SelectMany(slot => new[] { slot.MainTex, slot.ShadowTex, slot.ValueTex, slot.FaceShadowTex })),
                 headImported.TextureList),
             StringComparer.OrdinalIgnoreCase
         );
@@ -262,7 +262,7 @@ public sealed class GltfEmitter
             material => material.Name,
             material => CreateMaterial(material, ResolvePreferredTextureName(
                     material,
-                    headManifest.FaceMaterials.SelectMany(slot => new[] { slot.MainTex, slot.ShadowTex, slot.FaceShadowTex })),
+                    headManifest.FaceMaterials.SelectMany(slot => new[] { slot.MainTex, slot.ShadowTex, slot.ValueTex, slot.FaceShadowTex })),
                 headImported.TextureList),
             StringComparer.OrdinalIgnoreCase
         );

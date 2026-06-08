@@ -137,6 +137,7 @@ export type FaceMaterialSlot = {
   materialKind?: string;
   mainTex?: string;
   shadowTex?: string;
+  valueTex?: string;
   faceShadowTex?: string;
   mode: FaceMode;
   lighting?: MaterialLightingSettings;

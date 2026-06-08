@@ -11,7 +11,8 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
         CombinedSpringBoneExport combinedSpringBone,
         VrmSpringBoneCandidate vrmSpringBoneCandidate,
         MotionExportResult? motionExport = null,
-        ResolvedCharacter3dCostume? resolvedCharacter3dCostume = null
+        ResolvedCharacter3dCostume? resolvedCharacter3dCostume = null,
+        BundleInventory? accessoryInventory = null
     )
     {
         var bodySlots = plan.BodyManifestTemplate.BodyMaterials
@@ -37,16 +38,21 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
                 MaterialKind: slot.MaterialKind,
                 MainTex: RewriteCharacterTexturePath("head", slot.MainTex, characterTexturePathByName),
                 ShadowTex: RewriteCharacterTexturePath("head", slot.ShadowTex, characterTexturePathByName),
-                ValueTex: null,
+                ValueTex: RewriteCharacterTexturePath("head", slot.ValueTex, characterTexturePathByName),
                 FaceShadowTex: RewriteCharacterTexturePath("head", slot.FaceShadowTex, characterTexturePathByName),
                 RenderOrder: GetHeadRenderOrder(slot.MaterialKind),
                 ShaderPipeline: ResolveHeadShaderPipeline(plan, slot.MaterialKind),
                 Lighting: slot.Lighting
             ))
             .ToList();
+        var accessorySlots = BuildAccessoryMaterialSlots(
+            plan,
+            accessoryInventory,
+            characterTexturePathByName
+        );
         var missingTextureRoles = new List<PjskSekaiRuntimeMissingTextureRole>();
         var textureRoles = new List<PjskSekaiRuntimeTextureRole>();
-        foreach (var slot in bodySlots.Concat(headSlots))
+        foreach (var slot in bodySlots.Concat(headSlots).Concat(accessorySlots))
         {
             AddTextureRole(textureRoles, missingTextureRoles, slot, "main", slot.MainTex);
             AddTextureRole(textureRoles, missingTextureRoles, slot, "shadow", slot.ShadowTex);
@@ -102,7 +108,8 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
             HeadManifest: plan.HeadManifestTemplate,
             MaterialSlots: new PjskSekaiRuntimeMaterialSlots(
                 Body: bodySlots,
-                Head: headSlots
+                Head: headSlots,
+                Accessory: accessorySlots.Count > 0 ? accessorySlots : null
             ),
             TextureRoles: textureRoles,
             CharacterTextures: characterTexturePathByName
@@ -1141,6 +1148,116 @@ public sealed class PjskSekaiRuntimeExtensionBuilder
             Role: role,
             Uri: uri
         ));
+    }
+
+    private static IReadOnlyList<PjskSekaiRuntimeMaterialSlot> BuildAccessoryMaterialSlots(
+        ConversionPlan plan,
+        BundleInventory? accessoryInventory,
+        IReadOnlyDictionary<string, string> characterTexturePathByName
+    )
+    {
+        if (accessoryInventory is null)
+        {
+            return Array.Empty<PjskSekaiRuntimeMaterialSlot>();
+        }
+
+        var materialMap = accessoryInventory.Materials.ToDictionary(
+            material => material.Name,
+            StringComparer.OrdinalIgnoreCase
+        );
+        return accessoryInventory.SkinnedMeshes
+            .Concat(accessoryInventory.StaticMeshes)
+            .SelectMany(mesh => mesh.MaterialNames.Select(materialName =>
+            {
+                var material = materialMap.TryGetValue(materialName, out var value) ? value : null;
+                return new PjskSekaiRuntimeMaterialSlot(
+                    Part: "accessory",
+                    MeshName: mesh.MeshName,
+                    MaterialName: materialName,
+                    MaterialKind: "accessory",
+                    MainTex: RewriteCharacterTexturePath(
+                        "accessory",
+                        FindTextureSlot(material, "_MainTex"),
+                        characterTexturePathByName
+                    ),
+                    ShadowTex: RewriteCharacterTexturePath(
+                        "accessory",
+                        FindTextureSlot(material, "_ShadowTex"),
+                        characterTexturePathByName
+                    ),
+                    ValueTex: null,
+                    FaceShadowTex: null,
+                    RenderOrder: GetHeadRenderOrder("accessory"),
+                    ShaderPipeline: plan.SekaiVrmProfile.SekaiRuntimeMaterialProfile.BodyPipeline,
+                    Lighting: BuildLightingSettings(material)
+                );
+            }))
+            .DistinctBy(
+                slot => $"{slot.MeshName}::{slot.MaterialName}",
+                StringComparer.OrdinalIgnoreCase
+            )
+            .ToList();
+    }
+
+    private static MaterialLightingSettings BuildLightingSettings(MaterialInventory? material)
+    {
+        return new MaterialLightingSettings(
+            SpecularPower: FindFloatProperty(material, "_SpecularPower") ?? 0f,
+            RimThreshold:
+                FindFloatProperty(material, "_SpecularStrength") ??
+                FindFloatProperty(material, "_RimThreshold") ??
+                0.2f,
+            ShadowTexWeight: FindFloatProperty(material, "_ShadowTexWeight") ?? 1f,
+            Saturation: FindFloatProperty(material, "_Saturation") ?? 0.5f,
+            PartsAmbientColor: FindColorProperty(material, "_PartsAmbientColor") ?? "#ffffff",
+            ReflectionBlendColor: FindColorProperty(material, "_ReflectionBlendColor") ?? "#ffffff",
+            OutlineWidth: FindFloatProperty(material, "_OutlineWidth") ?? 0.001f,
+            OutlineOffset: FindFloatProperty(material, "_OutlineOffset") ?? 0f,
+            OutlineLightness: FindFloatProperty(material, "_OutlineL") ?? 0.5f,
+            ShadowWidth: FindFloatProperty(material, "_ShadowWidth") ?? 0f,
+            UseOutlineSecondNormal: FindFloatProperty(material, "_UseOutlineSecondNormal") ?? 0f,
+            DistortionFps: FindFloatProperty(material, "_DistortionFPS") ?? 12f,
+            DistortionIntensity: FindFloatProperty(material, "_DistortionIntensity") ?? 0f,
+            DistortionIntensityX: FindFloatProperty(material, "_DistortionIntensityX") ?? 0f,
+            DistortionIntensityY: FindFloatProperty(material, "_DistortionIntensityY") ?? 0f,
+            DistortionOffsetX: FindFloatProperty(material, "_DistortionOffsetX") ?? 0f,
+            DistortionOffsetY: FindFloatProperty(material, "_DistortionOffsetY") ?? 0f,
+            DistortionScrollSpeed: FindFloatProperty(material, "_DistortionScrollSpeed") ?? 1f,
+            DistortionScrollX: FindFloatProperty(material, "_DistortionScrollX") ?? 0f,
+            DistortionScrollY: FindFloatProperty(material, "_DistortionScrollY") ?? 0f,
+            DistortionTexTilingX: FindFloatProperty(material, "_DistortionTexTilingX") ?? 1f,
+            DistortionTexTilingY: FindFloatProperty(material, "_DistortionTexTilingY") ?? 1f,
+            Threshold: FindFloatProperty(material, "_Threshold") ?? 0.5f,
+            LightInfluence: FindFloatProperty(material, "_LightInfluence") ?? 1f,
+            LightInfluenceForEyeHighlight: FindFloatProperty(material, "_LightInfluenceForEyeHighlight") ?? 1f
+        );
+    }
+
+    private static float? FindFloatProperty(MaterialInventory? material, string propertyName)
+    {
+        return material?.FloatProperties
+            .FirstOrDefault(entry => string.Equals(entry.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+            ?.Value;
+    }
+
+    private static string? FindTextureSlot(MaterialInventory? material, string slotName)
+    {
+        return material?.TextureSlots
+            .FirstOrDefault(slot => string.Equals(slot.SlotName, slotName, StringComparison.OrdinalIgnoreCase))
+            ?.TextureName;
+    }
+
+    private static string? FindColorProperty(MaterialInventory? material, string propertyName)
+    {
+        var color = material?.ColorProperties
+            .FirstOrDefault(entry => string.Equals(entry.Name, propertyName, StringComparison.OrdinalIgnoreCase));
+        return color is null ? null : ToHex(color.R, color.G, color.B);
+    }
+
+    private static string ToHex(float r, float g, float b)
+    {
+        static int ClampByte(float value) => Math.Clamp((int)MathF.Round(value * 255f), 0, 255);
+        return $"#{ClampByte(r):X2}{ClampByte(g):X2}{ClampByte(b):X2}".ToLowerInvariant();
     }
 
     private static bool IsRequiredTextureRole(string materialKind, string role)

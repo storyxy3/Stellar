@@ -226,7 +226,9 @@ public sealed record PjskSekaiRuntimeAssembly(
 
 public sealed record PjskSekaiRuntimeMaterialSlots(
     [property: JsonPropertyName("body")] IReadOnlyList<PjskSekaiRuntimeMaterialSlot> Body,
-    [property: JsonPropertyName("head")] IReadOnlyList<PjskSekaiRuntimeMaterialSlot> Head
+    [property: JsonPropertyName("head")] IReadOnlyList<PjskSekaiRuntimeMaterialSlot> Head,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    [property: JsonPropertyName("accessory")] IReadOnlyList<PjskSekaiRuntimeMaterialSlot>? Accessory = null
 );
 
 public sealed record PjskSekaiRuntimeMaterialSlot(

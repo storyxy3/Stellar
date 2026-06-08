@@ -59,6 +59,7 @@ public sealed record FaceMaterialSlot(
     string MaterialKind,
     string? MainTex,
     string? ShadowTex,
+    string? ValueTex,
     string? FaceShadowTex,
     string Mode,
     MaterialLightingSettings Lighting

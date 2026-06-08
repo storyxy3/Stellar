@@ -201,12 +201,15 @@ var pjskSekaiRuntime = pjskSekaiRuntimeExtensionBuilder.Build(
     combinedSpringBone,
     vrmSpringBoneCandidate,
     motionExport,
-    resolvedCharacter3dCostume
+    resolvedCharacter3dCostume,
+    accessoryInventory
 );
 var nativeMeshes = unityRuntimeNativeMeshExporter.Export(
     importedBody,
     importedHeadUnityRuntime,
-    pjskSekaiRuntime.Extension.PjskSpringBone.RuntimeUnitySetup
+    pjskSekaiRuntime.Extension.PjskSpringBone.RuntimeUnitySetup,
+    importedAccessory,
+    resolvedCharacter3dCostume?.AccessoryAttachNode
 );
 var pjskUnityRuntime = new PjskUnityRuntimePackage(
     Version: "0414",

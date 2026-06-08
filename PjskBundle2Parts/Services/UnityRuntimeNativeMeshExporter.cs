@@ -8,7 +8,9 @@ public sealed class UnityRuntimeNativeMeshExporter
     public PjskUnityRuntimeNativeMeshSet Export(
         IImported bodyImported,
         IImported headImported,
-        PjskSpringBoneRuntimeUnitySetup runtimeUnitySetup
+        PjskSpringBoneRuntimeUnitySetup runtimeUnitySetup,
+        IImported? accessoryImported = null,
+        string? accessoryAttachNodeName = null
     )
     {
         var warnings = new List<string>();
@@ -36,6 +38,16 @@ public sealed class UnityRuntimeNativeMeshExporter
             meshes.AddRange(ExportPart("Head", headImported, headGraph, runtimeUnitySetup.ActiveRootProfile.ActiveRoots, warnings));
         }
 
+        if (accessoryImported is not null)
+        {
+            meshes.AddRange(ExportAccessoryPart(
+                accessoryImported,
+                runtimeUnitySetup,
+                accessoryAttachNodeName,
+                warnings
+            ));
+        }
+
         return new PjskUnityRuntimeNativeMeshSet(
             Version: "0414",
             CoordinateSpace: "assetstudio-modelconverter-viewer-space",
@@ -45,6 +57,76 @@ public sealed class UnityRuntimeNativeMeshExporter
                 .OrderBy(warning => warning, StringComparer.Ordinal)
                 .ToList()
         );
+    }
+
+    private static IReadOnlyList<PjskUnityRuntimeNativeMesh> ExportAccessoryPart(
+        IImported imported,
+        PjskSpringBoneRuntimeUnitySetup runtimeUnitySetup,
+        string? attachNodeName,
+        List<string> warnings
+    )
+    {
+        var transformPaths = runtimeUnitySetup.PrefabGraphs
+            .SelectMany(graph => graph.Transforms)
+            .Select(transform => transform.TransformPath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Select(path => path!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var attachPath = ResolveAccessoryAttachPath(transformPaths, attachNodeName);
+        if (attachPath is null)
+        {
+            warnings.Add($"Accessory meshes skipped: attach node '{attachNodeName ?? "<none>"}' was not found in runtime prefab transforms.");
+            return Array.Empty<PjskUnityRuntimeNativeMesh>();
+        }
+
+        var morphMap = BuildMorphMap(imported.MorphList);
+        var result = new List<PjskUnityRuntimeNativeMesh>();
+        foreach (var mesh in imported.MeshList
+            .Where(mesh => !string.IsNullOrWhiteSpace(mesh.Path))
+            .OrderBy(mesh => mesh.Path, StringComparer.OrdinalIgnoreCase))
+        {
+            if (!TryResolveSkinBinding(mesh, transformPaths, transformPaths, out var skinBinding, out var skinFailure))
+            {
+                warnings.Add($"Accessory mesh '{mesh.Path}' exported without skin binding: {skinFailure}");
+                skinBinding = EmptySkinBinding;
+            }
+
+            var renderer = new SpringPrefabRenderer(
+                PathId: -100000 - result.Count,
+                TypeName: "ImportedAccessoryMesh",
+                GameObjectPathId: null,
+                TransformPathId: null,
+                Name: Path.GetFileName(mesh.Path),
+                TransformPath: attachPath,
+                PoseRoot: FirstPathSegment(attachPath),
+                ActiveSelf: true,
+                ActiveInHierarchy: true,
+                Enabled: true,
+                MeshPathId: null,
+                MeshName: Path.GetFileName(mesh.Path),
+                SkinnedMeshBones: Array.Empty<long>(),
+                RootBonePathId: null,
+                MaterialPathIds: Array.Empty<long>()
+            );
+
+            result.Add(BuildNativeMesh(
+                "Accessory",
+                mesh,
+                renderer,
+                attachPath,
+                rootBonePath: null,
+                skinBinding,
+                ResolveMorphTargets(mesh.Path, morphMap)
+            ));
+        }
+
+        if (result.Count == 0)
+        {
+            warnings.Add("Accessory imported model had no mesh paths; native accessory meshes were not exported.");
+        }
+
+        return result;
     }
 
     private static IReadOnlyList<PjskUnityRuntimeNativeMesh> ExportPart(
@@ -135,6 +217,68 @@ public sealed class UnityRuntimeNativeMeshExporter
         var poseRoot = renderer.PoseRoot ?? FirstPathSegment(renderer.TransformPath);
         return !string.IsNullOrWhiteSpace(poseRoot) &&
             activeRoots.Contains(poseRoot, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string? ResolveAccessoryAttachPath(
+        IReadOnlyList<string> transformPaths,
+        string? attachNodeName
+    )
+    {
+        if (!string.IsNullOrWhiteSpace(attachNodeName) &&
+            TryResolveTransformPathByNameOrPath(transformPaths, attachNodeName!, out var explicitPath))
+        {
+            return explicitPath;
+        }
+
+        foreach (var fallback in new[]
+        {
+            "Head",
+            "Neck",
+            "face",
+        })
+        {
+            if (TryResolveTransformPathByNameOrPath(transformPaths, fallback, out var path))
+            {
+                return path;
+            }
+        }
+
+        return transformPaths.FirstOrDefault();
+    }
+
+    private static bool TryResolveTransformPathByNameOrPath(
+        IReadOnlyList<string> transformPaths,
+        string nameOrPath,
+        out string path
+    )
+    {
+        var direct = transformPaths.FirstOrDefault(candidate =>
+            string.Equals(candidate, nameOrPath, StringComparison.OrdinalIgnoreCase));
+        if (direct is not null)
+        {
+            path = direct;
+            return true;
+        }
+
+        var suffix = "/" + nameOrPath;
+        var bySuffix = transformPaths.FirstOrDefault(candidate =>
+            candidate.EndsWith(suffix, StringComparison.OrdinalIgnoreCase));
+        if (bySuffix is not null)
+        {
+            path = bySuffix;
+            return true;
+        }
+
+        var byLeaf = transformPaths.FirstOrDefault(candidate =>
+            string.Equals(LastPathSegment(candidate), nameOrPath, StringComparison.OrdinalIgnoreCase));
+        if (byLeaf is not null)
+        {
+            path = byLeaf;
+            return true;
+        }
+
+        path = string.Empty;
+        return false;
     }
 
     private static bool TryResolveImportedMesh(

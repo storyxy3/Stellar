@@ -20,6 +20,7 @@ import {
   type BodyAnimationSelection,
   type FaceMotionPlaybackSnapshot,
   type FaceMotionSet,
+  type HairShadowMode,
   type MaterialBindingMode,
   type PartImportSnapshot,
   type RenderIsolationMode,
@@ -46,15 +47,17 @@ if (!root) {
 
 const previewState = { ...previewLightDefaults };
 const assemblyState = cloneAssemblyState(sampleCatalog.defaultAssembly);
+const initialQueryParams = new URLSearchParams(window.location.search);
 let lastImportSnapshot: PartImportSnapshot | null = null;
 let importRun = 0;
 let lastAnimationSnapshot: AnimationPlaybackSnapshot | null = null;
 let lastFaceMotionSnapshot: FaceMotionPlaybackSnapshot | null = null;
 let lastSpringBoneSnapshot: SpringBoneRuntimeSnapshot | null = null;
-const renderState = { ...defaultRenderState };
-let renderIsolationMode: RenderIsolationMode = readRenderIsolationMode(
-  new URLSearchParams(window.location.search)
-);
+const renderState = {
+  ...defaultRenderState,
+  hairShadowMode: readHairShadowMode(initialQueryParams),
+};
+let renderIsolationMode: RenderIsolationMode = readRenderIsolationMode(initialQueryParams);
 const animationState = { ...defaultAnimationState };
 
 type UnknownRecord = Record<string, unknown>;
@@ -161,6 +164,13 @@ root.innerHTML = `
             <option value="0.25">0.25</option>
             <option value="0.5">0.5</option>
             <option value="1" selected>1</option>
+          </select>
+        </label>
+        <label>
+          <span>Hair Shadow</span>
+          <select data-render-key="hairShadowMode">
+            <option value="light" selected>Light Driven</option>
+            <option value="legacy_head">Legacy Head Shadow</option>
           </select>
         </label>
         <label>
@@ -282,6 +292,7 @@ if (!viewerHost) {
 
 const viewer = new PjskViewerApp(viewerHost, previewState);
 viewer.setMaterialBindingMode(renderState.materialBindingMode);
+viewer.setHairShadowMode(renderState.hairShadowMode);
 viewer.setToonShadowPreview(
   toonShadowSmoothByMode[renderState.toonShadowSmoothMode],
   valueShadowInfluenceByMode[renderState.valueShadowInfluenceMode]
@@ -293,6 +304,12 @@ const renderIsolationSelect = document.querySelector<HTMLSelectElement>(
 );
 if (renderIsolationSelect) {
   renderIsolationSelect.value = renderIsolationMode;
+}
+const hairShadowSelect = document.querySelector<HTMLSelectElement>(
+  'select[data-render-key="hairShadowMode"]'
+);
+if (hairShadowSelect) {
+  hairShadowSelect.value = renderState.hairShadowMode;
 }
 
 function copyBodyAsset(base: BodyAssetManifest): BodyAssetManifest {
@@ -622,6 +639,7 @@ function normalizeHeadManifest(raw: unknown): HeadAssetManifest {
           readString(slot.materialKind ?? slot.MaterialKind) || undefined,
         mainTex: readString(slot.mainTex ?? slot.MainTex) || undefined,
         shadowTex: readString(slot.shadowTex ?? slot.ShadowTex) || undefined,
+        valueTex: readString(slot.valueTex ?? slot.ValueTex) || undefined,
         faceShadowTex:
           readString(slot.faceShadowTex ?? slot.FaceShadowTex) || undefined,
         mode: readString(slot.mode ?? slot.Mode, "clean") as HeadAssetManifest["defaultFaceMode"],
@@ -759,6 +777,9 @@ function applyRuntimeMaterialSlots(
   const materialSlots = asRecord(runtimeExtension.materialSlots ?? runtimeExtension.MaterialSlots);
   const bodySlots = readUnknownArray(materialSlots.body ?? materialSlots.Body);
   const headSlots = readUnknownArray(materialSlots.head ?? materialSlots.Head);
+  const accessorySlots = readUnknownArray(
+    materialSlots.accessory ?? materialSlots.Accessory
+  );
 
   if (bodySlots.length) {
     bodyAsset.bodyMaterials = bodySlots.map((entry) => {
@@ -775,21 +796,35 @@ function applyRuntimeMaterialSlots(
     });
   }
 
-  if (headSlots.length) {
-    headAsset.faceMaterials = headSlots.map((entry) => {
+  const readHeadMaterialSlot = (
+    entry: unknown,
+    fallbackMaterialKind?: string
+  ) => {
       const slot = asRecord(entry);
       return {
         meshName: readString(slot.meshName ?? slot.MeshName),
         materialName: readString(slot.materialName ?? slot.MaterialName) || undefined,
-        materialKind: readString(slot.materialKind ?? slot.MaterialKind) || undefined,
+        materialKind:
+          readString(slot.materialKind ?? slot.MaterialKind) ||
+          fallbackMaterialKind ||
+          undefined,
         mainTex: resolveConverterPath(readString(slot.mainTex ?? slot.MainTex)) || undefined,
         shadowTex: resolveConverterPath(readString(slot.shadowTex ?? slot.ShadowTex)) || undefined,
+        valueTex: resolveConverterPath(readString(slot.valueTex ?? slot.ValueTex)) || undefined,
         faceShadowTex:
           resolveConverterPath(readString(slot.faceShadowTex ?? slot.FaceShadowTex)) || undefined,
         mode: headAsset.defaultFaceMode,
         lighting: readMaterialLighting(slot.lighting ?? slot.Lighting),
       };
-    });
+  };
+
+  if (headSlots.length || accessorySlots.length) {
+    headAsset.faceMaterials = [
+      ...(headSlots.length
+        ? headSlots.map((entry) => readHeadMaterialSlot(entry))
+        : headAsset.faceMaterials),
+      ...accessorySlots.map((entry) => readHeadMaterialSlot(entry, "accessory")),
+    ];
   }
 }
 
@@ -812,7 +847,26 @@ async function normalizeRuntimeWithUnityRuntimeJson(
   if (!unityRuntimeJsonUrl) {
     return normalizeRuntimeExtension(runtimeExtension);
   }
-  return normalizeRuntimeExtension(await fetchRuntimeJson(unityRuntimeJsonUrl));
+  const unityRuntimeExtension = asRecord(await fetchRuntimeJson(unityRuntimeJsonUrl));
+  return normalizeRuntimeExtension({
+    ...unityRuntimeExtension,
+    ...runtimeExtension,
+    bodyManifest:
+      runtimeExtension.bodyManifest ??
+      runtimeExtension.BodyManifest ??
+      unityRuntimeExtension.bodyManifest ??
+      unityRuntimeExtension.BodyManifest,
+    headManifest:
+      runtimeExtension.headManifest ??
+      runtimeExtension.HeadManifest ??
+      unityRuntimeExtension.headManifest ??
+      unityRuntimeExtension.HeadManifest,
+    materialSlots:
+      runtimeExtension.materialSlots ??
+      runtimeExtension.MaterialSlots ??
+      unityRuntimeExtension.materialSlots ??
+      unityRuntimeExtension.MaterialSlots,
+  });
 }
 
 function readRuntimePreviewLight(extension: UnknownRecord) {
@@ -1155,9 +1209,10 @@ async function parseConverterFolder(files: File[]) {
     const unityRuntimeJsonUrl = unityRuntimeJsonPath
       ? findConverterUrl(unityRuntimeJsonPath)
       : null;
-    const runtime = unityRuntimeJsonUrl
-      ? normalizeRuntimeExtension(JSON.parse(await (await fetch(unityRuntimeJsonUrl, { cache: "no-store" })).text()))
-      : normalizeRuntimeExtension(baseRuntimeExtension);
+    const runtime = await normalizeRuntimeWithUnityRuntimeJson(
+      baseRuntimeExtension,
+      unityRuntimeJsonUrl
+    );
     if (!unityRuntimeJsonUrl) {
       localAssetState.converterError =
         "Pure Unity converter output must contain character/unity-runtime.json.";
@@ -2137,6 +2192,7 @@ async function applyCharacterImport() {
     return;
   }
   viewer.setMaterialBindingMode(renderState.materialBindingMode);
+  viewer.setHairShadowMode(renderState.hairShadowMode);
   viewer.setToonShadowPreview(
     toonShadowSmoothByMode[renderState.toonShadowSmoothMode],
     valueShadowInfluenceByMode[renderState.valueShadowInfluenceMode]
@@ -2213,8 +2269,10 @@ function readCaptureConfig(): CaptureConfig | null {
     .filter(Boolean);
   const traceMaxEvents = Number(params.get("utjTraceMaxEvents") ?? "240");
   renderState.springRuntimeMode = springRuntimeMode;
+  renderState.hairShadowMode = readHairShadowMode(params);
   viewer.setSpringRuntimeMode(springRuntimeMode);
   viewer.setRenderIsolationMode(renderIsolation);
+  viewer.setHairShadowMode(renderState.hairShadowMode);
 
   return {
     baseUrl,
@@ -2257,6 +2315,10 @@ function readRenderIsolationMode(params: URLSearchParams): RenderIsolationMode {
     default:
       return "normal";
   }
+}
+
+function readHairShadowMode(params: URLSearchParams): HairShadowMode {
+  return params.get("hairShadowMode") === "legacy_head" ? "legacy_head" : "light";
 }
 
 function readSpringRuntimeMode(params: URLSearchParams): SpringRuntimeMode {
@@ -2407,6 +2469,11 @@ document
           toonShadowSmoothByMode[renderState.toonShadowSmoothMode],
           valueShadowInfluenceByMode[renderState.valueShadowInfluenceMode]
         );
+        renderImportSummary();
+      }
+      if (key === "hairShadowMode") {
+        renderState.hairShadowMode = select.value as HairShadowMode;
+        viewer.setHairShadowMode(renderState.hairShadowMode);
         renderImportSummary();
       }
       if (key === "characterYawMode") {

@@ -141,6 +141,7 @@ export type RenderIsolationMode =
   | "no_body_outline"
   | "no_hair_outline"
   | "no_face_outline";
+export type HairShadowMode = "light" | "legacy_head";
 
 export type BodyAnimationKind = "gltf" | "unity-json";
 
@@ -173,6 +174,12 @@ export type RuntimeMaterialDebug = {
   shaderShadowWeight?: number | null;
   shaderShadowWidthOverride?: number | null;
   shaderValueShadowInfluence?: number | null;
+  shaderHairShadowEnabled?: number | null;
+  shaderLambertEnabled?: number | null;
+  shaderFaceShadowRangeLimitEnabled?: number | null;
+  shaderFaceShadowRangeLimit?: number | null;
+  shaderHeadDotDirectionalLightX?: number | null;
+  shaderHeadDotDirectionalLightY?: number | null;
   shaderSpecularPower?: number | null;
   shaderRimThreshold?: number | null;
   shaderControllerRimThreshold?: number | null;
@@ -249,13 +256,37 @@ export type RuntimeCameraDebug = {
   characterHeight: number;
 };
 
+export type RuntimeFaceLightDebug = {
+  lightDirection: { x: number; y: number; z: number };
+  faceRightWorld: { x: number; y: number; z: number };
+  faceUpWorld: { x: number; y: number; z: number };
+  faceForwardWorld: { x: number; y: number; z: number };
+  headHorizontalFromUp: { x: number; y: number };
+  headHorizontalFromRight: { x: number; y: number };
+  headHorizontalFromForward: { x: number; y: number };
+  lightHorizontal: { x: number; y: number };
+  headDotDirectionalLight: { x: number; y: number };
+  faceTbnLight: { x: number; y: number; z: number };
+  faceLight: { side: number; front: number };
+  faceSdfLimit: number;
+  headYawDegrees: number;
+  lightYawDegrees: number;
+};
+
 export type RuntimeDebugSnapshot = {
   materialBindingMode: MaterialBindingMode;
   body: RuntimeMaterialDebug[];
   head: RuntimeMaterialDebug[];
+  headMaterialSlots: Array<{
+    meshName: string;
+    materialName?: string;
+    materialKind?: string;
+    valueTex?: string;
+  }>;
   headMorphs: RuntimeHeadMorphDebug[];
   outlineShells: RuntimeOutlineShellDebug[];
   camera?: RuntimeCameraDebug;
+  faceLight?: RuntimeFaceLightDebug;
 };
 
 export type SpringBoneRuntimeSnapshot = {
@@ -3290,6 +3321,7 @@ export class PjskViewerApp {
   private readonly hairHeadPosition = new THREE.Vector3();
   private currentHairOffset = new THREE.Vector3();
   private materialBindingMode: MaterialBindingMode = "manifest";
+  private hairShadowMode: HairShadowMode = "light";
   private bodyDebugMode: BodyDebugMode = "off";
   private toonShadowWidthOverride: number | null = null;
   private toonValueShadowInfluence = 0;
@@ -3301,6 +3333,7 @@ export class PjskViewerApp {
     materialBindingMode: "manifest",
     body: [],
     head: [],
+    headMaterialSlots: [],
     headMorphs: [],
     outlineShells: [],
   };
@@ -3378,8 +3411,8 @@ export class PjskViewerApp {
       rimDirectionality: initialLight.rimDirectionality,
       rimDirection: getSekaiPreviewRimDirection(),
       skinTintEnabled: false,
-      hairShadowEnabled: true,
-      lambertEnabled: true,
+      hairShadowEnabled: false,
+      lambertEnabled: false,
       headPosition: this.hairHeadPosition,
     });
     this.faceMaterial = createSekaiFaceMaterial({
@@ -3607,6 +3640,11 @@ export class PjskViewerApp {
   setMaterialBindingMode(mode: MaterialBindingMode) {
     this.materialBindingMode = mode;
     this.runtimeDebug.materialBindingMode = mode;
+  }
+
+  setHairShadowMode(mode: HairShadowMode) {
+    this.hairShadowMode = mode;
+    this.applyHairShadowModeUniforms();
   }
 
   setFaceSdfDebugMode(mode: FaceSdfDebugMode) {
@@ -3902,6 +3940,40 @@ export class PjskViewerApp {
     }
   }
 
+  private isLegacyHairShadowEnabled() {
+    return this.hairShadowMode === "legacy_head";
+  }
+
+  private applyHairShadowModeUniforms() {
+    const enabled = this.isLegacyHairShadowEnabled() ? 1.0 : 0.0;
+    if (this.hairMaterial.uniforms.uHairShadowEnabled) {
+      this.hairMaterial.uniforms.uHairShadowEnabled.value = enabled;
+    }
+    for (const slot of [this.bodySlot, this.headSlot]) {
+      slot.traverse((node) => {
+        const mesh = node as THREE.Mesh;
+        if (!mesh.isMesh) {
+          return;
+        }
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const material of materials) {
+          if (
+            material instanceof THREE.ShaderMaterial &&
+            material.userData.pjskMaterialKind === "hair" &&
+            material.uniforms.uHairShadowEnabled
+          ) {
+            material.uniforms.uHairShadowEnabled.value = enabled;
+          }
+        }
+      });
+    }
+    for (const entry of this.runtimeDebug.head) {
+      if (entry.resolvedKind === "hair" && entry.shaderHairShadowEnabled !== undefined) {
+        entry.shaderHairShadowEnabled = enabled;
+      }
+    }
+  }
+
   private applyBodyNeckContactUniforms() {
     if (!this.currentBodyAsset || !this.currentBodyAnimationRoot) {
       return;
@@ -3962,7 +4034,109 @@ export class PjskViewerApp {
   getRuntimeDebugSnapshot() {
     return {
       ...structuredClone(this.runtimeDebug),
+      headMaterialSlots: this.currentHeadAsset?.faceMaterials.map((slot) => ({
+        meshName: slot.meshName,
+        materialName: slot.materialName,
+        materialKind: slot.materialKind,
+        valueTex: slot.valueTex,
+      })) ?? [],
       camera: this.getCameraDebugSnapshot(),
+      faceLight: this.getFaceLightDebugSnapshot(),
+    };
+  }
+
+  getFaceLightDebugSnapshot(): RuntimeFaceLightDebug {
+    const lightDirection = this.directionalLight.position.clone().normalize();
+    const headHorizontalFromUp = new THREE.Vector2();
+    const headHorizontalFromRight = new THREE.Vector2();
+    const headHorizontalFromForward = new THREE.Vector2();
+    const lightHorizontal = new THREE.Vector2();
+    normalizeFaceShadowHorizontal(
+      headHorizontalFromUp,
+      -this.faceUpWorld.x,
+      -this.faceUpWorld.z
+    );
+    normalizeFaceShadowHorizontal(
+      headHorizontalFromRight,
+      this.faceRightWorld.x,
+      this.faceRightWorld.z
+    );
+    normalizeFaceShadowHorizontal(
+      headHorizontalFromForward,
+      this.faceForwardWorld.x,
+      this.faceForwardWorld.z
+    );
+    normalizeFaceShadowHorizontal(
+      lightHorizontal,
+      this.directionalLight.position.x,
+      this.directionalLight.position.z
+    );
+    const headYawDegrees = THREE.MathUtils.radToDeg(
+      Math.atan2(this.faceForwardWorld.x, this.faceForwardWorld.z)
+    );
+    const lightYawDegrees = THREE.MathUtils.radToDeg(
+      Math.atan2(lightHorizontal.x, lightHorizontal.y)
+    );
+    const faceForward = this.faceForwardWorld.clone().normalize();
+    const faceRight = this.faceRightWorld.clone()
+      .sub(faceForward.clone().multiplyScalar(this.faceRightWorld.dot(faceForward)))
+      .normalize();
+    const faceUp = this.faceUpWorld.clone()
+      .sub(faceForward.clone().multiplyScalar(this.faceUpWorld.dot(faceForward)))
+      .sub(faceRight.clone().multiplyScalar(this.faceUpWorld.dot(faceRight)))
+      .normalize();
+    const faceTbnLight = new THREE.Vector3(
+      lightDirection.dot(faceRight),
+      lightDirection.dot(faceUp),
+      lightDirection.dot(faceForward)
+    );
+    const faceLightLength = Math.max(
+      Math.hypot(faceTbnLight.x, faceTbnLight.z),
+      0.001
+    );
+    const faceSide = faceTbnLight.x / faceLightLength;
+    const faceFront = faceTbnLight.z / faceLightLength;
+    const faceSdfUseLightDirection =
+      this.faceMaterial.uniforms.uFaceSdfUseLightDirection?.value ?? 0.5;
+    const faceSdfLimit = THREE.MathUtils.clamp(
+      (Math.acos(Math.max(faceFront, 0.0)) / 1.5707963) *
+        THREE.MathUtils.clamp(faceSdfUseLightDirection, 0.0, 1.0),
+      0.015,
+      0.985
+    );
+    return {
+      lightDirection: vectorDebugSnapshot(lightDirection),
+      faceRightWorld: vectorDebugSnapshot(faceRight),
+      faceUpWorld: vectorDebugSnapshot(faceUp),
+      faceForwardWorld: vectorDebugSnapshot(faceForward),
+      headHorizontalFromUp: {
+        x: Number(headHorizontalFromUp.x.toFixed(5)),
+        y: Number(headHorizontalFromUp.y.toFixed(5)),
+      },
+      headHorizontalFromRight: {
+        x: Number(headHorizontalFromRight.x.toFixed(5)),
+        y: Number(headHorizontalFromRight.y.toFixed(5)),
+      },
+      headHorizontalFromForward: {
+        x: Number(headHorizontalFromForward.x.toFixed(5)),
+        y: Number(headHorizontalFromForward.y.toFixed(5)),
+      },
+      lightHorizontal: {
+        x: Number(lightHorizontal.x.toFixed(5)),
+        y: Number(lightHorizontal.y.toFixed(5)),
+      },
+      headDotDirectionalLight: {
+        x: Number(this.headDotDirectionalLight.x.toFixed(5)),
+        y: Number(this.headDotDirectionalLight.y.toFixed(5)),
+      },
+      faceTbnLight: vectorDebugSnapshot(faceTbnLight),
+      faceLight: {
+        side: Number(faceSide.toFixed(5)),
+        front: Number(faceFront.toFixed(5)),
+      },
+      faceSdfLimit: Number(faceSdfLimit.toFixed(5)),
+      headYawDegrees: Number(headYawDegrees.toFixed(3)),
+      lightYawDegrees: Number(lightYawDegrees.toFixed(3)),
     };
   }
 
@@ -4473,6 +4647,7 @@ export class PjskViewerApp {
       controllerRimEdgeSmoothness: this.hairMaterial.uniforms.uControllerRimEdgeSmoothness.value,
       controllerRimShadowSharpness: this.hairMaterial.uniforms.uControllerRimShadowSharpness.value,
       skinTintEnabled: false,
+      hairShadowEnabled: this.isLegacyHairShadowEnabled(),
     });
     updateSekaiFaceMaterial(this.faceMaterial, {
       baseColor: this.currentHeadAsset?.proxy.faceColor ?? "#ffe4dc",
@@ -5650,6 +5825,15 @@ export class PjskViewerApp {
               shaderUniforms?.uShadowWidthOverride?.value ?? null,
             shaderValueShadowInfluence:
               shaderUniforms?.uValueShadowInfluence?.value ?? null,
+            shaderLambertEnabled: shaderUniforms?.uLambertEnabled?.value ?? null,
+            shaderFaceShadowRangeLimitEnabled:
+              shaderUniforms?.uFaceShadowRangeLimitEnabled?.value ?? null,
+            shaderFaceShadowRangeLimit:
+              shaderUniforms?.uFaceShadowRangeLimit?.value ?? null,
+            shaderHeadDotDirectionalLightX:
+              shaderUniforms?.uHeadDotDirectionalLight?.value?.x ?? null,
+            shaderHeadDotDirectionalLightY:
+              shaderUniforms?.uHeadDotDirectionalLight?.value?.y ?? null,
             shaderSpecularPower: shaderUniforms?.uSpecularPower?.value ?? null,
             shaderRimThreshold: shaderUniforms?.uRimThreshold?.value ?? null,
             shaderControllerRimThreshold:
@@ -5750,6 +5934,7 @@ export class PjskViewerApp {
     for (const slot of headAsset.faceMaterials) {
       const mainTex = await this.loadTexture(slot.mainTex);
       const shadowTex = await this.loadTexture(slot.shadowTex);
+      const valueTex = await this.loadTexture(slot.valueTex, THREE.NoColorSpace);
       const faceShadowTex = await this.loadTexture(slot.faceShadowTex, THREE.NoColorSpace);
       const key = slot.meshName.toLowerCase();
       const kind = slot.materialKind ?? "face";
@@ -5909,12 +6094,13 @@ export class PjskViewerApp {
         material = cloneBodyShaderMaterial(this.hairMaterial, {
           mainTex,
           shadowTex,
+          valueTex,
           baseColor: headAsset.proxy.hairColor,
           shadowColor: headAsset.proxy.hairShadowColor,
           lighting,
           skinTintEnabled: false,
-          hairShadowEnabled: true,
-          lambertEnabled: true,
+          hairShadowEnabled: this.isLegacyHairShadowEnabled(),
+          lambertEnabled: false,
           headPosition: this.hairHeadPosition,
           alphaCutoff: HAIR_ALPHA_CUTOFF,
         });
@@ -5923,6 +6109,7 @@ export class PjskViewerApp {
         material = cloneBodyShaderMaterial(this.bodyMaterial, {
           mainTex,
           shadowTex,
+          valueTex,
           baseColor: headAsset.proxy.skinColorDefault ?? headAsset.proxy.faceColor,
           shadowColor: headAsset.proxy.skinColor1 ?? headAsset.proxy.faceShadeColor,
           skinColorDefault: headAsset.proxy.skinColorDefault ?? headAsset.proxy.faceColor,
@@ -5930,9 +6117,6 @@ export class PjskViewerApp {
           skinColor2: headAsset.proxy.skinColor2 ?? headAsset.proxy.faceShadeColor,
           lighting,
           skinTintEnabled: usesSekaiSkinTint(kind),
-          faceShadowRangeLimitEnabled: true,
-          faceShadowRangeLimit: 1.0,
-          headDotDirectionalLight: this.headDotDirectionalLight,
           alphaCutoff: kind === "accessory" ? ACCESSORY_ALPHA_CUTOFF : 0.0,
         });
         configureBaseStencilClear(material);
@@ -5970,7 +6154,7 @@ export class PjskViewerApp {
         materialKind: kind,
         mainTex: slot.mainTex ?? null,
         shadowTex: slot.shadowTex ?? null,
-        valueTex: null,
+        valueTex: slot.valueTex ?? null,
         faceShadowTex: slot.faceShadowTex ?? null,
         material,
         overlayMaterial: material.userData.pjskOverlayMaterial instanceof THREE.Material
@@ -6078,6 +6262,19 @@ export class PjskViewerApp {
               shaderUniforms?.uShadowWidthOverride?.value ?? null,
             shaderValueShadowInfluence:
               shaderUniforms?.uValueShadowInfluence?.value ?? null,
+            shaderHairShadowEnabled:
+              resolvedEntry.materialKind === "hair"
+                ? shaderUniforms?.uHairShadowEnabled?.value ?? null
+                : null,
+            shaderLambertEnabled: shaderUniforms?.uLambertEnabled?.value ?? null,
+            shaderFaceShadowRangeLimitEnabled:
+              shaderUniforms?.uFaceShadowRangeLimitEnabled?.value ?? null,
+            shaderFaceShadowRangeLimit:
+              shaderUniforms?.uFaceShadowRangeLimit?.value ?? null,
+            shaderHeadDotDirectionalLightX:
+              shaderUniforms?.uHeadDotDirectionalLight?.value?.x ?? null,
+            shaderHeadDotDirectionalLightY:
+              shaderUniforms?.uHeadDotDirectionalLight?.value?.y ?? null,
             shaderSpecularPower: shaderUniforms?.uSpecularPower?.value ?? null,
             shaderRimThreshold: shaderUniforms?.uRimThreshold?.value ?? null,
             shaderControllerRimThreshold:
@@ -6814,13 +7011,15 @@ export class PjskViewerApp {
       this.characterRoot;
     headNode.getWorldQuaternion(this.tempQuaternion);
     headNode.getWorldPosition(this.faceHeadWorldPosition);
-    this.faceRightWorld.set(1, 0, 0).applyQuaternion(this.tempQuaternion).normalize();
-    this.faceUpWorld.set(0, 1, 0).applyQuaternion(this.tempQuaternion).normalize();
+    // PJSK imported head bones use local X as face up and local Z as face forward.
+    this.faceUpWorld.set(1, 0, 0).applyQuaternion(this.tempQuaternion).normalize();
     this.faceForwardWorld.set(0, 0, 1).applyQuaternion(this.tempQuaternion).normalize();
+    this.faceRightWorld.crossVectors(this.faceUpWorld, this.faceForwardWorld).normalize();
+    this.faceUpWorld.crossVectors(this.faceForwardWorld, this.faceRightWorld).normalize();
     normalizeFaceShadowHorizontal(
       this.faceShadowHeadHorizontal,
-      -this.faceUpWorld.x,
-      -this.faceUpWorld.z
+      this.faceRightWorld.x,
+      this.faceRightWorld.z
     );
     normalizeFaceShadowHorizontal(
       this.faceShadowLightHorizontal,
@@ -6880,6 +7079,21 @@ export class PjskViewerApp {
           }
         }
       });
+    }
+    for (const entries of [this.runtimeDebug.body, this.runtimeDebug.head]) {
+      for (const entry of entries) {
+        if (entry.shaderHeadDotDirectionalLightX !== undefined) {
+          entry.shaderHeadDotDirectionalLightX = this.headDotDirectionalLight.x;
+          entry.shaderHeadDotDirectionalLightY = this.headDotDirectionalLight.y;
+        }
+        if (
+          entry.shaderFaceShadowRangeLimitEnabled !== undefined &&
+          entry.shaderFaceShadowRangeLimitEnabled !== null &&
+          entry.shaderFaceShadowRangeLimitEnabled > 0.5
+        ) {
+          entry.shaderFaceShadowRangeLimit = 1.0;
+        }
+      }
     }
   }
 
