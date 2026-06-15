@@ -70,7 +70,7 @@ public sealed class MotionPackageExporter
 
         if (Directory.Exists(normalized))
         {
-            return ExportFromFolder(normalized, outputDirectory);
+            return ExportFromFolder(normalized, outputDirectory, bodyModel);
         }
 
         if (!File.Exists(normalized))
@@ -88,18 +88,46 @@ public sealed class MotionPackageExporter
 
     private static MotionExportResult ExportFromFolder(
         string motionFolder,
-        string outputDirectory
+        string outputDirectory,
+        IImported? bodyModel
     )
     {
         var unityMotionJson = FindFile(motionFolder, "unity-motion.json");
         var faceJson = FindFile(motionFolder, "face_motion.json");
         var lightJson = FindFile(motionFolder, "light_motion.json");
         var unityMotionOutput = default(string);
+        var bodyMotionBindings = default(PjskBodyMotionBindingSet);
 
         if (unityMotionJson is not null)
         {
             unityMotionOutput = Path.Combine(outputDirectory, "unity-motion.json");
             File.Copy(unityMotionJson, unityMotionOutput, overwrite: true);
+        }
+        else
+        {
+            var decodedClips = ReadDecodedClipsFromFolder(motionFolder);
+            if (decodedClips.Count > 0)
+            {
+                if (bodyModel is null)
+                {
+                    throw new InvalidOperationException("Decoded motion folder export requires the body model hierarchy.");
+                }
+
+                var decodedExport = ExportDecodedClips(
+                    decodedClips,
+                    motionFolder,
+                    outputDirectory,
+                    bodyModel
+                );
+
+                return new MotionExportResult(
+                    SourcePath: motionFolder,
+                    UnityMotionJsonPath: decodedExport.UnityMotionOutput,
+                    BodyMotionBindings: decodedExport.BodyMotionBindings,
+                    FaceMotion: decodedExport.FaceMotion,
+                    LightMotion: decodedExport.LightMotion
+                );
+            }
         }
 
         var faceMotion = faceJson is null
@@ -118,7 +146,7 @@ public sealed class MotionPackageExporter
         return new MotionExportResult(
             SourcePath: motionFolder,
             UnityMotionJsonPath: unityMotionOutput,
-            BodyMotionBindings: null,
+            BodyMotionBindings: bodyMotionBindings,
             FaceMotion: faceMotion,
             LightMotion: lightMotion
         );
@@ -167,6 +195,30 @@ public sealed class MotionPackageExporter
                 Console.Error.WriteLine($"[Motion] Skipping AnimationClip {clip.m_Name}: {ex.Message}");
             }
         }
+        (var unityMotionOutput, var bodyMotionBindings, var faceMotion, var lightMotion) =
+            ExportDecodedClips(decodedClips, bundlePath, outputDirectory, bodyModel);
+
+        return new MotionExportResult(
+            SourcePath: bundlePath,
+            UnityMotionJsonPath: unityMotionOutput,
+            BodyMotionBindings: bodyMotionBindings,
+            FaceMotion: faceMotion,
+            LightMotion: lightMotion
+        );
+    }
+
+    private static (
+        string? UnityMotionOutput,
+        PjskBodyMotionBindingSet? BodyMotionBindings,
+        PjskFaceMotionSet? FaceMotion,
+        PjskLightMotionSet? LightMotion
+    ) ExportDecodedClips(
+        IReadOnlyList<DecodedUnityClip> decodedClips,
+        string sourcePath,
+        string outputDirectory,
+        IImported bodyModel
+    )
+    {
         var bodyClips = decodedClips
             .Where(clip => clip.Name is "motion" or "motion_loop")
             .ToList();
@@ -189,7 +241,7 @@ public sealed class MotionPackageExporter
             .ToList();
         var faceMotion = faceClips.Count == 0
             ? null
-            : new PjskFaceMotionSet(bundlePath, faceClips);
+            : new PjskFaceMotionSet(sourcePath, faceClips);
         var lightClips = decodedClips
             .Where(clip => clip.Name is not ("motion" or "motion_loop" or "face" or "face_loop"))
             .Select(BuildLightMotionClip)
@@ -197,15 +249,50 @@ public sealed class MotionPackageExporter
             .ToList();
         var lightMotion = lightClips.Count == 0
             ? null
-            : new PjskLightMotionSet(bundlePath, lightClips);
+            : new PjskLightMotionSet(sourcePath, lightClips);
 
-        return new MotionExportResult(
-            SourcePath: bundlePath,
-            UnityMotionJsonPath: unityMotionOutput,
-            BodyMotionBindings: bodyMotionBindings,
-            FaceMotion: faceMotion,
-            LightMotion: lightMotion
-        );
+        return (unityMotionOutput, bodyMotionBindings, faceMotion, lightMotion);
+    }
+
+    private static IReadOnlyList<DecodedUnityClip> ReadDecodedClipsFromFolder(string motionFolder)
+    {
+        var result = new List<DecodedUnityClip>();
+        foreach (var file in Directory.EnumerateFiles(motionFolder, "*.json", SearchOption.AllDirectories)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+        {
+            var name = Path.GetFileName(file);
+            if (name.Equals("unity-motion.json", StringComparison.OrdinalIgnoreCase) ||
+                name.Equals("face_motion.json", StringComparison.OrdinalIgnoreCase) ||
+                name.Equals("light_motion.json", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            try
+            {
+                var clip = JsonSerializer.Deserialize<DecodedUnityClip>(
+                    File.ReadAllText(file),
+                    JsonOptions
+                );
+                if (clip?.Curves is { Count: > 0 })
+                {
+                    result.Add(clip);
+                }
+            }
+            catch (JsonException)
+            {
+                // Ignore unrelated JSON files in updater output folders.
+            }
+        }
+
+        return result
+            .OrderBy(clip => clip.Name is "motion" ? 0
+                : clip.Name is "motion_loop" ? 1
+                : clip.Name is "face" ? 2
+                : clip.Name is "face_loop" ? 3
+                : 4)
+            .ThenBy(clip => clip.Name, StringComparer.Ordinal)
+            .ToList();
     }
 
     private static bool IsSupportedMotionClip(AnimationClip clip)
@@ -1171,35 +1258,6 @@ public sealed class MotionPackageExporter
     }
 
     private sealed record BindingRange(GenericBinding Binding, int Start, int Dimension);
-
-    private sealed record UnityBinding(uint Path, uint Attribute, ClassIDType TypeId);
-
-    private sealed class UnityCurve
-    {
-        public UnityBinding Binding { get; }
-        public List<UnityCurveKey> Keys { get; } = new();
-
-        public UnityCurve(UnityBinding binding)
-        {
-            Binding = binding;
-        }
-    }
-
-    private sealed record UnityCurveKey(
-        float Time,
-        float[] Values,
-        float[] InSlopes,
-        float[] OutSlopes,
-        bool IsDense,
-        bool IsConstant
-    );
-
-    private sealed record DecodedUnityClip(
-        string Name,
-        float SampleRate,
-        float Duration,
-        List<UnityCurve> Curves
-    );
 
     private sealed record BakedAnimationClip(
         string Name,
